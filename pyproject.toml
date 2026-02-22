@@ -1,0 +1,25 @@
+[project]
+name = "browser-auto"
+version = "0.1.0"
+description = "Agentic browser automation for SaaS documentation generation using CDP + LLM"
+requires-python = ">=3.10"
+
+dependencies = [
+    "websockets>=12.0",
+    "litellm>=1.40.0",
+    "aiohttp>=3.9.0",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+browser-auto = "main:cli"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
