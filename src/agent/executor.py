@@ -1,17 +1,36 @@
 """
 Executor Agent — takes a step and page context, produces and executes a CDP action.
+
+V2: With post-action verification, retry loop, and fallback strategies.
+Each step gets up to MAX_RETRIES attempts. After each action, the DOM is
+compared before/after to detect if anything actually changed.
 """
 
+import asyncio
 import json
 import logging
+import re
+from dataclasses import dataclass
 
 from ..cdp.input import InputDomain
 from ..cdp.page import PageDomain
 from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
-from ..llm.prompts import EXECUTOR_SYSTEM
+from ..llm.prompts import EXECUTOR_SYSTEM, EXECUTOR_RETRY_SYSTEM
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+
+
+@dataclass
+class StepResult:
+    """Result of executing a single step."""
+    action_desc: str
+    success: bool
+    retry_needed: bool
+    attempts: int = 1
+    failure_reason: str = ""
 
 
 async def execute_step(
@@ -22,9 +41,14 @@ async def execute_step(
     page: PageDomain,
     input_domain: InputDomain,
     runtime: RuntimeDomain,
-) -> str:
+    previous_failures: list[str] | None = None,
+) -> StepResult:
     """
-    Execute a single documentation step via LLM-guided CDP actions.
+    Execute a single documentation step with post-action verification and retries.
+
+    After each action, compares DOM state before/after. If nothing changed
+    and the action was supposed to modify the page, retries with additional
+    context about the failure. Max MAX_RETRIES attempts per step.
 
     Args:
         step: The step description to execute
@@ -34,42 +58,158 @@ async def execute_step(
         page: CDP Page domain
         input_domain: CDP Input domain
         runtime: CDP Runtime domain
+        previous_failures: List of previous failure descriptions for retry context
 
     Returns:
-        Description of the action taken
+        StepResult with success status and action description
     """
-    user_prompt = (
-        f"STEP TO EXECUTE: {step}\n\n"
-        f"INTERACTIVE ELEMENTS:\n{interactive_elements}\n\n"
-        f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
-        f"Output the JSON action to execute this step:"
+    failures = list(previous_failures or [])
+    last_action_desc = ""
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        # Capture DOM state BEFORE action
+        text_before = await runtime.get_visible_text()
+        url_before = await runtime.evaluate("window.location.href")
+
+        # Build prompt — include failure context on retries
+        action = await _get_action(
+            step, dom_html, interactive_elements, llm, failures
+        )
+
+        if action is None:
+            logger.warning(f"  [Attempt {attempt}] Could not parse action for: {step}")
+            failures.append("LLM returned unparseable action JSON")
+            continue
+
+        # Execute the action
+        action_desc = await _dispatch_action(action, page, input_domain, runtime)
+        last_action_desc = action_desc
+
+        # Actions that don't change DOM are always "successful"
+        action_type = action.get("action", "observe")
+        if action_type in ("observe", "wait"):
+            return StepResult(
+                action_desc=action_desc,
+                success=True,
+                retry_needed=False,
+                attempts=attempt,
+            )
+
+        # Wait for UI to settle
+        await asyncio.sleep(1.0)
+
+        # Capture DOM state AFTER action
+        text_after = await runtime.get_visible_text()
+        url_after = await runtime.evaluate("window.location.href")
+
+        # Check if something changed
+        url_changed = url_before != url_after
+        text_changed = text_before[:500] != text_after[:500]
+        changed = url_changed or text_changed
+
+        if changed:
+            logger.info(f"  [Attempt {attempt}] ✓ Action verified — DOM changed")
+            return StepResult(
+                action_desc=action_desc,
+                success=True,
+                retry_needed=False,
+                attempts=attempt,
+            )
+
+        # Action didn't change anything — might have failed silently
+        if "[Failed]" in action_desc or "[Error]" in action_desc:
+            failure_msg = f"Attempt {attempt}: {action_desc}"
+            failures.append(failure_msg)
+            logger.warning(f"  [Attempt {attempt}] ✗ Action failed: {action_desc}")
+        else:
+            failure_msg = (
+                f"Attempt {attempt}: Executed '{action_desc}' but DOM did not change. "
+                f"Element may be out of viewport, covered by a modal, or the selector is wrong."
+            )
+            failures.append(failure_msg)
+            logger.warning(f"  [Attempt {attempt}] ✗ DOM unchanged after action")
+
+        # Refresh DOM state for next attempt
+        dom_html = await page.get_dom_html(max_length=4000)
+        interactive_elements = await runtime.get_interactive_elements()
+
+        # Try fallback: scroll element into view before retrying click
+        if action_type == "click" and attempt < MAX_RETRIES:
+            selector = action.get("selector", "")
+            if selector:
+                await _try_scroll_into_view(selector, runtime)
+
+    # All retries exhausted
+    logger.error(f"  [FAILED] Step after {MAX_RETRIES} attempts: {step}")
+    return StepResult(
+        action_desc=f"[FAILED after {MAX_RETRIES} attempts] {last_action_desc}",
+        success=False,
+        retry_needed=False,
+        attempts=MAX_RETRIES,
+        failure_reason="; ".join(failures),
     )
 
+
+async def _get_action(
+    step: str,
+    dom_html: str,
+    interactive_elements: str,
+    llm: LLMClient,
+    failures: list[str],
+) -> dict | None:
+    """Ask LLM for the action to execute, including retry context."""
+    if failures:
+        # Use retry prompt with failure context
+        failure_context = "\n".join(f"  - {f}" for f in failures)
+        user_prompt = (
+            f"STEP TO EXECUTE: {step}\n\n"
+            f"PREVIOUS ATTEMPTS FAILED:\n{failure_context}\n\n"
+            f"Try a DIFFERENT approach. Consider:\n"
+            f"- Use a different selector (try aria-label, data-testid, role, or XPath-style)\n"
+            f"- The element might need scrolling into view first\n"
+            f"- Try a JavaScript click as fallback\n\n"
+            f"INTERACTIVE ELEMENTS:\n{interactive_elements}\n\n"
+            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
+            f"Output the JSON action:"
+        )
+        system = EXECUTOR_RETRY_SYSTEM
+    else:
+        user_prompt = (
+            f"STEP TO EXECUTE: {step}\n\n"
+            f"INTERACTIVE ELEMENTS:\n{interactive_elements}\n\n"
+            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
+            f"Output the JSON action to execute this step:"
+        )
+        system = EXECUTOR_SYSTEM
+
     messages = [
-        {"role": "system", "content": EXECUTOR_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": user_prompt},
     ]
 
     response = await llm.complete(messages, json_mode=True)
-    action = _parse_action(response)
+    return _parse_action(response)
 
-    if action is None:
-        logger.warning(f"Could not parse action for step: {step}")
-        return f"[Skipped] Could not determine action for: {step}"
 
-    return await _dispatch_action(action, page, input_domain, runtime)
+async def _try_scroll_into_view(selector: str, runtime: RuntimeDomain) -> None:
+    """Attempt to scroll an element into view before retrying a click."""
+    try:
+        js = f"document.querySelector('{selector}')?.scrollIntoView({{behavior: 'smooth', block: 'center'}})"
+        await runtime.evaluate(js)
+        await asyncio.sleep(0.5)
+        logger.debug(f"  Scrolled '{selector}' into view for retry")
+    except Exception:
+        pass
 
 
 def _parse_action(response: str) -> dict | None:
     """Parse JSON action from LLM response."""
     try:
-        # Try direct parse
         return json.loads(response.strip())
     except json.JSONDecodeError:
         pass
 
     # Try to extract JSON from markdown code block
-    import re
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
     if match:
         try:
@@ -107,11 +247,31 @@ async def _dispatch_action(
         if action_type == "click":
             selector = action["selector"]
             success = await input_domain.click(selector)
-            import asyncio
-            await asyncio.sleep(1.0)  # Wait for UI reaction
             if success:
                 return f"Clicked element: {selector}"
+            # Fallback: try JS click
+            js_result = await runtime.evaluate(
+                f"(() => {{ const el = document.querySelector('{selector}'); "
+                f"if(el) {{ el.click(); return true; }} return false; }})()"
+            )
+            if js_result:
+                return f"Clicked element via JS fallback: {selector}"
             return f"[Failed] Element not found: {selector}"
+
+        elif action_type == "click_text":
+            # Fallback action: click by visible text
+            text = action["text"]
+            js = (
+                f"(() => {{ "
+                f"const els = [...document.querySelectorAll('a, button, [role=button], input[type=submit]')]; "
+                f"const el = els.find(e => e.innerText?.trim().includes('{text}')); "
+                f"if(el) {{ el.click(); return true; }} return false; "
+                f"}})()"
+            )
+            result = await runtime.evaluate(js)
+            if result:
+                return f"Clicked element by text: '{text}'"
+            return f"[Failed] No element with text: '{text}'"
 
         elif action_type == "type":
             selector = action.get("selector")
@@ -134,6 +294,14 @@ async def _dispatch_action(
             delta_y = -400 if direction == "down" else 400
             await input_domain.scroll(delta_y=delta_y)
             return f"Scrolled {direction}"
+
+        elif action_type == "scroll_to":
+            selector = action["selector"]
+            await runtime.evaluate(
+                f"document.querySelector('{selector}')?.scrollIntoView({{behavior: 'smooth', block: 'center'}})"
+            )
+            await asyncio.sleep(0.5)
+            return f"Scrolled to element: {selector}"
 
         elif action_type == "wait":
             selector = action["selector"]

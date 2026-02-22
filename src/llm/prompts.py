@@ -1,8 +1,7 @@
 """
 Prompt templates for the Planner → Executor → Critic agentic loop.
 
-Each prompt is designed to produce structured, parseable output
-that the agent modules can consume.
+V2: Enhanced selector prioritization, retry prompts, and critic re-execution.
 """
 
 # ─── Planner ─────────────────────────────────────────────────────────
@@ -28,6 +27,20 @@ Example output:
 5. Verify the dashboard page loads with the user's name displayed"""
 
 
+# ─── Planner (supplement for critic missing steps) ───────────────────
+
+PLANNER_SUPPLEMENT_SYSTEM = """You are a documentation planning agent. The initial documentation was reviewed and found to be INCOMPLETE. The critic identified missing steps that need to be added.
+
+Given the MISSING STEPS identified by the reviewer and the current page state, generate a numbered list of concrete UI actions to cover these gaps.
+
+Rules:
+- Only generate steps for the MISSING items — do not repeat existing steps
+- Each step should describe ONE action
+- Be specific about which elements to interact with
+- Output ONLY the numbered list
+- Write in the same language as the original goal"""
+
+
 # ─── Executor ────────────────────────────────────────────────────────
 
 EXECUTOR_SYSTEM = """You are a browser automation executor. Given a STEP to execute and the current page state (DOM/interactive elements), output a JSON action to perform.
@@ -37,29 +50,68 @@ You must output EXACTLY ONE valid JSON object with one of these action types:
 1. Click an element:
    {"action": "click", "selector": "CSS_SELECTOR"}
 
-2. Type text into a focused or specified element:
+2. Click by visible text (when CSS selector is unreliable):
+   {"action": "click_text", "text": "VISIBLE_BUTTON_TEXT"}
+
+3. Type text into a focused or specified element:
    {"action": "type", "selector": "CSS_SELECTOR", "text": "TEXT_TO_TYPE"}
 
-3. Press a special key:
+4. Press a special key:
    {"action": "press_key", "key": "Enter"}
 
-4. Navigate to a URL:
+5. Navigate to a URL:
    {"action": "navigate", "url": "https://..."}
 
-5. Scroll the page:
+6. Scroll the page:
    {"action": "scroll", "direction": "down"}
 
-6. Wait for an element:
+7. Scroll to a specific element:
+   {"action": "scroll_to", "selector": "CSS_SELECTOR"}
+
+8. Wait for an element:
    {"action": "wait", "selector": "CSS_SELECTOR"}
 
-7. No action needed (observation/verification step):
+9. No action needed (observation/verification step):
    {"action": "observe"}
 
+SELECTOR PRIORITY (use the most stable selector available):
+1. [aria-label="..."] or [role="..."] combined with text — MOST STABLE
+2. [data-testid="..."] or [data-cy="..."] — test attributes
+3. #id — unique IDs
+4. [name="..."] — form element names
+5. Semantic CSS (button, a[href="..."], input[type="..."]) 
+6. Positional CSS (div > button:nth-child) — LEAST STABLE, avoid
+
 Rules:
-- Use the MOST SPECIFIC selector possible (prefer #id, then [name=...], then semantic selectors)
-- If you see interactive elements listed, match the step to the most relevant element
+- ALWAYS prefer selectors from the INTERACTIVE ELEMENTS list when they match the step
+- If the element has an id, use #id
+- If it has aria-label, use [aria-label="..."]
 - Output ONLY the JSON object, no explanation
-- If no matching element exists, use {"action": "observe"} and note what's missing"""
+- If no matching element exists, use {"action": "observe"}"""
+
+
+# ─── Executor Retry ──────────────────────────────────────────────────
+
+EXECUTOR_RETRY_SYSTEM = """You are a browser automation executor. The previous attempt(s) to execute this step FAILED. You must try a DIFFERENT approach.
+
+Available action types:
+1. {"action": "click", "selector": "CSS_SELECTOR"} — standard click
+2. {"action": "click_text", "text": "VISIBLE_TEXT"} — click by visible text (useful when CSS selectors fail)
+3. {"action": "type", "selector": "CSS_SELECTOR", "text": "TEXT"}
+4. {"action": "press_key", "key": "Enter"}
+5. {"action": "navigate", "url": "https://..."}
+6. {"action": "scroll", "direction": "down"} — scroll page
+7. {"action": "scroll_to", "selector": "CSS_SELECTOR"} — scroll element into view
+8. {"action": "wait", "selector": "CSS_SELECTOR"}
+9. {"action": "observe"} — no action
+
+RETRY STRATEGIES (try in order):
+1. Use a completely different selector (try aria-label, role, data-testid, or text content)
+2. Try "click_text" with the visible text instead of a CSS selector
+3. The element might be off-screen — try "scroll_to" first, then re-click
+4. The element might be inside an iframe or shadow DOM — try a different approach
+
+Output ONLY the JSON object. Use a DIFFERENT selector/approach than previous failures."""
 
 
 # ─── Critic ──────────────────────────────────────────────────────────
@@ -71,18 +123,23 @@ Evaluate the documentation against these criteria:
 2. Screenshots: Does each step have an associated screenshot?
 3. Clarity: Are the annotations clear and helpful for an end user?
 4. Flow: Do the steps follow a logical sequence?
-5. Missing info: Is anything critical missing?
+5. Failed steps: Are there any steps marked as [FAILED]?
+6. Missing info: Is anything critical missing?
 
 You must output a JSON object with this structure:
 {
     "is_complete": true/false,
     "score": 1-10,
     "feedback": "Specific feedback about what's good or needs improvement",
-    "missing_steps": ["List of any missing steps, if applicable"],
+    "missing_steps": ["List of specific missing steps as actionable descriptions, e.g. 'Click the Submit button after filling the form'"],
     "suggestions": ["Specific improvement suggestions"]
 }
 
-Be constructive but rigorous. A score of 7+ means the docs are publishable."""
+Rules:
+- A score of 7+ means the docs are publishable
+- If any step is marked [FAILED], set is_complete to false
+- missing_steps must be ACTIONABLE step descriptions that can be re-executed
+- Be constructive but rigorous"""
 
 
 # ─── Annotator ───────────────────────────────────────────────────────

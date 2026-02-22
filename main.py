@@ -53,11 +53,14 @@ Examples:
   # Document a login flow
   python main.py --goal "Documentar fluxo de login" --url "https://app.example.com"
   
-  # Use Claude instead of GPT
-  python main.py --goal "Document sign-up" --url "https://app.com" --model "claude-sonnet-4-20250514"
+  # Use Claude for planning, cheap model for annotations  
+  python main.py --goal "Document sign-up" --url "https://app.com" --model "claude-sonnet-4-20250514" --annotation-model "gpt-4o-mini"
   
-  # Headless mode with custom output directory
-  python main.py --goal "Document settings" --url "https://app.com" --headless --output ./docs
+  # With authentication via cookies
+  python main.py --goal "Document dashboard" --url "https://app.com" --cookies-file ./cookies.json
+  
+  # With username/password login
+  python main.py --goal "Document settings" --url "https://app.com" --username user@email.com --password mysecret
         """,
     )
 
@@ -99,6 +102,26 @@ Examples:
         help="Maximum critic review rounds (default: 2)",
     )
     parser.add_argument(
+        "--annotation-model",
+        default=None,
+        help="Separate LLM model for screenshot annotations (default: same as --model). Use a cheaper model to reduce cost.",
+    )
+    parser.add_argument(
+        "--cookies-file",
+        default=None,
+        help="Path to a JSON cookies file for session auth (e.g., exported via EditThisCookie)",
+    )
+    parser.add_argument(
+        "--username",
+        default=None,
+        help="Username/email for auto-login",
+    )
+    parser.add_argument(
+        "--password",
+        default=None,
+        help="Password for auto-login",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose debug logging",
@@ -122,10 +145,14 @@ async def async_main() -> None:
         goal=args.goal,
         url=args.url,
         model=args.model,
+        annotation_model=args.annotation_model,
         output_dir=args.output,
         port=args.port,
         headless=args.headless,
         max_critic_rounds=args.max_critic_rounds,
+        cookies_file=args.cookies_file,
+        username=args.username,
+        password=args.password,
     )
 
     try:
