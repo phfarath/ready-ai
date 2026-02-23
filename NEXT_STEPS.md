@@ -25,7 +25,7 @@
 - [x] Upgrade `get_interactive_elements()` to expose `aria-label`, `role`, `data-testid`, `data-cy`, `visible`
 - [x] Update `EXECUTOR_SYSTEM` prompt selector priority: aria-label > data-testid > id > name > semantic > positional
 - [x] Add `click_text` action type for text-based clicking as fallback
-- [x] Add `scroll_to` action for scrolling elements into view 
+- [x] Add `scroll_to` action for scrolling elements into view
 - [x] Add `find_element_by_text()` in RuntimeDomain
 - [x] Add `EXECUTOR_RETRY_SYSTEM` prompt with different strategy suggestions
 
@@ -79,3 +79,42 @@
 - [x] Aplicar highlight (red border + box-shadow) antes do screenshot
 - [x] Limpar highlight após captura
 - [x] Graceful degradation — falha no highlight não bloqueia screenshot
+
+---
+
+# Output Quality Fixes (v2.3) ✅
+
+## Fix 1: Annotation Language Consistency ✅
+- [x] Add `{goal}` placeholder to `ANNOTATOR_PROMPT`
+- [x] Change language rule to "write in the same language as the GOAL, not the UI text"
+- [x] Pass `goal=self.goal` alongside `step=step` at the call site in `loop.py`
+
+## Fix 2: `--title` Flag for Clean Document Heading ✅
+- [x] Add `--title` / `-t` optional CLI argument in `main.py`
+- [x] Add `title: Optional[str] = None` parameter to `AgenticLoop.__init__`
+- [x] Pass `title=self.title` to `DocRenderer` instantiation
+- [x] `DocRenderer.__init__` accepts `title=None`; `render()` uses `self.title or self.goal` for H1
+
+---
+
+# Roadmap — Open Items
+
+## Output Quality
+- [ ] **`--language` flag** — single flag that sets the language for the entire output: renderer labels (`## Step`, `## Index`, `Technical details`), ANNOTATOR_PROMPT instruction, and PLANNER_SYSTEM instruction. Auto-detects from goal if not set. This is the clean fix for all language consistency issues.
+- [ ] Multilingual renderer labels — blocked on `--language` flag above
+- [ ] Configurable output template — allow users to supply a Jinja2/Markdown template for the output format
+- [ ] Better failed-step recovery — skip failed steps rather than embedding `[FAILED]` inline, or provide a `--retry-failed` mode
+
+## Robustness
+- [ ] Cross-origin iframe support — current iframe traversal is limited to same-origin
+- [ ] Multi-tab support — some SaaS apps open new tabs for OAuth or modals
+- [ ] Network idle detection — replace `asyncio.sleep` settle waits with `Page.networkIdle` or `Page.lifecycleEvent`
+
+## Auth
+- [ ] OAuth / SSO flows — current auto-login only handles email+password forms
+- [ ] MFA / TOTP support — accept a TOTP secret or callback for 2FA apps
+
+## Developer Experience
+- [ ] `--config` file support — read all CLI options from a YAML/TOML config file
+- [ ] Dry-run / plan-only mode — print the planned steps without executing them
+- [ ] Resume from checkpoint — save progress after each step; resume on crash

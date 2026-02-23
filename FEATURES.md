@@ -5,7 +5,7 @@
 - **Planner** — LLM analisa o DOM e gera plano de passos numerados para documentar o fluxo
 - **Executor** — Converte cada passo em ação CDP (click, type, navigate, scroll, observe)
 - **Critic** — Revisa a documentação gerada, pontua (1-10) e identifica passos faltantes
-- **Annotator** — Vision LLM analisa cada screenshot e gera descrição contextual do que o usuário vê
+- **Annotator** — Vision LLM analisa cada screenshot e gera descrição contextual do que o usuário vê na língua do goal
 
 ## 🔧 CDP Engine (Chrome DevTools Protocol)
 
@@ -48,7 +48,7 @@
 
 - `get_interactive_elements()` expõe 9 atributos por elemento: tag, text, id, name, ariaLabel, role, testId, visible, inShadowDom, inIframe
 - **Shadow DOM** — traversal recursivo de `shadowRoot` para encontrar elementos em Web Components
-- **Iframes** — traversal de `iframe.contentDocument` para iframes same-origin
+- **Iframes** — traversal de `iframe.contentDocument` (same-origin)
 - Seletor mais estável computado automaticamente com hierarquia de prioridade:
   1. `aria-label` / `role` + texto
   2. `data-testid` / `data-cy`
@@ -71,6 +71,7 @@
 
 - **URL tracking** — após cada step, URL atual é capturada e injetada no prompt do Executor
 - **Drift detection** — warning automático quando URL muda entre steps (redireccionamentos, SPAs)
+- **Replanning automático** — quando URL muda inesperadamente, steps restantes são re-planejados via `PLANNER_REPLAN_SYSTEM`
 - O Executor sabe em qual página está, evitando executar ações na página errada
 
 ## 📸 Visual Highlighting (v2.1)
@@ -86,6 +87,19 @@
 - Eventos críticos como `Page.frameNavigated` não são mais descartados permanentemente
 - Previne travamentos silenciosos em SPAs com alto volume de eventos CDP
 
+## 🌍 Consistência de Idioma nas Anotações (v2.3)
+
+- `ANNOTATOR_PROMPT` instrui o LLM a escrever **na língua do GOAL**, não na do texto da UI visível no screenshot
+- Resolve drift de idioma em apps com UI em português quando o goal está em inglês (e vice-versa)
+- Placeholder `{goal}` passado junto com `{step}` na chamada vision — o modelo sempre ancora no idioma do goal
+
+## 📝 Flag `--title` para Título Limpo (v2.3)
+
+- `--title` / `-t` permite definir um título H1 separado do `--goal`
+- O `--goal` continua sendo a instrução que dirige o LLM (pode ser longa e descritiva)
+- O `--title` vira o cabeçalho H1 do documento gerado (curto e legível)
+- Retrocompatível: sem `--title`, o H1 usa o `--goal` como antes
+
 ## 📄 Geração de Documentação
 
 - Markdown com Table of Contents automático
@@ -98,8 +112,9 @@
 ## 🖥️ CLI
 
 ```
---goal, -g          Objetivo da documentação
+--goal, -g          Objetivo da documentação (instrução para o LLM)
 --url, -u           URL alvo
+--title, -t         Título H1 do documento gerado (default: goal)
 --model, -m         Modelo LLM principal (default: gpt-4o-mini)
 --annotation-model  Modelo para anotações de screenshot
 --output, -o        Diretório de saída
@@ -118,3 +133,4 @@
 - `.env` carregado automaticamente via `python-dotenv`
 - JSON mode para outputs estruturados (Executor, Critic)
 - Vision API para análise de screenshots (base64)
+- Retry automático com backoff exponencial em rate limit (máx. 5 tentativas)
