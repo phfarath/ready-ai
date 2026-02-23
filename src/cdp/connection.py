@@ -118,6 +118,9 @@ class CDPConnection:
         """
         Wait for a specific CDP event.
 
+        Non-matching events are buffered and re-queued after the target
+        event is found (or on timeout), so they are not lost.
+
         Args:
             event_name: Event method name (e.g., 'Page.loadEventFired')
             timeout: Max seconds to wait
@@ -126,17 +129,25 @@ class CDPConnection:
             The event params dict
         """
         deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                raise TimeoutError(f"Timed out waiting for event {event_name}")
-            try:
-                event = await asyncio.wait_for(self._events.get(), timeout=remaining)
-                if event.get("method") == event_name:
-                    return event.get("params", {})
-                # Not the event we want — put it back? No, just discard non-matching for now
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"Timed out waiting for event {event_name}")
+        stashed: list[dict[str, Any]] = []
+
+        try:
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError(f"Timed out waiting for event {event_name}")
+                try:
+                    event = await asyncio.wait_for(self._events.get(), timeout=remaining)
+                    if event.get("method") == event_name:
+                        return event.get("params", {})
+                    # Buffer non-matching events for re-queue
+                    stashed.append(event)
+                except asyncio.TimeoutError:
+                    raise TimeoutError(f"Timed out waiting for event {event_name}")
+        finally:
+            # Always re-queue stashed events so they are not lost
+            for ev in stashed:
+                await self._events.put(ev)
 
     async def attach_to_page(self) -> str:
         """

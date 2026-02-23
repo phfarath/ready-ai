@@ -7,6 +7,7 @@ compared before/after to detect if anything actually changed.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -42,6 +43,7 @@ async def execute_step(
     input_domain: InputDomain,
     runtime: RuntimeDomain,
     previous_failures: list[str] | None = None,
+    current_url: str | None = None,
 ) -> StepResult:
     """
     Execute a single documentation step with post-action verification and retries.
@@ -59,6 +61,7 @@ async def execute_step(
         input_domain: CDP Input domain
         runtime: CDP Runtime domain
         previous_failures: List of previous failure descriptions for retry context
+        current_url: Current page URL for context awareness
 
     Returns:
         StepResult with success status and action description
@@ -73,7 +76,7 @@ async def execute_step(
 
         # Build prompt — include failure context on retries
         action = await _get_action(
-            step, dom_html, interactive_elements, llm, failures
+            step, dom_html, interactive_elements, llm, failures, current_url
         )
 
         if action is None:
@@ -104,7 +107,10 @@ async def execute_step(
 
         # Check if something changed
         url_changed = url_before != url_after
-        text_changed = text_before[:500] != text_after[:500]
+        text_changed = (
+            hashlib.md5(text_before.encode()).hexdigest()
+            != hashlib.md5(text_after.encode()).hexdigest()
+        )
         changed = url_changed or text_changed
 
         if changed:
@@ -156,12 +162,16 @@ async def _get_action(
     interactive_elements: str,
     llm: LLMClient,
     failures: list[str],
+    current_url: str | None = None,
 ) -> dict | None:
     """Ask LLM for the action to execute, including retry context."""
+    url_context = f"CURRENT PAGE URL: {current_url}\n\n" if current_url else ""
+
     if failures:
         # Use retry prompt with failure context
         failure_context = "\n".join(f"  - {f}" for f in failures)
         user_prompt = (
+            f"{url_context}"
             f"STEP TO EXECUTE: {step}\n\n"
             f"PREVIOUS ATTEMPTS FAILED:\n{failure_context}\n\n"
             f"Try a DIFFERENT approach. Consider:\n"
@@ -175,6 +185,7 @@ async def _get_action(
         system = EXECUTOR_RETRY_SYSTEM
     else:
         user_prompt = (
+            f"{url_context}"
             f"STEP TO EXECUTE: {step}\n\n"
             f"INTERACTIVE ELEMENTS:\n{interactive_elements}\n\n"
             f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
@@ -261,10 +272,11 @@ async def _dispatch_action(
         elif action_type == "click_text":
             # Fallback action: click by visible text
             text = action["text"]
+            safe_text = json.dumps(text)
             js = (
                 f"(() => {{ "
                 f"const els = [...document.querySelectorAll('a, button, [role=button], input[type=submit]')]; "
-                f"const el = els.find(e => e.innerText?.trim().includes('{text}')); "
+                f"const el = els.find(e => e.innerText?.trim().includes({safe_text})); "
                 f"if(el) {{ el.click(); return true; }} return false; "
                 f"}})()"
             )

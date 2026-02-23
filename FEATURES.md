@@ -21,7 +21,7 @@
 ## ✅ Verificação Pós-Ação (Gap 1)
 
 - `StepResult` dataclass rastreia sucesso, tentativas e motivo de falha
-- Comparação de DOM (texto visível + URL) antes/depois de cada ação
+- Comparação de DOM (hash MD5 do texto visível completo + URL) antes/depois de cada ação
 - Retry loop automático (máx. 3 tentativas) com contexto de falha no re-prompt
 - Estratégias de fallback em sequência:
   1. Scroll into view antes de re-clicar
@@ -35,16 +35,20 @@
 - Passos faltantes são enviados ao Planner via `PLANNER_SUPPLEMENT_SYSTEM`
 - Planner gera sub-plano apenas para os gaps
 - Executor re-executa os passos adicionais e appenda na documentação
+- **Resultados acumulados** — `StepResult` dos re-executed steps são integrados ao loop principal
 
 ## 🔐 Autenticação (Gap 3)
 
 - **Cookies** — `--cookies-file` injeta cookies de sessão via `Network.setCookie` (formato JSON exportável por extensões como EditThisCookie)
 - **Login automático** — `--username` / `--password` auto-detecta formulários de login (campos email/password), preenche e submete
+- **Escape seguro** — credenciais são escapadas via `json.dumps()` para compatibilidade com senhas contendo `'`, `\`, `"`
 - Eventos `input` e `change` disparados para compatibilidade com frameworks React/Vue
 
 ## 🎯 Resolução Robusta de Elementos (Gap 4)
 
-- `get_interactive_elements()` expõe 7 atributos por elemento: tag, text, id, name, ariaLabel, role, testId, visible
+- `get_interactive_elements()` expõe 9 atributos por elemento: tag, text, id, name, ariaLabel, role, testId, visible, inShadowDom, inIframe
+- **Shadow DOM** — traversal recursivo de `shadowRoot` para encontrar elementos em Web Components
+- **Iframes** — traversal de `iframe.contentDocument` para iframes same-origin
 - Seletor mais estável computado automaticamente com hierarquia de prioridade:
   1. `aria-label` / `role` + texto
   2. `data-testid` / `data-cy`
@@ -55,12 +59,32 @@
 - Prompt do Executor instrui explicitamente a priorizar seletores estáveis
 - `EXECUTOR_RETRY_SYSTEM` sugere estratégias diferentes a cada tentativa
 - `find_element_by_text()` no RuntimeDomain como último recurso
+- Dedup de elementos via `WeakSet` (referência de objeto) — sem colisões em botões duplicados
 
 ## 💰 Separação de Modelo de Anotação (Gap 5)
 
 - `--annotation-model` permite usar modelo mais barato para anotações de screenshot
 - Planner e Critic usam o `--model` principal (ex: `claude-sonnet-4-20250514`)
 - Anotações via vision usam modelo separado (ex: `gpt-4o-mini`) para reduzir custo
+
+## 🌐 Consciência de Navegação (v2.1)
+
+- **URL tracking** — após cada step, URL atual é capturada e injetada no prompt do Executor
+- **Drift detection** — warning automático quando URL muda entre steps (redireccionamentos, SPAs)
+- O Executor sabe em qual página está, evitando executar ações na página errada
+
+## 📸 Visual Highlighting (v2.1)
+
+- Elemento interagido recebe highlight visual (borda vermelha + sombra) antes do screenshot
+- Highlight é removido após captura para não afetar steps subsequentes
+- Graceful degradation — falha no highlight não bloqueia o fluxo
+- Selector extraído automaticamente do `action_desc` do Executor
+
+## 🔒 Event Safety (v2.1)
+
+- `wait_for_event` agora bufferiza eventos CDP não-matching e re-enfileira após match/timeout
+- Eventos críticos como `Page.frameNavigated` não são mais descartados permanentemente
+- Previne travamentos silenciosos em SPAs com alto volume de eventos CDP
 
 ## 📄 Geração de Documentação
 

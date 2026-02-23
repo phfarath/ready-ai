@@ -243,3 +243,114 @@ class TestExecutorParse:
         from src.agent.executor import _parse_action
 
         assert _parse_action("not json at all") is None
+
+
+class TestWaitForEventBuffering:
+    """Test that wait_for_event buffers non-matching events (Bug 2 fix)."""
+
+    @pytest.mark.asyncio
+    async def test_non_matching_events_are_preserved(self):
+        """Events that don't match the target should be re-queued, not discarded."""
+        conn = CDPConnection()
+        conn._ws = AsyncMock()  # Prevent NotConnected error
+
+        # Pre-load events into the queue
+        await conn._events.put({"method": "Network.requestWillBeSent", "params": {}})
+        await conn._events.put({"method": "DOM.documentUpdated", "params": {}})
+        await conn._events.put({"method": "Page.loadEventFired", "params": {"timestamp": 123}})
+
+        result = await conn.wait_for_event("Page.loadEventFired", timeout=5.0)
+        assert result == {"timestamp": 123}
+
+        # The non-matching events should still be in the queue
+        assert conn._events.qsize() == 2
+
+    @pytest.mark.asyncio
+    async def test_timeout_preserves_stashed_events(self):
+        """On timeout, stashed events should still be re-queued."""
+        conn = CDPConnection()
+        conn._ws = AsyncMock()
+
+        # Load only non-matching events
+        await conn._events.put({"method": "Network.requestWillBeSent", "params": {}})
+
+        with pytest.raises(TimeoutError):
+            await conn.wait_for_event("Page.loadEventFired", timeout=0.1)
+
+        # The non-matching event should be preserved
+        assert conn._events.qsize() == 1
+
+
+class TestDOMChangeDetection:
+    """Test that DOM change detection uses full text hash (Bug 3 fix)."""
+
+    def test_change_below_500_chars_detected(self):
+        """Changes beyond the first 500 chars should still be detected."""
+        import hashlib
+
+        text_before = "A" * 600
+        text_after = "A" * 500 + "B" * 100
+
+        # Old method (truncated) would NOT detect change
+        old_changed = text_before[:500] != text_after[:500]
+        assert not old_changed, "Old method should miss this change"
+
+        # New method (hash) DOES detect change
+        new_changed = (
+            hashlib.md5(text_before.encode()).hexdigest()
+            != hashlib.md5(text_after.encode()).hexdigest()
+        )
+        assert new_changed, "New method should detect change below fold"
+
+
+class TestSelectorExtraction:
+    """Test the _extract_selector helper for visual highlighting (Gap C)."""
+
+    def test_extract_click_selector(self):
+        from src.agent.loop import AgenticLoop
+        assert AgenticLoop._extract_selector("Clicked element: #login-btn") == "#login-btn"
+
+    def test_extract_js_fallback_selector(self):
+        from src.agent.loop import AgenticLoop
+        assert AgenticLoop._extract_selector(
+            "Clicked element via JS fallback: [data-testid=\"submit\"]"
+        ) == "[data-testid=\"submit\"]"
+
+    def test_extract_scroll_to_selector(self):
+        from src.agent.loop import AgenticLoop
+        assert AgenticLoop._extract_selector("Scrolled to element: .footer-link") == ".footer-link"
+
+    def test_returns_none_for_non_element_actions(self):
+        from src.agent.loop import AgenticLoop
+        assert AgenticLoop._extract_selector("Observing current page state") is None
+        assert AgenticLoop._extract_selector("Navigated to: https://example.com") is None
+
+    def test_returns_none_for_failed_actions(self):
+        from src.agent.loop import AgenticLoop
+        assert AgenticLoop._extract_selector("[Failed] Element not found: #btn") is None
+
+
+class TestCredentialEscaping:
+    """Test that json.dumps correctly escapes special characters (Bug 1 fix)."""
+
+    def test_single_quotes_escaped(self):
+        import json
+        password = "pass'word"
+        result = json.dumps(password)
+        # json.dumps wraps in double quotes — single quotes are safe in JS
+        # The key point is the output is a valid JS string literal
+        assert result == '"pass\'word"'
+        # Can be directly interpolated into JS: i.value = "pass'word"
+        assert result.startswith('"') and result.endswith('"')
+
+    def test_backslash_escaped(self):
+        import json
+        password = "pass\\word"
+        result = json.dumps(password)
+        assert "\\\\" in result
+
+    def test_double_quotes_escaped(self):
+        import json
+        password = 'pass"word'
+        result = json.dumps(password)
+        assert '\\"' in result

@@ -125,52 +125,84 @@ class RuntimeDomain:
                 '[role="button"]', '[role="link"]', '[role="tab"]',
                 '[role="menuitem"]', '[onclick]', '[data-testid]', '[data-cy]'
             ];
-            const seen = new Set();
+            const seen = new WeakSet();
             
-            for (const sel of selectors) {
-                document.querySelectorAll(sel).forEach((el, i) => {
-                    if (i > 25) return;
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width === 0 || rect.height === 0) return;
-                    
-                    // Dedup by element reference
-                    const key = el.tagName + el.id + el.name + (el.innerText||'').slice(0,30);
-                    if (seen.has(key)) return;
-                    seen.add(key);
-                    
-                    // Build the BEST selector for this element (priority order)
-                    let bestSelector = null;
-                    const ariaLabel = el.getAttribute('aria-label');
-                    const testId = el.getAttribute('data-testid') || el.getAttribute('data-cy');
-                    const role = el.getAttribute('role');
-                    
-                    if (el.id) {
-                        bestSelector = '#' + el.id;
-                    } else if (testId) {
-                        bestSelector = `[data-testid="${testId}"]`;
-                    } else if (ariaLabel) {
-                        bestSelector = `[aria-label="${ariaLabel}"]`;
-                    } else if (el.name) {
-                        bestSelector = `${el.tagName.toLowerCase()}[name="${el.name}"]`;
-                    } else if (el.type && el.tagName === 'INPUT') {
-                        bestSelector = `input[type="${el.type}"]`;
-                    }
-                    
-                    elements.push({
-                        tag: el.tagName.toLowerCase(),
-                        type: el.type || null,
-                        text: (el.innerText || el.value || el.placeholder || '').slice(0, 80).trim(),
-                        id: el.id || null,
-                        name: el.name || null,
-                        href: el.href || null,
-                        ariaLabel: ariaLabel || null,
-                        role: role || null,
-                        testId: testId || null,
-                        selector: bestSelector,
-                        visible: rect.top >= 0 && rect.top < window.innerHeight
-                    });
+            function processElement(el, context) {
+                if (seen.has(el)) return;
+                seen.add(el);
+                
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return;
+                
+                // Build the BEST selector for this element (priority order)
+                let bestSelector = null;
+                const ariaLabel = el.getAttribute('aria-label');
+                const testId = el.getAttribute('data-testid') || el.getAttribute('data-cy');
+                const role = el.getAttribute('role');
+                
+                if (el.id) {
+                    bestSelector = '#' + el.id;
+                } else if (testId) {
+                    bestSelector = `[data-testid="${testId}"]`;
+                } else if (ariaLabel) {
+                    bestSelector = `[aria-label="${ariaLabel}"]`;
+                } else if (el.name) {
+                    bestSelector = `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                } else if (el.type && el.tagName === 'INPUT') {
+                    bestSelector = `input[type="${el.type}"]`;
+                }
+                
+                elements.push({
+                    tag: el.tagName.toLowerCase(),
+                    type: el.type || null,
+                    text: (el.innerText || el.value || el.placeholder || '').slice(0, 80).trim(),
+                    id: el.id || null,
+                    name: el.name || null,
+                    href: el.href || null,
+                    ariaLabel: ariaLabel || null,
+                    role: role || null,
+                    testId: testId || null,
+                    selector: bestSelector,
+                    visible: rect.top >= 0 && rect.top < window.innerHeight,
+                    inShadowDom: context.shadow || false,
+                    inIframe: context.iframe || false
                 });
             }
+            
+            function traverseRoot(root, context) {
+                for (const sel of selectors) {
+                    try {
+                        const matches = root.querySelectorAll(sel);
+                        matches.forEach((el, i) => {
+                            if (i > 25) return;
+                            processElement(el, context);
+                        });
+                    } catch(e) { /* selector may fail in some contexts */ }
+                }
+                
+                // Traverse shadow roots
+                try {
+                    root.querySelectorAll('*').forEach(el => {
+                        if (el.shadowRoot) {
+                            traverseRoot(el.shadowRoot, { ...context, shadow: true });
+                        }
+                    });
+                } catch(e) {}
+                
+                // Traverse same-origin iframes
+                try {
+                    root.querySelectorAll('iframe').forEach(iframe => {
+                        try {
+                            const iframeDoc = iframe.contentDocument;
+                            if (iframeDoc) {
+                                traverseRoot(iframeDoc, { ...context, iframe: true });
+                            }
+                        } catch(e) { /* cross-origin iframe — skip */ }
+                    });
+                } catch(e) {}
+            }
+            
+            traverseRoot(document, { shadow: false, iframe: false });
             return JSON.stringify(elements.slice(0, 60));
         })()
         """
@@ -189,11 +221,13 @@ class RuntimeDomain:
         Returns:
             A CSS selector or XPath-style identifier, or None
         """
+        safe_text = json.dumps(text)
+        safe_tag = json.dumps(tag_filter)
         js = f"""
         (() => {{
-            const els = document.querySelectorAll('{tag_filter}');
+            const els = document.querySelectorAll({safe_tag});
             for (const el of els) {{
-                if (el.innerText?.trim().includes('{text}')) {{
+                if (el.innerText?.trim().includes({safe_text})) {{
                     if (el.id) return '#' + el.id;
                     if (el.getAttribute('aria-label')) return '[aria-label="' + el.getAttribute('aria-label') + '"]';
                     return null;  // Can't build stable selector, use click_text action

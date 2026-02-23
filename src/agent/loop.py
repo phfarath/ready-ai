@@ -143,13 +143,22 @@ class AgenticLoop:
         for i, step in enumerate(steps, start_number):
             logger.info(f"═══ Step {i}: {step}")
 
-            # Get fresh DOM state
+            # Get fresh DOM state and current URL for context awareness
             dom_html = await page.get_dom_html(max_length=4000)
             elements = await runtime.get_interactive_elements()
+            current_url = await runtime.evaluate("window.location.href")
 
-            # Execute with verification + retries
+            # Log URL drift detection
+            if i > start_number and hasattr(self, '_last_url') and self._last_url != current_url:
+                logger.warning(
+                    f"    ⚠ URL changed between steps: {self._last_url} → {current_url}"
+                )
+            self._last_url = current_url
+
+            # Execute with verification + retries (with URL context)
             result = await executor.execute_step(
-                step, dom_html, elements, llm, page, input_domain, runtime
+                step, dom_html, elements, llm, page, input_domain, runtime,
+                current_url=current_url,
             )
 
             logger.info(
@@ -160,8 +169,17 @@ class AgenticLoop:
             # Wait for UI to settle
             await asyncio.sleep(0.5)
 
+            # Highlight the interacted element before screenshot (Gap C)
+            last_selector = self._extract_selector(result.action_desc)
+            if last_selector:
+                await self._highlight_element(runtime, last_selector)
+
             # Screenshot
             screenshot_b64 = await page.screenshot()
+
+            # Clear highlight after screenshot
+            if last_selector:
+                await self._clear_highlight(runtime)
 
             # Annotate via vision LLM (uses annotation_model for cost)
             annotation = await annotation_llm.complete_with_vision(
@@ -221,10 +239,11 @@ class AgenticLoop:
             # Critic found missing steps → re-execute them
             if feedback.missing_steps:
                 logger.info(f"    ⟳ Re-executing {len(feedback.missing_steps)} missing steps")
-                await self._reexecute_missing_steps(
+                new_results = await self._reexecute_missing_steps(
                     feedback.missing_steps,
                     page, input_domain, runtime, llm, annotation_llm, doc,
                 )
+                step_results.extend(new_results)
                 markdown = doc.render()
             else:
                 # No missing steps, but not approved — add notes and move on
@@ -240,9 +259,12 @@ class AgenticLoop:
         llm: LLMClient,
         annotation_llm: LLMClient,
         doc: DocRenderer,
-    ) -> None:
+    ) -> list[executor.StepResult]:
         """
         Re-plan and execute missing steps identified by the critic.
+
+        Returns:
+            List of StepResult from the re-executed steps
         """
         # Get current page context
         dom_html = await page.get_dom_html(max_length=4000)
@@ -267,13 +289,13 @@ class AgenticLoop:
 
         if not new_steps:
             logger.warning("    Planner returned no supplement steps")
-            return
+            return []
 
         logger.info(f"    Planner generated {len(new_steps)} supplement steps")
 
         # Execute the new steps starting from the next step number
         next_num = len(doc.steps) + 1
-        await self._execute_steps(
+        return await self._execute_steps(
             new_steps, page, input_domain, runtime, llm, annotation_llm, doc,
             start_number=next_num,
         )
@@ -357,6 +379,10 @@ class AgenticLoop:
 
         logger.info("    Login form detected, filling credentials")
 
+        # Escape credentials for safe JS interpolation
+        safe_username = json.dumps(self.username)
+        safe_password = json.dumps(self.password)
+
         # Find and fill email/username field
         email_filled = await runtime.evaluate(f"""
             (() => {{
@@ -367,7 +393,7 @@ class AgenticLoop:
                          i.placeholder?.toLowerCase().includes('email') ||
                          i.placeholder?.toLowerCase().includes('user'))) {{
                         i.focus();
-                        i.value = '{self.username}';
+                        i.value = {safe_username};
                         i.dispatchEvent(new Event('input', {{bubbles: true}}));
                         i.dispatchEvent(new Event('change', {{bubbles: true}}));
                         return true;
@@ -383,7 +409,7 @@ class AgenticLoop:
                 const i = document.querySelector('input[type="password"]');
                 if (i) {{
                     i.focus();
-                    i.value = '{self.password}';
+                    i.value = {safe_password};
                     i.dispatchEvent(new Event('input', {{bubbles: true}}));
                     i.dispatchEvent(new Event('change', {{bubbles: true}}));
                     return true;
@@ -445,3 +471,59 @@ class AgenticLoop:
                 except Exception:
                     pass
             logger.info("Chrome process terminated")
+
+    @staticmethod
+    def _extract_selector(action_desc: str) -> str | None:
+        """Extract CSS selector from an action description like 'Clicked element: #btn'."""
+        import re
+        # Match patterns like "Clicked element: <selector>" or "Scrolled to element: <selector>"
+        match = re.search(r"element(?:\s+via\s+\w+\s+fallback)?:\s*(.+?)(?:\n|$)", action_desc)
+        if match:
+            selector = match.group(1).strip()
+            # Don't try to highlight if it's a failure or text-based click
+            if selector and not selector.startswith("[Failed") and not selector.startswith("[Error"):
+                return selector
+        return None
+
+    @staticmethod
+    async def _highlight_element(runtime: RuntimeDomain, selector: str) -> None:
+        """Draw a visual highlight (red border + semi-transparent overlay) on an element."""
+        safe_selector = json.dumps(selector)
+        try:
+            await runtime.evaluate(f"""
+                (() => {{
+                    const el = document.querySelector({safe_selector});
+                    if (!el) return;
+                    el.dataset._prevOutline = el.style.outline || '';
+                    el.dataset._prevOutlineOffset = el.style.outlineOffset || '';
+                    el.dataset._prevBoxShadow = el.style.boxShadow || '';
+                    el.style.outline = '3px solid #FF0000';
+                    el.style.outlineOffset = '2px';
+                    el.style.boxShadow = '0 0 0 4px rgba(255, 0, 0, 0.25)';
+                }})()
+            """)
+        except Exception:
+            pass  # Non-critical — screenshot still works without highlight
+
+    @staticmethod
+    async def _clear_highlight(runtime: RuntimeDomain, selector: str = "") -> None:
+        """Remove visual highlight from all previously highlighted elements."""
+        try:
+            await runtime.evaluate("""
+                (() => {
+                    const els = document.querySelectorAll('[data-_prev-outline]');
+                    // Fallback: clear any element with our injected styles
+                    document.querySelectorAll('*').forEach(el => {
+                        if (el.dataset._prevOutline !== undefined) {
+                            el.style.outline = el.dataset._prevOutline;
+                            el.style.outlineOffset = el.dataset._prevOutlineOffset;
+                            el.style.boxShadow = el.dataset._prevBoxShadow;
+                            delete el.dataset._prevOutline;
+                            delete el.dataset._prevOutlineOffset;
+                            delete el.dataset._prevBoxShadow;
+                        }
+                    });
+                })()
+            """)
+        except Exception:
+            pass
