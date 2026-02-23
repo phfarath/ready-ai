@@ -418,15 +418,21 @@ class AgenticLoop:
         await page.navigate(self.url)
 
         # Check if there's a login form on the page
+        # Also checks autocomplete attribute for apps using type="text" with autocomplete="email"
         has_login = await runtime.evaluate("""
             (() => {
                 const inputs = document.querySelectorAll('input');
                 let hasEmail = false, hasPassword = false;
                 inputs.forEach(i => {
-                    if (i.type === 'email' || i.type === 'text' && 
-                        (i.name?.includes('email') || i.name?.includes('user') || 
-                         i.placeholder?.toLowerCase().includes('email') ||
-                         i.placeholder?.toLowerCase().includes('user'))) hasEmail = true;
+                    const ac = (i.getAttribute('autocomplete') || '').toLowerCase();
+                    if (i.type === 'email' ||
+                        (i.type === 'text' && (
+                            i.name?.includes('email') || i.name?.includes('user') ||
+                            i.placeholder?.toLowerCase().includes('email') ||
+                            i.placeholder?.toLowerCase().includes('user') ||
+                            ac.includes('email') || ac.includes('username')
+                        ))
+                    ) hasEmail = true;
                     if (i.type === 'password') hasPassword = true;
                 });
                 return hasEmail && hasPassword;
@@ -443,19 +449,34 @@ class AgenticLoop:
         safe_username = json.dumps(self.username)
         safe_password = json.dumps(self.password)
 
-        # Find and fill email/username field
+        # Find and fill email/username field.
+        # Uses the native HTMLInputElement.prototype value setter to bypass React's
+        # instance-level property override, so React's synthetic event system correctly
+        # picks up the new value and updates the component state.
         email_filled = await runtime.evaluate(f"""
             (() => {{
+                const nativeSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                ).set;
                 const inputs = document.querySelectorAll('input');
                 for (const i of inputs) {{
-                    if (i.type === 'email' || i.type === 'text' && 
-                        (i.name?.includes('email') || i.name?.includes('user') || 
-                         i.placeholder?.toLowerCase().includes('email') ||
-                         i.placeholder?.toLowerCase().includes('user'))) {{
+                    const ac = (i.getAttribute('autocomplete') || '').toLowerCase();
+                    if (i.type === 'email' ||
+                        (i.type === 'text' && (
+                            i.name?.includes('email') || i.name?.includes('user') ||
+                            i.placeholder?.toLowerCase().includes('email') ||
+                            i.placeholder?.toLowerCase().includes('user') ||
+                            ac.includes('email') || ac.includes('username')
+                        ))
+                    ) {{
                         i.focus();
-                        i.value = {safe_username};
-                        i.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        i.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        i.select();
+                        nativeSetter.call(i, {safe_username});
+                        i.dispatchEvent(new InputEvent('input', {{
+                            bubbles: true, cancelable: true,
+                            inputType: 'insertText', data: {safe_username}
+                        }}));
+                        i.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         return true;
                     }}
                 }}
@@ -463,15 +484,22 @@ class AgenticLoop:
             }})()
         """)
 
-        # Find and fill password field
+        # Find and fill password field (same native setter approach)
         pass_filled = await runtime.evaluate(f"""
             (() => {{
+                const nativeSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                ).set;
                 const i = document.querySelector('input[type="password"]');
                 if (i) {{
                     i.focus();
-                    i.value = {safe_password};
-                    i.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    i.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    i.select();
+                    nativeSetter.call(i, {safe_password});
+                    i.dispatchEvent(new InputEvent('input', {{
+                        bubbles: true, cancelable: true,
+                        inputType: 'insertText', data: {safe_password}
+                    }}));
+                    i.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return true;
                 }}
                 return false;
@@ -495,7 +523,13 @@ class AgenticLoop:
                 })()
             """)
             logger.info(f"    Login submitted via: {submitted}")
-            await asyncio.sleep(3)  # Wait for auth redirect
+            # Wait for the auth redirect to fully settle instead of a fixed sleep
+            try:
+                await self._conn.wait_for_event("Page.loadEventFired", timeout=10.0)
+                await asyncio.sleep(1.5)  # extra settle for dynamic content
+            except TimeoutError:
+                logger.warning("    Auth redirect timed out, continuing anyway")
+            logger.info("    Authentication complete")
         else:
             logger.warning("    Could not fill login form automatically")
 
