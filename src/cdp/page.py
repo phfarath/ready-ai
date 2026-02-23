@@ -5,6 +5,7 @@ navigate, screenshot, DOM extraction, and wait-for-selector.
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
@@ -117,7 +118,7 @@ class PageDomain:
         Returns:
             True if found, False if timed out
         """
-        js = f"!!document.querySelector('{selector}')"
+        js = f"!!document.querySelector({json.dumps(selector)})"
         deadline = asyncio.get_event_loop().time() + timeout
 
         while asyncio.get_event_loop().time() < deadline:

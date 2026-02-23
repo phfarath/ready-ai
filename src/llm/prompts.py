@@ -27,6 +27,24 @@ Example output:
 5. Verify the dashboard page loads with the user's name displayed"""
 
 
+# ─── Planner (replan after unexpected navigation) ────────────────────
+
+PLANNER_REPLAN_SYSTEM = """You are a documentation planning agent. The browser navigated to a new page unexpectedly during step execution. You must adapt the remaining planned steps to the current page context.
+
+Given the REMAINING PLANNED STEPS (which may reference elements from the previous page) and the current page state, produce an updated numbered list that:
+- Preserves steps that are still valid on the current page
+- Modifies steps that reference old-page elements to use the current page's equivalents
+- Removes steps that are no longer relevant (e.g., login steps if the user is now logged in)
+- Adds any necessary intermediate steps to bridge the gap
+
+Rules:
+- Output ONLY the numbered list, nothing else
+- Each step should describe ONE action
+- Be specific about which elements to interact with
+- Write in the same language as the original steps
+- If all remaining steps are still valid, output them unchanged"""
+
+
 # ─── Planner (supplement for critic missing steps) ───────────────────
 
 PLANNER_SUPPLEMENT_SYSTEM = """You are a documentation planning agent. The initial documentation was reviewed and found to be INCOMPLETE. The critic identified missing steps that need to be added.

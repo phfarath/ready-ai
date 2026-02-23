@@ -6,6 +6,7 @@ and Input.dispatchKeyEvent for typing.
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
@@ -108,7 +109,7 @@ class InputDomain:
             # Focus the element first
             await self._conn.send(
                 "Runtime.evaluate",
-                {"expression": f"document.querySelector('{selector}')?.focus()"},
+                {"expression": f"document.querySelector({json.dumps(selector)})?.focus()"},
             )
             await asyncio.sleep(0.1)
 

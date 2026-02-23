@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 
+# JavaScript helper: querySelector that pierces shadow DOM boundaries.
+# Embed with: f"(() => {{ {_PIERCE_JS} const el = pierce(document, {safe_sel}); ... }})()"
+_PIERCE_JS = (
+    "function pierce(root,sel){"
+    "let el;try{el=root.querySelector(sel);}catch(e){}"
+    "if(el)return el;"
+    "for(const n of root.querySelectorAll('*')){"
+    "if(n.shadowRoot){el=pierce(n.shadowRoot,sel);if(el)return el;}}"
+    "return null;}"
+)
+
 
 @dataclass
 class StepResult:
@@ -205,7 +216,11 @@ async def _get_action(
 async def _try_scroll_into_view(selector: str, runtime: RuntimeDomain) -> None:
     """Attempt to scroll an element into view before retrying a click."""
     try:
-        js = f"document.querySelector('{selector}')?.scrollIntoView({{behavior: 'smooth', block: 'center'}})"
+        safe_sel = json.dumps(selector)
+        js = (
+            f"(() => {{ {_PIERCE_JS} "
+            f"pierce(document, {safe_sel})?.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }})()"
+        )
         await runtime.evaluate(js)
         await asyncio.sleep(0.5)
         logger.debug(f"  Scrolled '{selector}' into view for retry")
@@ -260,9 +275,11 @@ async def _dispatch_action(
             success = await input_domain.click(selector)
             if success:
                 return f"Clicked element: {selector}"
-            # Fallback: try JS click
+            # Fallback: try JS click with shadow DOM pierce
+            safe_sel = json.dumps(selector)
             js_result = await runtime.evaluate(
-                f"(() => {{ const el = document.querySelector('{selector}'); "
+                f"(() => {{ {_PIERCE_JS} "
+                f"const el = pierce(document, {safe_sel}); "
                 f"if(el) {{ el.click(); return true; }} return false; }})()"
             )
             if js_result:
@@ -309,8 +326,10 @@ async def _dispatch_action(
 
         elif action_type == "scroll_to":
             selector = action["selector"]
+            safe_sel = json.dumps(selector)
             await runtime.evaluate(
-                f"document.querySelector('{selector}')?.scrollIntoView({{behavior: 'smooth', block: 'center'}})"
+                f"(() => {{ {_PIERCE_JS} "
+                f"pierce(document, {safe_sel})?.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }})()"
             )
             await asyncio.sleep(0.5)
             return f"Scrolled to element: {selector}"

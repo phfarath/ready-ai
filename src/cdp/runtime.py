@@ -64,7 +64,7 @@ class RuntimeDomain:
         result = await self._conn.send(
             "Runtime.evaluate",
             {
-                "expression": f"document.querySelector('{selector}')",
+                "expression": f"document.querySelector({json.dumps(selector)})",
                 "returnByValue": False,
             },
         )
@@ -84,7 +84,7 @@ class RuntimeDomain:
             The element's text content, or empty string if not found
         """
         result = await self.evaluate(
-            f"document.querySelector('{selector}')?.innerText || ''"
+            f"document.querySelector({json.dumps(selector)})?.innerText || ''"
         )
         return str(result) if result else ""
 
@@ -95,9 +95,10 @@ class RuntimeDomain:
 
     async def get_element_attributes(self, selector: str) -> dict:
         """Get all attributes of an element as a dict."""
+        safe_sel = json.dumps(selector)
         js = f"""
         (() => {{
-            const el = document.querySelector('{selector}');
+            const el = document.querySelector({safe_sel});
             if (!el) return null;
             const attrs = {{}};
             for (const attr of el.attributes) {{

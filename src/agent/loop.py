@@ -17,7 +17,7 @@ from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
-from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
+from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_REPLAN_SYSTEM, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
 from . import planner, executor, critic
@@ -64,6 +64,7 @@ class AgenticLoop:
 
         self._chrome_proc = None
         self._conn: Optional[CDPConnection] = None
+        self._last_url: Optional[str] = None
 
     async def run(self) -> str:
         """
@@ -139,8 +140,14 @@ class AgenticLoop:
     ) -> list[executor.StepResult]:
         """Execute a list of steps with verification, screenshots, and annotations."""
         results = []
+        self._last_url = None  # reset at start of each execution pass
 
-        for i, step in enumerate(steps, start_number):
+        step_list = list(steps)
+        step_idx = 0
+        i = start_number
+
+        while step_idx < len(step_list):
+            step = step_list[step_idx]
             logger.info(f"═══ Step {i}: {step}")
 
             # Get fresh DOM state and current URL for context awareness
@@ -148,11 +155,23 @@ class AgenticLoop:
             elements = await runtime.get_interactive_elements()
             current_url = await runtime.evaluate("window.location.href")
 
-            # Log URL drift detection
-            if i > start_number and hasattr(self, '_last_url') and self._last_url != current_url:
+            # URL drift detection with replanning
+            if self._last_url is not None and self._last_url != current_url:
                 logger.warning(
                     f"    ⚠ URL changed between steps: {self._last_url} → {current_url}"
                 )
+                remaining = step_list[step_idx:]
+                replanned = await self._replan_remaining(
+                    remaining, dom_html, elements, current_url, llm
+                )
+                if replanned:
+                    logger.info(
+                        f"    ⟳ Replanned {len(remaining)} remaining steps "
+                        f"→ {len(replanned)} adapted steps"
+                    )
+                    step_list = step_list[:step_idx] + replanned
+                    step = step_list[step_idx]
+
             self._last_url = current_url
 
             # Execute with verification + retries (with URL context)
@@ -169,7 +188,7 @@ class AgenticLoop:
             # Wait for UI to settle
             await asyncio.sleep(0.5)
 
-            # Highlight the interacted element before screenshot (Gap C)
+            # Highlight the interacted element before screenshot
             last_selector = self._extract_selector(result.action_desc)
             if last_selector:
                 await self._highlight_element(runtime, last_selector)
@@ -202,8 +221,49 @@ class AgenticLoop:
             )
 
             results.append(result)
+            step_idx += 1
+            i += 1
 
         return results
+
+    async def _replan_remaining(
+        self,
+        remaining_steps: list[str],
+        dom_html: str,
+        elements: str,
+        current_url: str,
+        llm: LLMClient,
+    ) -> list[str]:
+        """
+        Replan remaining steps after an unexpected URL change.
+
+        Returns adapted step list, or the original list if replanning fails.
+        """
+        remaining_context = "\n".join(f"- {s}" for s in remaining_steps)
+        user_prompt = (
+            f"CURRENT PAGE URL: {current_url}\n\n"
+            f"REMAINING PLANNED STEPS (may reference elements from the previous page):\n"
+            f"{remaining_context}\n\n"
+            f"INTERACTIVE ELEMENTS ON CURRENT PAGE:\n{elements}\n\n"
+            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
+            f"The browser navigated to a new page. Adapt the remaining steps to this "
+            f"page's context. Preserve steps that still apply, modify steps that "
+            f"reference old-page elements, and remove steps that are no longer relevant. "
+            f"Output ONLY the numbered list:"
+        )
+
+        messages = [
+            {"role": "system", "content": PLANNER_REPLAN_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            response = await llm.complete(messages)
+            new_steps = planner._parse_steps(response)
+            return new_steps if new_steps else remaining_steps
+        except Exception as e:
+            logger.warning(f"    Replanning failed: {e}, continuing with original steps")
+            return remaining_steps
 
     async def _critic_loop(
         self,
@@ -500,6 +560,7 @@ class AgenticLoop:
                     el.style.outline = '3px solid #FF0000';
                     el.style.outlineOffset = '2px';
                     el.style.boxShadow = '0 0 0 4px rgba(255, 0, 0, 0.25)';
+                    el.setAttribute('data-browser-auto-highlight', 'true');
                 }})()
             """)
         except Exception:
@@ -507,22 +568,19 @@ class AgenticLoop:
 
     @staticmethod
     async def _clear_highlight(runtime: RuntimeDomain, selector: str = "") -> None:
-        """Remove visual highlight from all previously highlighted elements."""
+        """Remove visual highlight from the previously highlighted element."""
         try:
             await runtime.evaluate("""
                 (() => {
-                    const els = document.querySelectorAll('[data-_prev-outline]');
-                    // Fallback: clear any element with our injected styles
-                    document.querySelectorAll('*').forEach(el => {
-                        if (el.dataset._prevOutline !== undefined) {
-                            el.style.outline = el.dataset._prevOutline;
-                            el.style.outlineOffset = el.dataset._prevOutlineOffset;
-                            el.style.boxShadow = el.dataset._prevBoxShadow;
-                            delete el.dataset._prevOutline;
-                            delete el.dataset._prevOutlineOffset;
-                            delete el.dataset._prevBoxShadow;
-                        }
-                    });
+                    const el = document.querySelector('[data-browser-auto-highlight]');
+                    if (!el) return;
+                    el.style.outline = el.dataset._prevOutline || '';
+                    el.style.outlineOffset = el.dataset._prevOutlineOffset || '';
+                    el.style.boxShadow = el.dataset._prevBoxShadow || '';
+                    el.removeAttribute('data-browser-auto-highlight');
+                    delete el.dataset._prevOutline;
+                    delete el.dataset._prevOutlineOffset;
+                    delete el.dataset._prevBoxShadow;
                 })()
             """)
         except Exception:
