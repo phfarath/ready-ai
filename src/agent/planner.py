@@ -16,15 +16,17 @@ async def plan(
     dom_html: str,
     interactive_elements: str,
     llm: LLMClient,
+    language: str | None = None,
 ) -> list[str]:
     """
     Generate a numbered plan of UI steps to accomplish the documentation goal.
 
     Args:
-        goal: What to document (e.g., "Documentar fluxo de login")
+        goal: What to document (e.g., "Document the login flow")
         dom_html: Current page DOM HTML (truncated for context)
         interactive_elements: JSON list of interactive elements on page
         llm: LLM client instance
+        language: Output language override (e.g. "English", "Portuguese")
 
     Returns:
         List of step strings (without numbering prefix)
@@ -35,6 +37,8 @@ async def plan(
         f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
         f"Create the step-by-step plan:"
     )
+    if language:
+        user_prompt += f"\nIMPORTANT: Write all output in {language}."
 
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM},

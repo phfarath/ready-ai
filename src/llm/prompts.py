@@ -170,7 +170,7 @@ The annotation should:
 - Provide any helpful tips or context
 - Be written as if guiding a new user through the interface
 - Be 2-4 sentences maximum
-- Write in the same language as the GOAL, not the UI text visible in the screenshot
+- {language_instruction}
 
 Goal: {goal}
 Step: {step}

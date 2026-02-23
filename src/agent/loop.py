@@ -50,9 +50,11 @@ class AgenticLoop:
         username: Optional[str] = None,
         password: Optional[str] = None,
         title: Optional[str] = None,
+        language: Optional[str] = None,
     ):
         self.goal = goal
         self.title = title
+        self.language = language
         self.url = url
         self.model = model
         self.annotation_model = annotation_model or model
@@ -85,7 +87,7 @@ class AgenticLoop:
             runtime = RuntimeDomain(self._conn)
             llm = LLMClient(model=self.model)
             annotation_llm = LLMClient(model=self.annotation_model)
-            doc = DocRenderer(goal=self.goal, title=self.title)
+            doc = DocRenderer(goal=self.goal, title=self.title, language=self.language)
 
             # Enable page events
             await page.enable()
@@ -104,7 +106,7 @@ class AgenticLoop:
             logger.info(f"═══ Planning steps for: {self.goal}")
             dom_html = await page.get_dom_html(max_length=4000)
             elements = await runtime.get_interactive_elements()
-            steps = await planner.plan(self.goal, dom_html, elements, llm)
+            steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
 
             if not steps:
                 raise RuntimeError("Planner returned no steps")
@@ -203,8 +205,17 @@ class AgenticLoop:
                 await self._clear_highlight(runtime)
 
             # Annotate via vision LLM (uses annotation_model for cost)
+            language_instruction = (
+                f"Write in {self.language}"
+                if self.language
+                else "Write in the same language as the GOAL, not the UI text visible in the screenshot"
+            )
             annotation = await annotation_llm.complete_with_vision(
-                prompt=ANNOTATOR_PROMPT.format(goal=self.goal, step=step),
+                prompt=ANNOTATOR_PROMPT.format(
+                    language_instruction=language_instruction,
+                    goal=self.goal,
+                    step=step,
+                ),
                 image_b64=screenshot_b64,
             )
 
@@ -253,6 +264,8 @@ class AgenticLoop:
             f"reference old-page elements, and remove steps that are no longer relevant. "
             f"Output ONLY the numbered list:"
         )
+        if self.language:
+            user_prompt += f"\nIMPORTANT: Write all output in {self.language}."
 
         messages = [
             {"role": "system", "content": PLANNER_REPLAN_SYSTEM},
@@ -340,6 +353,8 @@ class AgenticLoop:
             f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
             f"Generate the numbered steps to cover these gaps:"
         )
+        if self.language:
+            supplement_prompt += f"\nIMPORTANT: Write all output in {self.language}."
 
         messages = [
             {"role": "system", "content": PLANNER_SUPPLEMENT_SYSTEM},

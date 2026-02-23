@@ -152,7 +152,7 @@ class TestDocRenderer:
         markdown = doc.render()
 
         assert "# Test Goal" in markdown
-        assert "## Passo 1: Click login button" in markdown
+        assert "## Step 1: Click login button" in markdown
         assert "screenshots/step_01.png" in markdown
         assert "login page" in markdown
         assert "Clicked element: #login-btn" in markdown
@@ -168,6 +168,28 @@ class TestDocRenderer:
                 screenshot_b64="dGVzdA==",
                 annotation=f"Annotation {i + 1}",
             )
+
+        markdown = doc.render()
+        assert "## Index" in markdown
+
+    def test_render_portuguese_labels(self):
+        from src.docs.renderer import DocRenderer
+
+        doc = DocRenderer("Objetivo", language="portuguese")
+        for i in range(5):
+            doc.add_step(i + 1, f"Passo {i + 1}", "dGVzdA==", f"Anotação {i + 1}")
+
+        markdown = doc.render()
+        assert "## Passo 1:" in markdown
+        assert "## Índice" in markdown
+
+    def test_render_language_alias(self):
+        from src.docs.renderer import DocRenderer
+
+        # 2-letter alias "pt" should resolve to Portuguese labels
+        doc = DocRenderer("Goal", language="pt")
+        for i in range(5):
+            doc.add_step(i + 1, f"Step {i + 1}", "dGVzdA==", "Annotation")
 
         markdown = doc.render()
         assert "## Índice" in markdown

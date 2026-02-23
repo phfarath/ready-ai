@@ -80,6 +80,15 @@ Examples:
         help="Document title (defaults to --goal if not set)",
     )
     parser.add_argument(
+        "--language", "-l",
+        default=None,
+        help=(
+            "Output language for generated docs (e.g. 'English', 'Portuguese', 'Spanish', "
+            "'French', 'German', 'Italian'). Controls both LLM-generated text and document "
+            "labels. Also accepts 2-letter codes: en, pt, es, fr, de, it. Defaults to English."
+        ),
+    )
+    parser.add_argument(
         "--model", "-m",
         default="gpt-4o-mini",
         help="LLM model to use (default: gpt-4o-mini). Supports any LiteLLM model.",
@@ -159,6 +168,7 @@ async def async_main() -> None:
         username=args.username,
         password=args.password,
         title=args.title,
+        language=args.language,
     )
 
     try:
