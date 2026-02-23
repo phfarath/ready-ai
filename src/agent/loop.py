@@ -49,8 +49,10 @@ class AgenticLoop:
         cookies_file: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        title: Optional[str] = None,
     ):
         self.goal = goal
+        self.title = title
         self.url = url
         self.model = model
         self.annotation_model = annotation_model or model
@@ -83,7 +85,7 @@ class AgenticLoop:
             runtime = RuntimeDomain(self._conn)
             llm = LLMClient(model=self.model)
             annotation_llm = LLMClient(model=self.annotation_model)
-            doc = DocRenderer(self.goal)
+            doc = DocRenderer(goal=self.goal, title=self.title)
 
             # Enable page events
             await page.enable()
@@ -202,7 +204,7 @@ class AgenticLoop:
 
             # Annotate via vision LLM (uses annotation_model for cost)
             annotation = await annotation_llm.complete_with_vision(
-                prompt=ANNOTATOR_PROMPT.format(step=step),
+                prompt=ANNOTATOR_PROMPT.format(goal=self.goal, step=step),
                 image_b64=screenshot_b64,
             )
 

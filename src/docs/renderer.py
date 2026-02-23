@@ -26,8 +26,9 @@ class DocStep:
 class DocRenderer:
     """Builds markdown documentation from accumulated steps."""
 
-    def __init__(self, goal: str):
+    def __init__(self, goal: str, title: Optional[str] = None):
         self.goal = goal
+        self.title = title
         self.steps: list[DocStep] = []
         self.screenshots: dict[str, str] = {}  # filename → base64 data
         self._critic_notes: list[tuple[str, list[str]]] = []
@@ -70,7 +71,7 @@ class DocRenderer:
         lines = []
 
         # Header
-        lines.append(f"# {self.goal}")
+        lines.append(f"# {self.title or self.goal}")
         lines.append("")
         lines.append(
             f"> Documentação gerada automaticamente em "

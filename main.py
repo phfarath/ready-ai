@@ -75,6 +75,11 @@ Examples:
         help="Target SaaS URL to document",
     )
     parser.add_argument(
+        "--title", "-t",
+        default=None,
+        help="Document title (defaults to --goal if not set)",
+    )
+    parser.add_argument(
         "--model", "-m",
         default="gpt-4o-mini",
         help="LLM model to use (default: gpt-4o-mini). Supports any LiteLLM model.",
@@ -153,6 +158,7 @@ async def async_main() -> None:
         cookies_file=args.cookies_file,
         username=args.username,
         password=args.password,
+        title=args.title,
     )
 
     try:
