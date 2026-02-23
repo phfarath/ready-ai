@@ -97,11 +97,25 @@
 
 ---
 
+# Multilingual Output (v2.4) ✅
+
+## `--language` Flag ✅
+- [x] Add `--language` / `-l` CLI flag (accepts full name or 2-letter ISO code)
+- [x] Add `_LABELS` dict in `renderer.py` with pre-defined labels for English, Portuguese, Spanish, French, German, Italian
+- [x] Add `_LANG_ALIASES` for 2-letter code resolution; unknown languages fall back to English
+- [x] `DocRenderer.__init__` accepts `language=`; resolves labels at construction time
+- [x] `ANNOTATOR_PROMPT`: replace hardcoded language rule with `{language_instruction}` placeholder
+- [x] `loop.py`: compute `language_instruction` as `"Write in {language}"` when set, goal-anchor fallback when not
+- [x] `planner.plan()` accepts `language=`; appends `IMPORTANT: Write all output in {language}` to user prompt
+- [x] `loop.py _replan_remaining` and `_reexecute_missing_steps`: append same language instruction
+- [x] Tests updated to English default; added `test_render_portuguese_labels` and `test_render_language_alias`
+
+---
+
 # Roadmap — Open Items
 
 ## Output Quality
-- [ ] **`--language` flag** — single flag that sets the language for the entire output: renderer labels (`## Step`, `## Index`, `Technical details`), ANNOTATOR_PROMPT instruction, and PLANNER_SYSTEM instruction. Auto-detects from goal if not set. This is the clean fix for all language consistency issues.
-- [ ] Multilingual renderer labels — blocked on `--language` flag above
+- [ ] Configurable output template — allow users to supply a Jinja2/Markdown template for the output format
 - [ ] Configurable output template — allow users to supply a Jinja2/Markdown template for the output format
 - [ ] Better failed-step recovery — skip failed steps rather than embedding `[FAILED]` inline, or provide a `--retry-failed` mode
 

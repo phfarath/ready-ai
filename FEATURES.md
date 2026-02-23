@@ -121,11 +121,21 @@
 --port, -p          Porta de debug do Chrome (default: 9222)
 --headless          Modo headless
 --max-critic-rounds Rodadas máximas do Critic (default: 2)
+--language, -l      Idioma da documentação gerada (ex: English, Portuguese, pt, es, fr, de, it)
 --cookies-file      Arquivo JSON de cookies para autenticação
 --username          Username/email para login automático
 --password          Senha para login automático
 --verbose, -v       Logging detalhado
 ```
+
+## 🌐 Flag `--language` para Documentação Multilíngue (v2.4)
+
+- `--language` / `-l` — flag única que controla o idioma de **toda** a saída:
+  - **Labels do renderer** (`## Step`, `## Index`, `Technical details`, etc.) — via dict `_LABELS` em `renderer.py`
+  - **Texto gerado pelo LLM** (anotações, passos planejados) — via instrução explícita nos prompts
+- Idiomas suportados com labels pré-definidos: **English** (default), **Portuguese**, **Spanish**, **French**, **German**, **Italian**
+- Aceita nome completo (`Portuguese`) ou código ISO-2 (`pt`) — desconhecidos fazem fallback para inglês
+- Sem `--language`, o default é inglês; o idioma do goal ainda ancora as anotações via `{goal}` no `ANNOTATOR_PROMPT`
 
 ## 🔌 Multi-Provider LLM
 

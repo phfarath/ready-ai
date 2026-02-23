@@ -64,6 +64,7 @@ python main.py \
 | `--goal` | `-g` | *required* | Documentation goal — drives the LLM |
 | `--url` | `-u` | *required* | Target SaaS URL |
 | `--title` | `-t` | *(goal)* | Document H1 title (clean heading, independent of goal) |
+| `--language` | `-l` | `English` | Output language — controls both LLM text and document labels (`en`, `pt`, `es`, `fr`, `de`, `it` or full name) |
 | `--model` | `-m` | `gpt-4o-mini` | LiteLLM-compatible model for planning/criticism |
 | `--annotation-model` | | *(model)* | Separate model for screenshot annotations (use a cheaper one) |
 | `--output` | `-o` | `./output` | Output directory |
@@ -86,6 +87,15 @@ python main.py \
   --goal "Document all main features: navigation, pages, and interactive elements after login" \
   --url "https://app.example.com" \
   --title "MyApp — User Guide"
+
+# Portuguese documentation (labels + LLM text)
+python main.py \
+  --goal "Documentar o fluxo de login" \
+  --url "https://app.example.com" \
+  --language "Portuguese"
+
+# 2-letter language code works too
+python main.py --goal "Documentar funcionalidades" --url "https://app.example.com" --language pt
 
 # Cost-optimized: Claude for planning, gpt-4o-mini for annotations
 python main.py \
