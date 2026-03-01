@@ -20,6 +20,59 @@ class InputDomain:
 
     def __init__(self, conn: CDPConnection):
         self._conn = conn
+        
+    async def move_cursor(self, x: float, y: float) -> None:
+        """
+        Inject a visual red dot cursor and move it to (x, y).
+        
+        Args:
+            x: Target X coordinate
+            y: Target Y coordinate
+        """
+        js = f"""
+        (() => {{
+            let cursor = document.getElementById('browser-auto-cursor');
+            if (!cursor) {{
+                cursor = document.createElement('div');
+                cursor.id = 'browser-auto-cursor';
+                cursor.style.position = 'fixed';
+                cursor.style.width = '20px';
+                cursor.style.height = '20px';
+                cursor.style.borderRadius = '50%';
+                cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
+                cursor.style.border = '2px solid rgba(255, 0, 0, 0.8)';
+                cursor.style.pointerEvents = 'none';
+                cursor.style.zIndex = '2147483647'; // Max z-index
+                cursor.style.transform = 'translate(-50%, -50%)';
+                cursor.style.transition = 'left 0.3s ease-out, top 0.3s ease-out, width 0.1s, height 0.1s';
+                document.body.appendChild(cursor);
+            }}
+            cursor.style.left = {x} + 'px';
+            cursor.style.top = {y} + 'px';
+        }})()
+        """
+        await self._conn.send("Runtime.evaluate", {"expression": js})
+        
+    async def show_click_effect(self) -> None:
+        """
+        Animate the cursor to show a click effect.
+        """
+        js = """
+        (() => {
+            let cursor = document.getElementById('browser-auto-cursor');
+            if (cursor) {
+                cursor.style.width = '10px';
+                cursor.style.height = '10px';
+                cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.8)';
+                setTimeout(() => {
+                    cursor.style.width = '20px';
+                    cursor.style.height = '20px';
+                    cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
+                }, 150);
+            }
+        })()
+        """
+        await self._conn.send("Runtime.evaluate", {"expression": js})
 
     async def click(self, selector: str, delay: float = 0.1) -> bool:
         """
@@ -67,6 +120,10 @@ class InputDomain:
 
         logger.info(f"Clicking '{selector}' at ({center_x:.0f}, {center_y:.0f})")
 
+        # Move the visual cursor to the click coordinates
+        await self.move_cursor(center_x, center_y)
+        await asyncio.sleep(0.3)
+
         # Dispatch mouse events
         await self._conn.send(
             "Input.dispatchMouseEvent",
@@ -79,6 +136,8 @@ class InputDomain:
             },
         )
 
+        await self.show_click_effect()
+        
         await asyncio.sleep(delay)
 
         await self._conn.send(
@@ -109,8 +168,36 @@ class InputDomain:
             # Focus the element first
             await self._conn.send(
                 "Runtime.evaluate",
-                {"expression": f"document.querySelector({json.dumps(selector)})?.focus()"},
+                {"expression": f"""(() => {{
+                    const el = document.querySelector({json.dumps(selector)});
+                    if (el) {{
+                        el.focus();
+                        const rect = el.getBoundingClientRect();
+                        const centerX = rect.left + rect.width / 2;
+                        const centerY = rect.top + rect.height / 2;
+                        return {{x: centerX, y: centerY}};
+                    }}
+                    return null;
+                }})()""", "returnByValue": True},
             )
+            
+            # Fetch coordinates to move cursor
+            res = await self._conn.send("Runtime.evaluate", {"expression": f"""
+                (() => {{
+                    const el = document.querySelector({json.dumps(selector)});
+                    if (el) {{
+                        const r = el.getBoundingClientRect();
+                        return {{x: r.left + r.width/2, y: r.top + r.height/2}};
+                    }}
+                    return null;
+                }})()
+            """, "returnByValue": True})
+            
+            if res.get("result", {}).get("value"):
+                coords = res["result"]["value"]
+                await self.move_cursor(coords["x"], coords["y"])
+                await asyncio.sleep(0.2)
+
             await asyncio.sleep(0.1)
 
         logger.info(f"Typing {len(text)} chars")
