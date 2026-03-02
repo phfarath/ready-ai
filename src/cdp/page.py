@@ -133,24 +133,77 @@ class PageDomain:
         """
         await self._conn.send("Page.addScriptToEvaluateOnNewDocument", {"source": cursor_script})
 
-    async def navigate(self, url: str, wait_for_load: bool = True) -> None:
+    async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
         """
-        Navigate to a URL and optionally wait for page load.
+        Navigate to a URL and optionally wait for page load and network idle.
 
         Args:
             url: Target URL
             wait_for_load: Whether to wait for Page.loadEventFired
+            wait_for_network: Whether to wait for network idle (useful for SPAs)
         """
         logger.info(f"Navigating to: {url}")
         await self._conn.send("Page.navigate", {"url": url})
+        
         if wait_for_load:
             try:
                 await self._conn.wait_for_event("Page.loadEventFired", timeout=30.0)
             except TimeoutError:
                 logger.warning("Page load event timed out, continuing anyway")
-            # Extra settle time for dynamic content
+                
+        if wait_for_network:
+            await self.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+        else:
+            # Extra settle time for dynamic content if not waiting for network
             await asyncio.sleep(1.5)
+            
         logger.info("Navigation complete")
+
+    async def wait_for_network_idle(self, timeout: float = 30.0, idle_time: float = 0.5) -> None:
+        """
+        Wait until there are no pending network requests for at least `idle_time` seconds.
+
+        Args:
+            timeout: Maximum time to wait overall.
+            idle_time: How long the network must be completely quiet to be considered idle.
+        """
+        await self._conn.send("Network.enable")
+        deadline = asyncio.get_event_loop().time() + timeout
+        in_flight = set()
+        stashed = []
+        
+        try:
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    logger.warning("Network idle wait timed out (some requests may still be pending)")
+                    break
+                    
+                try:
+                    # Wait for next event up to `idle_time`
+                    event = await asyncio.wait_for(self._conn._events.get(), timeout=idle_time)
+                    method = event.get("method", "")
+                    
+                    if method == "Network.requestWillBeSent":
+                        req_id = event.get("params", {}).get("requestId")
+                        in_flight.add(req_id)
+                    elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+                        req_id = event.get("params", {}).get("requestId")
+                        in_flight.discard(req_id)
+                    else:
+                        # Not a network event we care about for this loop
+                        stashed.append(event)
+                        
+                except asyncio.TimeoutError:
+                    # Timeout means no event was received for `idle_time` seconds
+                    if not in_flight:
+                        logger.debug("Network is idle")
+                        break
+        finally:
+            # Re-queue non-network events so other waiters aren't starved
+            for ev in stashed:
+                await self._conn._events.put(ev)
+
 
     async def screenshot(
         self,

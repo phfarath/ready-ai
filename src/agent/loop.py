@@ -233,8 +233,11 @@ class AgenticLoop:
                 f"(attempts: {result.attempts})"
             )
 
-            # Wait for UI to settle
-            await asyncio.sleep(0.5)
+            # Wait for UI and network to settle
+            try:
+                await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+            except Exception as e:
+                logger.debug(f"Wait for network idle failed/timed out: {e}")
 
             # Highlight the interacted element before screenshot
             last_selector = self._extract_selector(result.action_desc)

@@ -46,6 +46,15 @@ class CDPConnection:
                     self._pending[msg_id].set_result(msg)
                     del self._pending[msg_id]
                 elif "method" in msg:
+                    # Monitor Target auto-attach to heal dead sessions
+                    if msg["method"] == "Target.attachedToTarget":
+                        target_info = msg.get("params", {}).get("targetInfo", {})
+                        if target_info.get("type") == "page":
+                            new_session = msg.get("params", {}).get("sessionId")
+                            if new_session:
+                                logger.debug(f"Auto-attached to new page target: {target_info.get('targetId')}, session: {new_session}")
+                                self._session_id = new_session
+                                
                     # CDP event (e.g., Page.loadEventFired)
                     await self._events.put(msg)
                 else:
@@ -166,12 +175,25 @@ class CDPConnection:
         target_id = page_targets[0]["targetId"]
         logger.info(f"Attaching to page target: {target_id}")
 
+        # Attach to the initial target
         result = await self.send(
             "Target.attachToTarget",
             {"targetId": target_id, "flatten": True},
         )
         self._session_id = result["sessionId"]
         logger.info(f"Attached with sessionId: {self._session_id}")
+        
+        # Turn on auto-attach to handle cross-origin process swaps (healing)
+        await self.send(
+            "Target.setAutoAttach",
+            {
+                "autoAttach": True, 
+                "waitForDebuggerOnStart": False, 
+                "flatten": True
+            },
+        )
+        logger.debug("Enabled Target.setAutoAttach for session resilience")
+        
         return self._session_id
 
     @property
