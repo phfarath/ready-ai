@@ -598,13 +598,15 @@ class AgenticLoop:
 
     @staticmethod
     async def _highlight_element(runtime: RuntimeDomain, selector: str) -> None:
-        """Draw a visual highlight (red border + semi-transparent overlay) on an element."""
+        """Draw a visual highlight (red border + semi-transparent overlay) on an element and inject a static cursor."""
         safe_selector = json.dumps(selector)
         try:
             await runtime.evaluate(f"""
                 (() => {{
                     const el = document.querySelector({safe_selector});
                     if (!el) return;
+                    
+                    // Highlight the element
                     el.dataset._prevOutline = el.style.outline || '';
                     el.dataset._prevOutlineOffset = el.style.outlineOffset || '';
                     el.dataset._prevBoxShadow = el.style.boxShadow || '';
@@ -612,6 +614,30 @@ class AgenticLoop:
                     el.style.outlineOffset = '2px';
                     el.style.boxShadow = '0 0 0 4px rgba(255, 0, 0, 0.25)';
                     el.setAttribute('data-browser-auto-highlight', 'true');
+                    
+                    // Inject a static cursor on top of the element for the screenshot
+                    const rect = el.getBoundingClientRect();
+                    const centerX = rect.left + rect.width / 2;
+                    const centerY = rect.top + rect.height / 2;
+                    
+                    let cursor = document.getElementById('browser-auto-cursor-static');
+                    if (!cursor) {{
+                        cursor = document.createElement('div');
+                        cursor.id = 'browser-auto-cursor-static';
+                        cursor.style.position = 'fixed';
+                        cursor.style.width = '20px';
+                        cursor.style.height = '20px';
+                        cursor.style.borderRadius = '50%';
+                        cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.8)';
+                        cursor.style.border = '2px solid rgba(255, 0, 0, 1)';
+                        cursor.style.pointerEvents = 'none';
+                        cursor.style.zIndex = '2147483647'; // Max z-index
+                        cursor.style.transform = 'translate(-50%, -50%)';
+                        document.body.appendChild(cursor);
+                    }}
+                    cursor.style.left = centerX + 'px';
+                    cursor.style.top = centerY + 'px';
+                    cursor.style.display = 'block';
                 }})()
             """)
         except Exception:
@@ -619,19 +645,25 @@ class AgenticLoop:
 
     @staticmethod
     async def _clear_highlight(runtime: RuntimeDomain, selector: str = "") -> None:
-        """Remove visual highlight from the previously highlighted element."""
+        """Remove visual highlight from the previously highlighted element and hidden static cursor."""
         try:
             await runtime.evaluate("""
                 (() => {
                     const el = document.querySelector('[data-browser-auto-highlight]');
-                    if (!el) return;
-                    el.style.outline = el.dataset._prevOutline || '';
-                    el.style.outlineOffset = el.dataset._prevOutlineOffset || '';
-                    el.style.boxShadow = el.dataset._prevBoxShadow || '';
-                    el.removeAttribute('data-browser-auto-highlight');
-                    delete el.dataset._prevOutline;
-                    delete el.dataset._prevOutlineOffset;
-                    delete el.dataset._prevBoxShadow;
+                    if (el) {
+                        el.style.outline = el.dataset._prevOutline || '';
+                        el.style.outlineOffset = el.dataset._prevOutlineOffset || '';
+                        el.style.boxShadow = el.dataset._prevBoxShadow || '';
+                        el.removeAttribute('data-browser-auto-highlight');
+                        delete el.dataset._prevOutline;
+                        delete el.dataset._prevOutlineOffset;
+                        delete el.dataset._prevBoxShadow;
+                    }
+                    
+                    const cursor = document.getElementById('browser-auto-cursor-static');
+                    if (cursor) {
+                        cursor.style.display = 'none';
+                    }
                 })()
             """)
         except Exception:
