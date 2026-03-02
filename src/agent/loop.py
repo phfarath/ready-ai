@@ -566,6 +566,52 @@ class AgenticLoop:
         """)
 
         if not has_login:
+            # Try to find a navigation link to the login page
+            navigated = await runtime.evaluate("""
+                (() => {
+                    const links = Array.from(document.querySelectorAll('a, button, [role="button"]'));
+                    const loginNode = links.find(el => {
+                        const t = (el.innerText || '').toLowerCase();
+                        const h = (el.getAttribute('href') || '').toLowerCase();
+                        return (
+                            t.includes('log in') || t.includes('login') || t.includes('sign in') || 
+                            t.includes('entrar') || t.includes('acessar') || h.includes('login') || h.includes('signin')
+                        );
+                    });
+                    if (loginNode) {
+                        loginNode.click();
+                        return true;
+                    }
+                    return false;
+                })()
+            """)
+            
+            if navigated:
+                logger.info("    Login link found, navigating to authentication page...")
+                try:
+                    await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+                except Exception:
+                    pass
+                
+                # Check again if form is present
+                has_login = await runtime.evaluate("""
+                    (() => {
+                        const inputs = document.querySelectorAll('input');
+                        let hasE = false, hasP = false;
+                        inputs.forEach(i => {
+                            const ac = (i.getAttribute('autocomplete') || '').toLowerCase();
+                            if (i.type === 'email' || (i.type === 'text' && (
+                                i.name?.includes('email') || i.name?.includes('user') ||
+                                i.placeholder?.toLowerCase().includes('email') || i.placeholder?.toLowerCase().includes('user') ||
+                                ac.includes('email') || ac.includes('username')
+                            ))) hasE = true;
+                            if (i.type === 'password') hasP = true;
+                        });
+                        return hasE && hasP;
+                    })()
+                """)
+
+        if not has_login:
             logger.info("    No login form detected, skipping auth")
             return
 

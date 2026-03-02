@@ -252,6 +252,21 @@ class PageDomain:
         Returns:
             HTML string
         """
+        # Force JS properties (value, checked) to be reflected into HTML attributes
+        # so that React state changes are visible in the outerHTML snapshot.
+        await self._conn.send("Runtime.evaluate", {
+            "expression": """(() => {
+                document.querySelectorAll('input, select, textarea').forEach(el => {
+                    if (el.type === 'checkbox' || el.type === 'radio') {
+                        if (el.checked) el.setAttribute('checked', 'checked');
+                        else el.removeAttribute('checked');
+                    } else if (el.value !== undefined) {
+                        el.setAttribute('value', el.value);
+                    }
+                });
+            })()"""
+        })
+
         doc_result = await self._conn.send("DOM.getDocument", {"depth": -1})
         root_node_id = doc_result["root"]["nodeId"]
 
