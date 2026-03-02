@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+import websockets
 from dataclasses import dataclass
 
 from ..cdp.input import InputDomain
@@ -346,6 +347,9 @@ async def _dispatch_action(
             logger.warning(f"Unknown action type: {action_type}")
             return f"[Unknown action: {action_type}]"
 
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.error("CDP Connection closed mid-action (!)")
+        raise e
     except Exception as e:
         logger.error(f"Action execution error: {e}")
         return f"[Error] {action_type}: {e}"

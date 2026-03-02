@@ -8,6 +8,7 @@ Supports authentication via cookies or credentials, and separate annotation mode
 import asyncio
 import json
 import logging
+import websockets
 from pathlib import Path
 from typing import Optional
 
@@ -117,25 +118,23 @@ class AgenticLoop:
             await self._setup_browser()
 
             # 2. Create domain helpers
-            page = PageDomain(self._conn)
-            input_domain = InputDomain(self._conn)
-            runtime = RuntimeDomain(self._conn)
             llm = LLMClient(model=self.model)
             annotation_llm = LLMClient(model=self.annotation_model)
             doc = DocRenderer(goal=self.goal, title=self.title, language=self.language)
+            self._init_cdp_domains(llm, annotation_llm, doc)
 
             # Enable page events
-            await page.enable()
+            await self.page.enable()
 
             # 3. Inject auth if provided
             if self.cookies_file:
-                await self._inject_cookies(page)
+                await self._inject_cookies(self.page)
             if self.username and self.password:
-                await self._handle_login(page, input_domain, runtime, llm)
+                await self._handle_login(self.page, self.input_domain, self.runtime, llm)
 
             # 4. Navigate to target URL
             logger.info(f"═══ Navigating to: {self.url}")
-            await page.navigate(self.url)
+            await self.page.navigate(self.url)
 
             # Start thinking cursor
             if not self.headless:
@@ -144,8 +143,8 @@ class AgenticLoop:
             # 5. Plan
             logger.info(f"═══ Planning steps for: {self.goal}")
             self._cursor_moving = True
-            dom_html = await page.get_dom_html(max_length=4000)
-            elements = await runtime.get_interactive_elements()
+            dom_html = await self.page.get_dom_html(max_length=4000)
+            elements = await self.runtime.get_interactive_elements()
             steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
             self._cursor_moving = False
 
@@ -154,14 +153,14 @@ class AgenticLoop:
 
             # 6. Execute each step with verification
             step_results = await self._execute_steps(
-                steps, page, input_domain, runtime, llm, annotation_llm, doc
+                steps, self.page, self.input_domain, self.runtime, llm, annotation_llm, doc
             )
 
             # 7. Critic review with re-execution loop
             self._cursor_moving = True
             markdown = doc.render()
             await self._critic_loop(
-                markdown, page, input_domain, runtime, llm, annotation_llm, doc, step_results
+                markdown, self.page, self.input_domain, self.runtime, llm, annotation_llm, doc, step_results
             )
             self._cursor_moving = False
 
@@ -173,6 +172,45 @@ class AgenticLoop:
 
         finally:
             await self._cleanup()
+
+    def _init_cdp_domains(self, llm: LLMClient, annotation_llm: LLMClient, doc: DocRenderer) -> None:
+        """Initialize or re-initialize CDP domains after connection."""
+        self.page = PageDomain(self._conn)
+        self.input_domain = InputDomain(self._conn)
+        self.runtime = RuntimeDomain(self._conn)
+        self.llm = llm
+        self.annotation_llm = annotation_llm
+        self.doc = doc
+
+    async def _recover_browser_session(self) -> None:
+        """
+        Recover from a catastrophic mid-execution browser crash or disconnect.
+        """
+        logger.error("⟲ Browser session completely lost. Attempting state machine recovery...")
+        
+        # 1. Ensure previous stale processes are totally torn down
+        await self._cleanup()
+        
+        # 2. Respawn Browser & Domain Helpers
+        await self._setup_browser()
+        self._init_cdp_domains(self.llm, self.annotation_llm, self.doc)
+        
+        # 3. Enable network and inputs
+        await self.page.enable()
+        
+        # 4. Inject original auth credentials 
+        if self.cookies_file:
+            await self._inject_cookies(self.page)
+        if self.username and self.password:
+            # We don't have LLM context easily handy for a brand new login loop if it's strictly required,
+            # but usually session cookies via inject_cookies suffice. Re-running formal login is riskier.
+            logger.warning("Recovery: Skipping full LLM-driven login; relying on surviving cached cookies.")
+
+        # 5. Bring user exactly where the agent blew up
+        resume_url = self._last_url or self.url
+        logger.info(f"⟲ State recovery navigating back to: {resume_url}")
+        await self.page.navigate(resume_url, wait_for_network=True)
+        logger.info("⟲ State recovery complete. Re-attempting step.")
 
     async def _execute_steps(
         self,
@@ -192,99 +230,116 @@ class AgenticLoop:
         step_list = list(steps)
         step_idx = 0
         i = start_number
+        crashes = 0
+        MAX_CRASHES = 3
 
         while step_idx < len(step_list):
-            step = step_list[step_idx]
-            logger.info(f"═══ Step {i}: {step}")
-
-            # Get fresh DOM state and current URL for context awareness
-            dom_html = await page.get_dom_html(max_length=4000)
-            elements = await runtime.get_interactive_elements()
-            current_url = await runtime.evaluate("window.location.href")
-
-            # URL drift detection with replanning
-            if self._last_url is not None and self._last_url != current_url:
-                logger.warning(
-                    f"    ⚠ URL changed between steps: {self._last_url} → {current_url}"
-                )
-                remaining = step_list[step_idx:]
-                replanned = await self._replan_remaining(
-                    remaining, dom_html, elements, current_url, llm
-                )
-                if replanned:
-                    logger.info(
-                        f"    ⟳ Replanned {len(remaining)} remaining steps "
-                        f"→ {len(replanned)} adapted steps"
-                    )
-                    step_list = step_list[:step_idx] + replanned
-                    step = step_list[step_idx]
-
-            self._last_url = current_url
-            self._cursor_moving = False
-
-            # Execute with verification + retries (with URL context)
-            result = await executor.execute_step(
-                step, dom_html, elements, llm, page, input_domain, runtime,
-                current_url=current_url,
-            )
-
-            logger.info(
-                f"    {'✓' if result.success else '✗'} {result.action_desc} "
-                f"(attempts: {result.attempts})"
-            )
-
-            # Wait for UI and network to settle
             try:
-                await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
-            except Exception as e:
-                logger.debug(f"Wait for network idle failed/timed out: {e}")
+                step = step_list[step_idx]
+                logger.info(f"═══ Step {i}: {step}")
 
-            # Highlight the interacted element before screenshot
-            last_selector = self._extract_selector(result.action_desc)
-            if last_selector:
-                await self._highlight_element(runtime, last_selector)
+                # Get fresh DOM state and current URL for context awareness
+                dom_html = await page.get_dom_html(max_length=4000)
+                elements = await runtime.get_interactive_elements()
+                current_url = await runtime.evaluate("window.location.href")
 
-            # Screenshot
-            screenshot_b64 = await page.screenshot()
+                # URL drift detection with replanning
+                if self._last_url is not None and self._last_url != current_url:
+                    logger.warning(
+                        f"    ⚠ URL changed between steps: {self._last_url} → {current_url}"
+                    )
+                    remaining = step_list[step_idx:]
+                    replanned = await self._replan_remaining(
+                        remaining, dom_html, elements, current_url, llm
+                    )
+                    if replanned:
+                        logger.info(
+                            f"    ⟳ Replanned {len(remaining)} remaining steps "
+                            f"→ {len(replanned)} adapted steps"
+                        )
+                        step_list = step_list[:step_idx] + replanned
+                        step = step_list[step_idx]
 
-            # Clear highlight after screenshot
-            if last_selector:
-                await self._clear_highlight(runtime)
+                self._last_url = current_url
+                self._cursor_moving = False
 
-            # Annotate via vision LLM (uses annotation_model for cost)
-            language_instruction = (
-                f"Write in {self.language}"
-                if self.language
-                else "Write in the same language as the GOAL, not the UI text visible in the screenshot"
-            )
-            annotation = await annotation_llm.complete_with_vision(
-                prompt=ANNOTATOR_PROMPT.format(
-                    language_instruction=language_instruction,
-                    goal=self.goal,
-                    step=step,
-                ),
-                image_b64=screenshot_b64,
-            )
+                # Execute with verification + retries (with URL context)
+                result = await executor.execute_step(
+                    step, dom_html, elements, llm, page, input_domain, runtime,
+                    current_url=current_url,
+                )
 
-            # Mark failed steps in the doc
-            title = step if result.success else f"[FAILED] {step}"
-            action_desc = result.action_desc
-            if result.failure_reason:
-                action_desc += f"\n\n**Failure details:** {result.failure_reason}"
+                logger.info(
+                    f"    {'✓' if result.success else '✗'} {result.action_desc} "
+                    f"(attempts: {result.attempts})"
+                )
 
-            doc.add_step(
-                step_number=i,
-                title=title,
-                screenshot_b64=screenshot_b64,
-                annotation=annotation,
-                action_description=action_desc,
-            )
+                # Wait for UI and network to settle
+                try:
+                    await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+                except Exception as e:
+                    logger.debug(f"Wait for network idle failed/timed out: {e}")
 
-            results.append(result)
-            step_idx += 1
-            i += 1
-            
-            self._cursor_moving = True
+                # Highlight the interacted element before screenshot
+                last_selector = self._extract_selector(result.action_desc)
+                if last_selector:
+                    await self._highlight_element(runtime, last_selector)
+
+                # Screenshot
+                screenshot_b64 = await page.screenshot()
+
+                # Clear highlight after screenshot
+                if last_selector:
+                    await self._clear_highlight(runtime)
+
+                # Annotate via vision LLM (uses annotation_model for cost)
+                language_instruction = (
+                    f"Write in {self.language}"
+                    if self.language
+                    else "Write in the same language as the GOAL, not the UI text visible in the screenshot"
+                )
+                annotation = await annotation_llm.complete_with_vision(
+                    prompt=ANNOTATOR_PROMPT.format(
+                        language_instruction=language_instruction,
+                        goal=self.goal,
+                        step=step,
+                    ),
+                    image_b64=screenshot_b64,
+                )
+
+                # Mark failed steps in the doc
+                title = step if result.success else f"[FAILED] {step}"
+                action_desc = result.action_desc
+                if result.failure_reason:
+                    action_desc += f"\n\n**Failure details:** {result.failure_reason}"
+
+                doc.add_step(
+                    step_number=i,
+                    title=title,
+                    screenshot_b64=screenshot_b64,
+                    annotation=annotation,
+                    action_description=action_desc,
+                )
+
+                results.append(result)
+                step_idx += 1
+                i += 1
+                
+                self._cursor_moving = True
+                
+            except websockets.exceptions.ConnectionClosed:
+                crashes += 1
+                if crashes > MAX_CRASHES:
+                    logger.error(f"Exceeded maximum global crashes ({MAX_CRASHES}). Aborting pipeline.")
+                    raise
+                
+                # Initiate State Machine Crash Recovery
+                await self._recover_browser_session()
+                # Re-sync local loop variables to the newly recovered globals
+                page = self.page
+                input_domain = self.input_domain
+                runtime = self.runtime
+                # Loop will naturally restart at the exact same step_idx where it failed!
 
         return results
 
