@@ -44,16 +44,16 @@ class PageDomain:
                     border.style.pointerEvents = 'none';
                     border.style.zIndex = '2147483646'; // Max z-index - 1
                     
-                    // Black and yellow glowing border
-                    border.style.boxShadow = 'inset 0 0 15px 5px rgba(255, 215, 0, 0.6), inset 0 0 3px 1px rgba(0, 0, 0, 0.8)';
-                    border.style.animation = 'browser-auto-pulse 2.5s infinite alternate';
+                    // Black and yellow pixelated glowing border
+                    border.style.boxShadow = 'inset 0 0 0 6px rgba(255, 215, 0, 0.6), inset 0 0 0 10px rgba(0, 0, 0, 0.8)';
+                    border.style.animation = 'browser-auto-pulse 0.8s steps(3, end) infinite alternate';
                     
                     // Add keyframes for border pulse and ripple effect
                     const style = document.createElement('style');
                     style.textContent = `
                         @keyframes browser-auto-pulse {
-                            0% { box-shadow: inset 0 0 15px 5px rgba(255, 215, 0, 0.3), inset 0 0 3px 1px rgba(0, 0, 0, 0.5); }
-                            100% { box-shadow: inset 0 0 25px 8px rgba(255, 215, 0, 0.8), inset 0 0 5px 2px rgba(0, 0, 0, 0.9); }
+                            0% { box-shadow: inset 0 0 0 4px rgba(255, 215, 0, 0.4), inset 0 0 0 8px rgba(0, 0, 0, 0.6); }
+                            100% { box-shadow: inset 0 0 0 10px rgba(255, 215, 0, 0.9), inset 0 0 0 14px rgba(0, 0, 0, 0.9); }
                         }
                         @keyframes browser-auto-ripple {
                             0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
