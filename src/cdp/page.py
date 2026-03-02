@@ -21,9 +21,67 @@ class PageDomain:
         self._conn = conn
 
     async def enable(self) -> None:
-        """Enable Page domain events (required for loadEventFired etc.)."""
+        """Enable Page domain events (required for loadEventFired etc.) and universal cursor."""
         await self._conn.send("Page.enable")
         await self._conn.send("DOM.enable")
+        
+        # Inject universal active cursor on every new document load
+        cursor_script = """
+            (() => {
+                if (window.__browserAutoCursorMove) return;
+                
+                let cursor = null;
+                
+                const initCursor = () => {
+                    if (document.getElementById('browser-auto-cursor-global')) return;
+                    
+                    cursor = document.createElement('div');
+                    cursor.id = 'browser-auto-cursor-global';
+                    cursor.style.position = 'fixed';
+                    cursor.style.width = '20px';
+                    cursor.style.height = '20px';
+                    cursor.style.borderRadius = '50%';
+                    cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.6)';
+                    cursor.style.border = '2px solid rgba(255, 0, 0, 1)';
+                    cursor.style.pointerEvents = 'none';
+                    cursor.style.zIndex = '2147483647';
+                    cursor.style.transform = 'translate(-50%, -50%)';
+                    cursor.style.transition = 'left 0.3s ease-out, top 0.3s ease-out, transform 0.1s ease-out, background-color 0.1s ease-out';
+                    
+                    // Default starting position
+                    cursor.style.left = '50%';
+                    cursor.style.top = '50%';
+                    
+                    document.documentElement.appendChild(cursor);
+                };
+                
+                // Initialize as soon as possible, or fallback to DOMContentLoaded
+                if (document.body || document.documentElement) {
+                    initCursor();
+                } else {
+                    document.addEventListener('DOMContentLoaded', initCursor);
+                }
+                
+                window.__browserAutoCursorMove = (x, y) => {
+                    if (!cursor && document.documentElement) initCursor();
+                    if (cursor) {
+                        cursor.style.left = x + 'px';
+                        cursor.style.top = y + 'px';
+                    }
+                };
+                
+                window.__browserAutoCursorClickEffect = () => {
+                    if (!cursor) return;
+                    cursor.style.transform = 'translate(-50%, -50%) scale(1.5)';
+                    cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.9)';
+                    setTimeout(() => {
+                        cursor.style.transform = 'translate(-50%, -50%) scale(1)';
+                        cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.6)';
+                    }, 150);
+                };
+            })();
+        """
+        await self._conn.send("Page.addScriptToEvaluateOnNewDocument", {"source": cursor_script})
 
     async def navigate(self, url: str, wait_for_load: bool = True) -> None:
         """

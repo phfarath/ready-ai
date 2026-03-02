@@ -30,26 +30,9 @@ class InputDomain:
             y: Target Y coordinate
         """
         js = f"""
-        (() => {{
-            let cursor = document.getElementById('browser-auto-cursor');
-            if (!cursor) {{
-                cursor = document.createElement('div');
-                cursor.id = 'browser-auto-cursor';
-                cursor.style.position = 'fixed';
-                cursor.style.width = '20px';
-                cursor.style.height = '20px';
-                cursor.style.borderRadius = '50%';
-                cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
-                cursor.style.border = '2px solid rgba(255, 0, 0, 0.8)';
-                cursor.style.pointerEvents = 'none';
-                cursor.style.zIndex = '2147483647'; // Max z-index
-                cursor.style.transform = 'translate(-50%, -50%)';
-                cursor.style.transition = 'left 0.3s ease-out, top 0.3s ease-out, width 0.1s, height 0.1s';
-                document.body.appendChild(cursor);
-            }}
-            cursor.style.left = {x} + 'px';
-            cursor.style.top = {y} + 'px';
-        }})()
+        if (window.__browserAutoCursorMove) {{
+            window.__browserAutoCursorMove({x}, {y});
+        }}
         """
         await self._conn.send("Runtime.evaluate", {"expression": js})
         
@@ -58,19 +41,9 @@ class InputDomain:
         Animate the cursor to show a click effect.
         """
         js = """
-        (() => {
-            let cursor = document.getElementById('browser-auto-cursor');
-            if (cursor) {
-                cursor.style.width = '10px';
-                cursor.style.height = '10px';
-                cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.8)';
-                setTimeout(() => {
-                    cursor.style.width = '20px';
-                    cursor.style.height = '20px';
-                    cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
-                }, 150);
-            }
-        })()
+        if (window.__browserAutoCursorClickEffect) {
+            window.__browserAutoCursorClickEffect();
+        }
         """
         await self._conn.send("Runtime.evaluate", {"expression": js})
 

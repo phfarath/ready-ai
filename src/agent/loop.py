@@ -69,6 +69,41 @@ class AgenticLoop:
         self._chrome_proc = None
         self._conn: Optional[CDPConnection] = None
         self._last_url: Optional[str] = None
+        self._cursor_task: Optional[asyncio.Task] = None
+        self._cursor_moving = False
+        
+    async def _thinking_cursor_loop(self) -> None:
+        """Background task that slightly moves the cursor simulating 'thinking'."""
+        import random
+        # Start at center
+        curr_x, curr_y = 500, 500
+        while True:
+            try:
+                await asyncio.sleep(random.uniform(1.0, 3.0))
+                if not self._cursor_moving or not self._conn:
+                    continue
+                
+                # Move occasionally
+                curr_x += random.randint(-40, 40)
+                curr_y += random.randint(-40, 40)
+                
+                # Keep within bounds (approximate)
+                curr_x = max(10, min(1000, curr_x))
+                curr_y = max(10, min(1000, curr_y))
+                
+                if self._conn:
+                    # Ignore errors if page is navigating
+                    try:
+                        await self._conn.send(
+                            "Runtime.evaluate", 
+                            {"expression": f"if (window.__browserAutoCursorMove) window.__browserAutoCursorMove({curr_x}, {curr_y})"}
+                        )
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Cursor loop error: {e}")
 
     async def run(self) -> str:
         """
@@ -102,11 +137,17 @@ class AgenticLoop:
             logger.info(f"═══ Navigating to: {self.url}")
             await page.navigate(self.url)
 
+            # Start thinking cursor
+            if not self.headless:
+                self._cursor_task = asyncio.create_task(self._thinking_cursor_loop())
+
             # 5. Plan
             logger.info(f"═══ Planning steps for: {self.goal}")
+            self._cursor_moving = True
             dom_html = await page.get_dom_html(max_length=4000)
             elements = await runtime.get_interactive_elements()
             steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
+            self._cursor_moving = False
 
             if not steps:
                 raise RuntimeError("Planner returned no steps")
@@ -117,10 +158,12 @@ class AgenticLoop:
             )
 
             # 7. Critic review with re-execution loop
+            self._cursor_moving = True
             markdown = doc.render()
             await self._critic_loop(
                 markdown, page, input_domain, runtime, llm, annotation_llm, doc, step_results
             )
+            self._cursor_moving = False
 
             # 8. Save output
             markdown = doc.render()
@@ -177,6 +220,7 @@ class AgenticLoop:
                     step = step_list[step_idx]
 
             self._last_url = current_url
+            self._cursor_moving = False
 
             # Execute with verification + retries (with URL context)
             result = await executor.execute_step(
@@ -236,6 +280,8 @@ class AgenticLoop:
             results.append(result)
             step_idx += 1
             i += 1
+            
+            self._cursor_moving = True
 
         return results
 
@@ -273,10 +319,13 @@ class AgenticLoop:
         ]
 
         try:
+            self._cursor_moving = True
             response = await llm.complete(messages)
+            self._cursor_moving = False
             new_steps = planner._parse_steps(response)
             return new_steps if new_steps else remaining_steps
         except Exception as e:
+            self._cursor_moving = False
             logger.warning(f"    Replanning failed: {e}, continuing with original steps")
             return remaining_steps
 
@@ -320,10 +369,12 @@ class AgenticLoop:
                 )
                 step_results.extend(new_results)
                 markdown = doc.render()
+                self._cursor_moving = True # Resume moving while reviewing next round
             else:
                 # No missing steps, but not approved — add notes and move on
                 doc.add_critic_notes(feedback.feedback, feedback.suggestions)
                 markdown = doc.render()
+                self._cursor_moving = True
 
     async def _reexecute_missing_steps(
         self,
@@ -566,6 +617,14 @@ class AgenticLoop:
 
     async def _cleanup(self) -> None:
         """Close connections and kill Chrome process."""
+        self._cursor_moving = False
+        if self._cursor_task:
+            self._cursor_task.cancel()
+            try:
+                await self._cursor_task
+            except asyncio.CancelledError:
+                pass
+                
         if self._conn:
             try:
                 await self._conn.close()
@@ -598,7 +657,7 @@ class AgenticLoop:
 
     @staticmethod
     async def _highlight_element(runtime: RuntimeDomain, selector: str) -> None:
-        """Draw a visual highlight (red border + semi-transparent overlay) on an element and inject a static cursor."""
+        """Draw a visual highlight (red border + semi-transparent overlay) on an element and move the global cursor to it."""
         safe_selector = json.dumps(selector)
         try:
             await runtime.evaluate(f"""
@@ -615,29 +674,13 @@ class AgenticLoop:
                     el.style.boxShadow = '0 0 0 4px rgba(255, 0, 0, 0.25)';
                     el.setAttribute('data-browser-auto-highlight', 'true');
                     
-                    // Inject a static cursor on top of the element for the screenshot
-                    const rect = el.getBoundingClientRect();
-                    const centerX = rect.left + rect.width / 2;
-                    const centerY = rect.top + rect.height / 2;
-                    
-                    let cursor = document.getElementById('browser-auto-cursor-static');
-                    if (!cursor) {{
-                        cursor = document.createElement('div');
-                        cursor.id = 'browser-auto-cursor-static';
-                        cursor.style.position = 'fixed';
-                        cursor.style.width = '20px';
-                        cursor.style.height = '20px';
-                        cursor.style.borderRadius = '50%';
-                        cursor.style.backgroundColor = 'rgba(255, 0, 0, 0.8)';
-                        cursor.style.border = '2px solid rgba(255, 0, 0, 1)';
-                        cursor.style.pointerEvents = 'none';
-                        cursor.style.zIndex = '2147483647'; // Max z-index
-                        cursor.style.transform = 'translate(-50%, -50%)';
-                        document.body.appendChild(cursor);
+                    // Move the global cursor to the element for the screenshot
+                    if (window.__browserAutoCursorMove) {{
+                        const rect = el.getBoundingClientRect();
+                        const centerX = rect.left + rect.width / 2;
+                        const centerY = rect.top + rect.height / 2;
+                        window.__browserAutoCursorMove(centerX, centerY);
                     }}
-                    cursor.style.left = centerX + 'px';
-                    cursor.style.top = centerY + 'px';
-                    cursor.style.display = 'block';
                 }})()
             """)
         except Exception:
@@ -645,7 +688,7 @@ class AgenticLoop:
 
     @staticmethod
     async def _clear_highlight(runtime: RuntimeDomain, selector: str = "") -> None:
-        """Remove visual highlight from the previously highlighted element and hidden static cursor."""
+        """Remove visual highlight from the previously highlighted element."""
         try:
             await runtime.evaluate("""
                 (() => {
@@ -658,11 +701,6 @@ class AgenticLoop:
                         delete el.dataset._prevOutline;
                         delete el.dataset._prevOutlineOffset;
                         delete el.dataset._prevBoxShadow;
-                    }
-                    
-                    const cursor = document.getElementById('browser-auto-cursor-static');
-                    if (cursor) {
-                        cursor.style.display = 'none';
                     }
                 })()
             """)
