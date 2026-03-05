@@ -6,10 +6,8 @@ Uses raw CDP (Chrome DevTools Protocol) + LLM to navigate SaaS UIs,
 capture screenshots, and generate annotated Markdown documentation.
 
 Usage:
-    python main.py --goal "Documentar fluxo de login" \
-                   --url "https://app.example.com" \
-                   --model "gpt-4o-mini" \
-                   --output "./output"
+    python main.py run --goal "Documentar fluxo de login" --url "https://app.example.com"
+    python main.py api --port 8000
 """
 
 import argparse
@@ -48,113 +46,41 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="🤖 Agentic browser automation for SaaS documentation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Document a login flow
-  python main.py --goal "Documentar fluxo de login" --url "https://app.example.com"
-  
-  # Use Claude for planning, cheap model for annotations  
-  python main.py --goal "Document sign-up" --url "https://app.com" --model "claude-sonnet-4-20250514" --annotation-model "gpt-4o-mini"
-  
-  # With authentication via cookies
-  python main.py --goal "Document dashboard" --url "https://app.com" --cookies-file ./cookies.json
-  
-  # With username/password login
-  python main.py --goal "Document settings" --url "https://app.com" --username user@email.com --password mysecret
-        """,
     )
+    
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Sub-commands")
+    
+    # --- RUN Command ---
+    run_parser = subparsers.add_parser("run", help="Run the documentation agent locally")
+    
+    run_parser.add_argument("--goal", "-g", required=True, help="Documentation goal")
+    run_parser.add_argument("--url", "-u", required=True, help="Target SaaS URL")
+    run_parser.add_argument("--title", "-t", default=None, help="Document title")
+    run_parser.add_argument("--language", "-l", default=None, help="Output language")
+    run_parser.add_argument("--model", "-m", default="gpt-4o-mini", help="LLM model (default: gpt-4o-mini)")
+    run_parser.add_argument("--output", "-o", default="./output", help="Output directory")
+    run_parser.add_argument("--port", "-p", type=int, default=9222, help="Chrome debugging port")
+    run_parser.add_argument("--headless", action="store_true", help="Run headless")
+    run_parser.add_argument("--max-critic-rounds", type=int, default=2, help="Max critic rounds")
+    run_parser.add_argument("--annotation-model", default=None, help="Specific model for vision")
+    run_parser.add_argument("--cookies-file", default=None, help="JSON cookies file")
+    run_parser.add_argument("--username", default=None, help="Username for auto-login")
+    run_parser.add_argument("--password", default=None, help="Password for auto-login")
+    run_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
-    parser.add_argument(
-        "--goal", "-g",
-        required=True,
-        help="Documentation goal (e.g., 'Documentar fluxo de login')",
-    )
-    parser.add_argument(
-        "--url", "-u",
-        required=True,
-        help="Target SaaS URL to document",
-    )
-    parser.add_argument(
-        "--title", "-t",
-        default=None,
-        help="Document title (defaults to --goal if not set)",
-    )
-    parser.add_argument(
-        "--language", "-l",
-        default=None,
-        help=(
-            "Output language for generated docs (e.g. 'English', 'Portuguese', 'Spanish', "
-            "'French', 'German', 'Italian'). Controls both LLM-generated text and document "
-            "labels. Also accepts 2-letter codes: en, pt, es, fr, de, it. Defaults to English."
-        ),
-    )
-    parser.add_argument(
-        "--model", "-m",
-        default="gpt-4o-mini",
-        help="LLM model to use (default: gpt-4o-mini). Supports any LiteLLM model.",
-    )
-    parser.add_argument(
-        "--output", "-o",
-        default="./output",
-        help="Output directory for generated docs (default: ./output)",
-    )
-    parser.add_argument(
-        "--port", "-p",
-        type=int,
-        default=9222,
-        help="Chrome remote debugging port (default: 9222)",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run Chrome in headless mode",
-    )
-    parser.add_argument(
-        "--max-critic-rounds",
-        type=int,
-        default=2,
-        help="Maximum critic review rounds (default: 2)",
-    )
-    parser.add_argument(
-        "--annotation-model",
-        default=None,
-        help="Separate LLM model for screenshot annotations (default: same as --model). Use a cheaper model to reduce cost.",
-    )
-    parser.add_argument(
-        "--cookies-file",
-        default=None,
-        help="Path to a JSON cookies file for session auth (e.g., exported via EditThisCookie)",
-    )
-    parser.add_argument(
-        "--username",
-        default=None,
-        help="Username/email for auto-login",
-    )
-    parser.add_argument(
-        "--password",
-        default=None,
-        help="Password for auto-login",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose debug logging",
-    )
+    # --- API Command ---
+    api_parser = subparsers.add_parser("api", help="Start the FastAPI server")
+    api_parser.add_argument("--port", "-p", type=int, default=8000, help="API server port")
+    api_parser.add_argument("--host", default="0.0.0.0", help="API server host")
+    api_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
     return parser.parse_args()
 
 
-async def async_main() -> None:
-    args = parse_args()
-    setup_logging(args.verbose)
-
+async def async_main_run(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
-    logger.info("🚀 browser-auto — Agentic SaaS Documentation Generator")
-    logger.info(f"   Goal:  {args.goal}")
-    logger.info(f"   URL:   {args.url}")
-    logger.info(f"   Model: {args.model}")
-    logger.info(f"   Output: {args.output}")
-
+    logger.info("🚀 browser-auto — Local CLI Run")
+    
     loop = AgenticLoop(
         goal=args.goal,
         url=args.url,
@@ -184,7 +110,15 @@ async def async_main() -> None:
 
 def cli():
     """Entry point for pyproject.toml scripts."""
-    asyncio.run(async_main())
+    args = parse_args()
+    setup_logging(args.verbose)
+    
+    if args.command == "run":
+        asyncio.run(async_main_run(args))
+    elif args.command == "api":
+        import uvicorn
+        logging.getLogger("main").info("🚀 Starting FastAPI Server on port %s", args.port)
+        uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
 
 
 if __name__ == "__main__":

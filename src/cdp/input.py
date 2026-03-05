@@ -95,7 +95,7 @@ class InputDomain:
 
         # Move the visual cursor to the click coordinates
         await self.move_cursor(center_x, center_y)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.1)  # small delay for cursor animation
 
         # Dispatch mouse events
         await self._conn.send(
@@ -169,9 +169,9 @@ class InputDomain:
             if res.get("result", {}).get("value"):
                 coords = res["result"]["value"]
                 await self.move_cursor(coords["x"], coords["y"])
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)  # small delay for cursor animation
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)  # give focus time to settle
 
         logger.info(f"Typing {len(text)} chars")
 
@@ -238,4 +238,4 @@ class InputDomain:
                 "deltaY": delta_y,
             },
         )
-        await asyncio.sleep(0.3)  # Let scroll settle
+        await asyncio.sleep(0.1)  # Let scroll settle briefly

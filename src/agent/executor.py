@@ -111,7 +111,10 @@ async def execute_step(
             )
 
         # Wait for UI to settle
-        await asyncio.sleep(1.0)
+        try:
+            await page.wait_for_network_idle(timeout=5.0, idle_time=0.2)
+        except Exception:
+            await asyncio.sleep(0.5)  # generic fallback
 
         # Capture DOM state AFTER action
         text_after = await runtime.get_visible_text()
@@ -223,7 +226,7 @@ async def _try_scroll_into_view(selector: str, runtime: RuntimeDomain) -> None:
             f"pierce(document, {safe_sel})?.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }})()"
         )
         await runtime.evaluate(js)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)  # tiny delay for UI to paint
         logger.debug(f"  Scrolled '{selector}' into view for retry")
     except Exception:
         pass
@@ -332,7 +335,7 @@ async def _dispatch_action(
                 f"(() => {{ {_PIERCE_JS} "
                 f"pierce(document, {safe_sel})?.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }})()"
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)  # tiny delay for UI to paint
             return f"Scrolled to element: {selector}"
 
         elif action_type == "wait":

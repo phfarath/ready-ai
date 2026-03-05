@@ -1,0 +1,69 @@
+"""
+FastAPI Server Endpoints for browser-auto.
+Starts the server and exposes runs/ endpoints.
+"""
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pathlib import Path
+import shutil
+import os
+
+from src.api.models import RunRequest, RunStatusResponse
+from src.api.manager import RunManager
+
+app = FastAPI(
+    title="browser-auto API",
+    description="Agentic browser automation for seamless documentation generation.",
+    version="0.1.0",
+)
+
+@app.post("/runs", response_model=RunStatusResponse)
+async def create_run(req: RunRequest):
+    """Trigger a new documentation run."""
+    run_id = RunManager.start_run(req)
+    status = RunManager.get_status(run_id)
+    if not status:
+        raise HTTPException(status_code=500, detail="Failed to initialize run state.")
+    return status
+
+@app.get("/runs/{run_id}", response_model=RunStatusResponse)
+async def get_run_status(run_id: str):
+    """Poll the status of a specific run."""
+    status = RunManager.get_status(run_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return status
+
+@app.get("/runs/{run_id}/output")
+async def get_run_output(run_id: str):
+    """
+    Retrieve the finished markdown and screenshots as a ZIP file.
+    Assumes `AgenticLoop` wrote `docs.md` and `screenshots/` to `./output/<run_id>/`
+    """
+    # For now, AgenticLoop just drops into output_dir. In a multi-tenant world,
+    # we would override output_dir to be `output/{run_id}`.
+    # We will zip the default output_dir for demonstration, but assume 
+    # the run manager sets the correct output_dir per run in a real system.
+    output_dir = Path("./output")  # Should be mapped to run-specific dir in AgenticLoop
+    
+    if not output_dir.exists():
+        raise HTTPException(status_code=404, detail="Output directory not found.")
+        
+    zip_path = Path(f"./output_{run_id}.zip")
+    
+    # Create zip archive of the output directory
+    shutil.make_archive(
+        base_name=str(zip_path.with_suffix('')), 
+        format='zip', 
+        root_dir=output_dir
+    )
+    
+    if not zip_path.exists():
+        raise HTTPException(status_code=500, detail="Failed to generate ZIP archive.")
+        
+    return FileResponse(
+        path=zip_path, 
+        media_type="application/zip", 
+        filename=f"browser_docs_{run_id}.zip"
+    )

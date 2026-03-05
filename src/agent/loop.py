@@ -22,6 +22,7 @@ from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_REPLAN_SYSTEM, PLANNER_SUPPL
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
 from . import planner, executor, critic
+from .state import RunState, DocStepState
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,11 @@ class AgenticLoop:
         password: Optional[str] = None,
         title: Optional[str] = None,
         language: Optional[str] = None,
+        run_id: str = "local_run",
+        resume_from: Optional[str] = None,
     ):
+        self.run_id = run_id
+        self.resume_from = resume_from
         self.goal = goal
         self.title = title
         self.language = language
@@ -73,6 +78,43 @@ class AgenticLoop:
         self._cursor_task: Optional[asyncio.Task] = None
         self._cursor_moving = False
         
+        # Checkpointing state
+        self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
+        
+        if self.resume_from and Path(self.resume_from).exists():
+            self._state = RunState.from_file(self.resume_from)
+            if self._state:
+                logger.info(f"Resuming run '{self._state.run_id}' from state file {self.resume_from}")
+            else:
+                self._state = RunState(run_id=self.run_id, goal=self.goal, url=self.url)
+        else:
+            self._state = RunState(run_id=self.run_id, goal=self.goal, url=self.url)
+            
+    def _save_checkpoint(self, status: Optional[str] = None) -> None:
+        """Write current execution state to disk."""
+        if status:
+            self._state.status = status
+            
+        # Update URL
+        if self._last_url:
+            self._state.last_known_url = self._last_url
+            
+        # Serialize document steps
+        if getattr(self, 'doc', None):
+            self._state.doc_steps = [
+                DocStepState(
+                    number=s.step_number,
+                    title=s.title,
+                    action_description=s.action_description,
+                    annotation=s.annotation,
+                    screenshot_path=f"step_{s.step_number:02d}.png",
+                ) for s in self.doc.steps
+            ]
+            
+        # Write to disk
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state.to_file(self._state_path)
+
     async def _thinking_cursor_loop(self) -> None:
         """Background task that slightly moves the cursor simulating 'thinking'."""
         import random
@@ -140,13 +182,36 @@ class AgenticLoop:
             if not self.headless:
                 self._cursor_task = asyncio.create_task(self._thinking_cursor_loop())
 
-            # 5. Plan
-            logger.info(f"═══ Planning steps for: {self.goal}")
-            self._cursor_moving = True
-            dom_html = await self.page.get_dom_html(max_length=4000)
-            elements = await self.runtime.get_interactive_elements()
-            steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
-            self._cursor_moving = False
+            # 5. Plan (or load from checkpoint)
+            if self._state.planned_steps and self._state.current_step_index < len(self._state.planned_steps):
+                logger.info(f"═══ Resuming planned steps from checkpoint ({self._state.current_step_index}/{len(self._state.planned_steps)})")
+                steps = self._state.planned_steps
+                
+                # Restore doc renderer state if any
+                if self._state.doc_steps:
+                    for ds in self._state.doc_steps:
+                        doc.add_step(
+                            step_number=ds.number,
+                            title=ds.title,
+                            screenshot_b64="", # Not restoring base64 images from JSON
+                            annotation=ds.annotation,
+                            action_description=ds.action_description
+                        )
+                        # Patch the path manually since add_step expects base64
+                        if ds.screenshot_path and doc.steps:
+                            doc.steps[-1]["screenshot_path"] = Path(ds.screenshot_path)
+            else:
+                logger.info(f"═══ Planning steps for: {self.goal}")
+                self._save_checkpoint("PLANNING")
+                self._cursor_moving = True
+                dom_html = await self.page.get_dom_html(max_length=4000)
+                elements = await self.runtime.get_interactive_elements()
+                steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
+                self._cursor_moving = False
+                
+                self._state.planned_steps = steps
+                self._state.current_step_index = 0
+                self._save_checkpoint("EXECUTING")
 
             if not steps:
                 raise RuntimeError("Planner returned no steps")
@@ -157,6 +222,7 @@ class AgenticLoop:
             )
 
             # 7. Critic review with re-execution loop
+            self._save_checkpoint("CRITIQUE")
             self._cursor_moving = True
             markdown = doc.render()
             await self._critic_loop(
@@ -165,10 +231,15 @@ class AgenticLoop:
             self._cursor_moving = False
 
             # 8. Save output
+            self._save_checkpoint("FINISHED")
             markdown = doc.render()
             output_path = save_docs(markdown, doc.screenshots, self.output_dir)
             logger.info(f"═══ Documentation saved to: {output_path}")
             return output_path
+        except Exception as e:
+            logger.error(f"Pipeline error: {e}")
+            self._save_checkpoint("FAILED")
+            raise
 
         finally:
             await self._cleanup()
@@ -228,8 +299,8 @@ class AgenticLoop:
         self._last_url = None  # reset at start of each execution pass
 
         step_list = list(steps)
-        step_idx = 0
-        i = start_number
+        step_idx = self._state.current_step_index  # start from where we left off
+        i = start_number + step_idx
         crashes = 0
         MAX_CRASHES = 3
 
@@ -258,6 +329,8 @@ class AgenticLoop:
                             f"→ {len(replanned)} adapted steps"
                         )
                         step_list = step_list[:step_idx] + replanned
+                        self._state.planned_steps = step_list
+                        self._save_checkpoint("EXECUTING")
                         step = step_list[step_idx]
 
                 self._last_url = current_url
@@ -321,8 +394,15 @@ class AgenticLoop:
                     action_description=action_desc,
                 )
 
+                # Store step result state
+                from dataclasses import asdict
+                self._state.executed_results.append(asdict(result))
+                
                 results.append(result)
                 step_idx += 1
+                self._state.current_step_index = step_idx
+                self._save_checkpoint("EXECUTING")
+                
                 i += 1
                 
                 self._cursor_moving = True
@@ -698,7 +778,7 @@ class AgenticLoop:
             # Wait for the auth redirect to fully settle instead of a fixed sleep
             try:
                 await self._conn.wait_for_event("Page.loadEventFired", timeout=10.0)
-                await asyncio.sleep(1.5)  # extra settle for dynamic content
+                await page.wait_for_network_idle(timeout=5.0, idle_time=0.5)
             except TimeoutError:
                 logger.warning("    Auth redirect timed out, continuing anyway")
             logger.info("    Authentication complete")

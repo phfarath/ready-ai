@@ -154,8 +154,11 @@ class PageDomain:
         if wait_for_network:
             await self.wait_for_network_idle(timeout=10.0, idle_time=0.5)
         else:
-            # Extra settle time for dynamic content if not waiting for network
-            await asyncio.sleep(1.5)
+            # Check for generic lifecycle events or basic readiness
+            try:
+                await self._conn.wait_for_event("Page.domContentEventFired", timeout=2.0)
+            except TimeoutError:
+                pass
             
         logger.info("Navigation complete")
 
