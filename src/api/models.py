@@ -1,7 +1,12 @@
-from typing import Optional, List
+from typing import Optional
 from pydantic import BaseModel, Field
 
 class RunRequest(BaseModel):
+    run_id: Optional[str] = Field(
+        None,
+        description="Optional run id. If provided and a checkpoint exists, execution resumes from it.",
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
     goal: str = Field(..., description="The documentation goal to execute.")
     url: str = Field(..., description="The starting URL for the documentation run.")
     model: str = Field("gpt-4o-mini", description="Model to use for planning/critic.")

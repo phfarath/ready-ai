@@ -5,6 +5,7 @@ Handles status tracking and lifecycle.
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 from typing import Dict, Optional
 
 from src.api.models import RunRequest, RunStatusResponse
@@ -18,26 +19,78 @@ class RunManager:
     
     _runs: Dict[str, asyncio.Task] = {}
     _states: Dict[str, RunState] = {}
+    _run_ports: Dict[str, int] = {}
+    _port_pool: Optional[asyncio.Queue[int]] = None
+
+    _PORT_START = 9300
+    _PORT_END = 9399
+
+    @classmethod
+    def _state_path(cls, run_id: str) -> Path:
+        return Path("./output") / run_id / f"{run_id}_state.json"
+
+    @classmethod
+    def _ensure_port_pool(cls) -> None:
+        if cls._port_pool is not None:
+            return
+
+        cls._port_pool = asyncio.Queue()
+        for port in range(cls._PORT_START, cls._PORT_END + 1):
+            cls._port_pool.put_nowait(port)
+
+    @classmethod
+    async def _acquire_port(cls) -> int:
+        cls._ensure_port_pool()
+        assert cls._port_pool is not None
+        try:
+            return cls._port_pool.get_nowait()
+        except asyncio.QueueEmpty as exc:
+            raise RuntimeError("No available browser ports in pool.") from exc
+
+    @classmethod
+    async def _release_port(cls, port: int) -> None:
+        cls._ensure_port_pool()
+        assert cls._port_pool is not None
+        cls._port_pool.put_nowait(port)
     
     @classmethod
-    def start_run(cls, req: RunRequest) -> str:
+    async def start_run(cls, req: RunRequest) -> str:
         """Initialize and start a new background run."""
-        run_id = str(uuid.uuid4())
+        run_id = req.run_id or str(uuid.uuid4())
+        existing_task = cls._runs.get(run_id)
+        if existing_task and not existing_task.done():
+            raise ValueError(f"Run '{run_id}' is already active.")
+        if existing_task and existing_task.done():
+            cls._runs.pop(run_id, None)
+
+        output_dir = Path("./output") / run_id
+        resume_path = cls._state_path(run_id)
+        resume_from = str(resume_path) if resume_path.exists() else None
+
+        port = await cls._acquire_port()
         
-        loop = AgenticLoop(
-            goal=req.goal,
-            url=req.url,
-            model=req.model,
-            annotation_model=req.annotation_model,
-            language=req.language,
-            title=req.title,
-            headless=req.headless,
-            cookies_file=req.cookies_file,
-            run_id=run_id,
-        )
+        try:
+            loop = AgenticLoop(
+                goal=req.goal,
+                url=req.url,
+                model=req.model,
+                annotation_model=req.annotation_model,
+                language=req.language,
+                title=req.title,
+                headless=req.headless,
+                cookies_file=req.cookies_file,
+                run_id=run_id,
+                output_dir=str(output_dir),
+                resume_from=resume_from,
+                port=port,
+            )
+        except Exception:
+            await cls._release_port(port)
+            raise
         
         # Store state ref (which will be updated by AgenticLoop internally)
         cls._states[run_id] = loop._state
+        cls._run_ports[run_id] = port
         
         # Create background task
         task = asyncio.create_task(cls._execute(run_id, loop))
@@ -55,14 +108,16 @@ class RunManager:
         finally:
             if run_id in cls._runs:
                 del cls._runs[run_id]
+            port = cls._run_ports.pop(run_id, None)
+            if port is not None:
+                await cls._release_port(port)
                 
     @classmethod
     def get_status(cls, run_id: str) -> Optional[RunStatusResponse]:
         """Fetch the current status of a run ID."""
         if run_id not in cls._states:
             # Maybe it exists on disk? Try loading it.
-            # In a real system, you'd specify output_dir centrally.
-            state = RunState.from_file(f"./output/{run_id}_state.json")
+            state = RunState.from_file(cls._state_path(run_id))
             if not state:
                 return None
             cls._states[run_id] = state
