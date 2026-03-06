@@ -4,6 +4,25 @@ Agentic browser automation for SaaS documentation generation.
 
 browser-auto controls Chrome through raw CDP, plans documentation steps with an LLM, executes them, critiques the result, and writes portable Markdown plus screenshots.
 
+## Open Source Status
+
+This repository is structured to be the open-source core of browser-auto.
+
+What is in this repository:
+
+- the local CLI
+- the raw CDP browser engine
+- the planner, executor, critic loop
+- Markdown and screenshot generation
+- the early FastAPI service scaffold
+
+What is not promised here:
+
+- a hosted platform
+- managed integrations
+- scheduling and operations tooling
+- commercial support or SLAs
+
 ## Current Status
 
 - Local CLI is implemented and usable today.
@@ -37,6 +56,13 @@ API server and API tests currently rely on extra packages listed in `requirement
 
 ```bash
 pip install -r requirements.txt
+```
+
+Or, if you want the full local setup in one environment:
+
+```bash
+pip install -e ".[dev]"
+pip install fastapi uvicorn requests
 ```
 
 ## Environment
@@ -157,6 +183,12 @@ CLI runs write:
 
 API runs write per-run artifacts under `output/<run_id>/`.
 
+## Contributing and Security
+
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and contribution expectations.
+- See [SECURITY.md](SECURITY.md) for vulnerability reporting guidance.
+- See [LICENSE](LICENSE) for repository licensing.
+
 ## Supported Models
 
 Any LiteLLM-compatible model, including:
@@ -176,3 +208,12 @@ Current high-priority gaps:
 - OAuth / SSO, MFA / TOTP, multi-tab, and cross-origin iframe coverage
 
 See `PRD.md` for product direction and `NEXT_STEPS.md` for the active execution plan.
+
+## Public Release Notes
+
+Before publishing the repository publicly:
+
+- keep `.env`, cookies, run outputs, and checkpoints out of Git
+- rotate any real credentials that were ever stored locally during development
+- verify examples use placeholders only
+- run the test suite and review tracked files before pushing
