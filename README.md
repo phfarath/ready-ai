@@ -1,58 +1,46 @@
 # ready-ai
 
-Open-source core for browser-auto: agentic browser automation for SaaS documentation generation.
+Open-source core for `browser-auto`: agentic browser automation that drives Chrome over raw CDP and generates step-by-step documentation with screenshots.
 
-This repository contains the local CLI, the raw CDP browser engine, the planner/executor/critic loop, Markdown plus screenshot generation, and an early FastAPI service scaffold.
+It plans a flow from the current DOM, executes the actions, critiques the result, and writes portable Markdown plus PNG screenshots to disk.
 
-## Open Source Status
+## What This Repo Is
 
-This repository is structured to be the open-source core of browser-auto.
-
-What is in this repository:
-
-- the local CLI
-- the raw CDP browser engine
-- the planner, executor, critic loop
+- A local CLI for documentation runs
+- A raw Chrome DevTools Protocol engine
+- A planner -> executor -> critic loop
 - Markdown and screenshot generation
-- the early FastAPI service scaffold
+- An early FastAPI service scaffold
 
-What is not promised here:
+## What This Repo Is Not
 
-- a hosted platform
-- managed integrations
-- scheduling and operations tooling
-- commercial support or SLAs
+- A hosted product
+- A team dashboard
+- A scheduling platform
+- A polished integration layer
+- Commercial support or SLAs
 
-## Current Status
+## Quickstart
 
-- Local CLI is implemented and usable today.
-- An HTTP API scaffold already exists for background runs and output download.
-- The project is currently in **CLI hardening + API stabilization**, not "build the API from scratch".
+### 1. Prerequisites
 
-## Architecture
+- Python `>=3.10`
+- Google Chrome, Chromium, or Brave installed locally
+- At least one model provider API key
 
+If Chrome is installed in a non-default location, set:
+
+```bash
+export CHROME_PATH="/path/to/your/chrome"
 ```
-goal + DOM  ->  Planner  ->  step list
-step list   ->  Executor ->  screenshots + annotations
-docs        ->  Critic   ->  score + missing steps -> re-execution
-```
 
-Core modules:
+### 2. Install
 
-- `src/agent/` orchestrates planning, execution, criticism, and checkpoints.
-- `src/cdp/` contains the raw Chrome DevTools Protocol client and domains.
-- `src/docs/` renders Markdown and writes output files.
-- `src/api/` exposes background runs over FastAPI.
-
-## Installation
-
-Recommended development setup:
+Canonical local install:
 
 ```bash
 pip install -e ".[dev]"
 ```
-
-This is the canonical local install path. It includes the CLI, API, and test dependencies needed for local development.
 
 If you need a `requirements.txt` entry point for local tooling, it resolves to the same dependency set:
 
@@ -60,9 +48,7 @@ If you need a `requirements.txt` entry point for local tooling, it resolves to t
 pip install -r requirements.txt
 ```
 
-## Environment
-
-Set at least one provider API key:
+### 3. Set an API key
 
 ```bash
 export OPENAI_API_KEY="your-key-here"
@@ -70,80 +56,161 @@ export OPENAI_API_KEY="your-key-here"
 # export ANTHROPIC_API_KEY="your-key-here"
 ```
 
-## CLI Usage
-
-Run a local documentation job:
+### 4. Run a first job
 
 ```bash
 python main.py run \
   --goal "Document the login flow" \
   --url "https://app.example.com" \
+  --title "Login Guide" \
+  --language en \
   --model "gpt-4o-mini" \
-  --output "./output"
+  --output "./output/login-guide"
 ```
 
-### `run` command options
+Generated files:
 
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--goal` | `-g` | *required* | Documentation goal that drives the planner and critic |
-| `--url` | `-u` | *required* | Starting URL |
-| `--title` | `-t` | `None` | Optional H1 title; falls back to `goal` |
-| `--language` | `-l` | `None` | Optional output language override; renderer labels fall back to English when omitted |
-| `--model` | `-m` | `gpt-4o-mini` | Main planning/critic model |
-| `--annotation-model` | | `None` | Optional separate model for screenshot annotations |
-| `--output` | `-o` | `./output` | Output directory |
-| `--port` | `-p` | `9222` | Chrome remote debugging port |
-| `--headless` | | `false` | Run Chrome headless |
-| `--max-critic-rounds` | | `2` | Maximum critic iterations |
-| `--cookies-file` | | `None` | Session cookies JSON file |
-| `--username` | | `None` | Username/email for auto-login |
-| `--password` | | `None` | Password for auto-login |
-| `--verbose` | `-v` | `false` | Verbose logging |
+- `output/<run>/docs.md`
+- `output/<run>/screenshots/`
+- `output/<run>/summary.txt`
 
-### CLI examples
+## Running The Project Correctly
+
+The most reliable local setup is:
+
+1. Install with `pip install -e ".[dev]"`
+2. Export a provider API key
+3. Let the tool launch its own Chrome instance
+4. Start with a narrow goal and a single authenticated flow
+5. Use `--verbose` on early runs
+
+Recommended first targets:
+
+- login
+- onboarding
+- account settings
+- dashboard navigation
+- simple CRUD flows
+
+Avoid for first runs:
+
+- mandatory SSO or OAuth-only login
+- MFA / TOTP
+- heavy multi-tab flows
+- cross-origin iframe-heavy apps
+
+## Authentication
+
+Two auth modes are supported.
+
+### Option 1: Session cookies
+
+This is usually the best option for authenticated SaaS apps.
 
 ```bash
-# Portuguese output
-python main.py run --goal "Documentar o fluxo de login" --url "https://app.example.com" --language pt
-
-# Separate title from goal
 python main.py run \
-  --goal "Document all main features after login" \
-  --url "https://app.example.com" \
-  --title "MyApp User Guide"
+  --goal "Document account settings" \
+  --url "https://app.example.com/settings" \
+  --cookies-file "./cookies.json"
+```
 
-# Cheaper model for screenshot annotations
+Expected `cookies.json` format:
+
+```json
+[
+  {
+    "name": "session_cookie",
+    "value": "abc123",
+    "domain": ".app.example.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true
+  }
+]
+```
+
+Notes:
+
+- The file must be a JSON array, not a key/value object.
+- Keep cookie files out of Git.
+- `tmp/` is gitignored in this repository.
+
+### Option 2: Username/password
+
+```bash
+python main.py run \
+  --goal "Document the billing page" \
+  --url "https://app.example.com/login" \
+  --username "user@example.com" \
+  --password "super-secret-password"
+```
+
+This works best with straightforward email/password forms.
+
+## CLI
+
+Main command:
+
+```bash
+python main.py run --help
+```
+
+Useful flags:
+
+| Flag | Short | Default | Purpose |
+|------|-------|---------|---------|
+| `--goal` | `-g` | required | Documentation goal |
+| `--url` | `-u` | required | Starting URL |
+| `--title` | `-t` | goal | Optional H1 title |
+| `--language` | `-l` | English renderer labels | Output language |
+| `--model` | `-m` | `gpt-4o-mini` | Main planner/critic model |
+| `--annotation-model` | | same as `--model` | Separate screenshot annotation model |
+| `--output` | `-o` | `./output` | Output directory |
+| `--port` | `-p` | `9222` | Chrome debugging port |
+| `--headless` | | `false` | Run Chrome headless |
+| `--max-critic-rounds` | | `2` | Max re-execution loops |
+| `--cookies-file` | | `None` | Cookie JSON file |
+| `--username` | | `None` | Login username/email |
+| `--password` | | `None` | Login password |
+| `--verbose` | `-v` | `false` | Debug logging |
+
+### More examples
+
+Portuguese output:
+
+```bash
+python main.py run \
+  --goal "Documentar o fluxo de onboarding" \
+  --url "https://app.example.com" \
+  --language pt \
+  --output "./output/onboarding-pt"
+```
+
+Cheaper model for screenshot annotations:
+
+```bash
 python main.py run \
   --goal "Document the dashboard" \
   --url "https://app.example.com" \
   --model "claude-sonnet-4-20250514" \
   --annotation-model "gpt-4o-mini"
-
-# Session auth
-python main.py run \
-  --goal "Document account settings" \
-  --url "https://app.example.com/settings" \
-  --cookies-file ./cookies.json
 ```
 
-## API Usage
+## API
 
-Start the API server:
+Start the API:
 
 ```bash
 python main.py api --port 8000
 ```
 
-### `api` command options
+Main endpoints:
 
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--port` | `-p` | `8000` | API server port |
-| `--host` | | `0.0.0.0` | API server host |
-| `--verbose` | `-v` | `false` | Verbose logging |
+- `POST /runs`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/output`
 
-### API flow
+Example flow:
 
 ```bash
 curl -X POST http://localhost:8000/runs \
@@ -156,59 +223,63 @@ curl -OJ http://localhost:8000/runs/<run_id>/output
 
 Current API capabilities:
 
-- Start a background run
-- Poll run status
-- Resume from an existing checkpoint when the same `run_id` is reused
-- Download generated output as a ZIP archive
+- start a background run
+- poll run status
+- resume from an existing checkpoint when the same `run_id` is reused
+- download output as a ZIP archive
 
-Still missing from the API roadmap:
+## How It Works
 
-- webhooks
-- hardened dependency/test stack
-- Docker packaging
-- external-consumer contract stabilization
+```text
+goal + DOM  ->  planner  ->  step list
+step list   ->  executor ->  screenshots + annotations
+docs        ->  critic   ->  score + missing steps -> re-execution
+```
 
-## Output
+Core modules:
 
-CLI runs write:
+- `src/agent/` orchestrates planning, execution, criticism, and checkpoints
+- `src/cdp/` contains the raw CDP browser engine
+- `src/docs/` renders Markdown and writes artifacts
+- `src/api/` exposes background runs over FastAPI
+- `src/llm/` wraps LiteLLM model calls
 
-- `output/docs.md`
-- `output/screenshots/`
-- `output/summary.txt`
+## Current Limitations
 
-API runs write per-run artifacts under `output/<run_id>/`.
+High-priority gaps today:
 
-## Contributing and Security
-
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and contribution expectations.
-- See [SECURITY.md](SECURITY.md) for vulnerability reporting guidance.
-- See [LICENSE](LICENSE) for repository licensing.
-
-## Supported Models
-
-Any LiteLLM-compatible model, including:
-
-- `gpt-4o-mini`, `gpt-4o`
-- `claude-sonnet-4-20250514`, `claude-haiku-4-20250414`
-- `gemini/gemini-2.0-flash`
-
-## Open Product Gaps
-
-Current high-priority gaps:
-
-- API and test-stack stabilization
-- Better failed-step recovery
+- better failed-step recovery
 - `--config` file support
 - dry-run / plan-only mode
-- OAuth / SSO, MFA / TOTP, multi-tab, and cross-origin iframe coverage
+- OAuth / SSO coverage
+- MFA / TOTP coverage
+- multi-tab flows
+- cross-origin iframe coverage
 
-See `PRD.md` for product direction and `NEXT_STEPS.md` for the active execution plan.
+This repository is usable today, but the product surface is still CLI-first and early.
 
-## Public Release Notes
+## Development
 
-Before publishing the repository publicly:
+Run tests:
 
-- keep `.env`, cookies, run outputs, and checkpoints out of Git
-- rotate any real credentials that were ever stored locally during development
-- verify examples use placeholders only
-- run the test suite and review tracked files before pushing
+```bash
+python3 -m pytest -q
+```
+
+See:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [MVP.md](MVP.md)
+- [NEXT_STEPS.md](NEXT_STEPS.md)
+- [PRD.md](PRD.md)
+
+## Safety Notes
+
+Before pushing or publishing:
+
+- do not commit `.env`
+- do not commit cookies
+- do not commit generated output
+- rotate any real credentials used during development
+- review tracked files before pushing
