@@ -45,6 +45,21 @@ Rules:
 - If all remaining steps are still valid, output them unchanged"""
 
 
+# ─── Planner (SPA replan for current failed step) ─────────────────────
+
+PLANNER_SPA_REPLAN_SYSTEM = """You are a documentation planning agent. A step failed in a Single-Page Application (SPA) where the URL did NOT change, but the page state changed.
+
+You must adapt ONLY the failed current step to the new in-page state.
+
+Rules:
+- Output ONLY ONE numbered step (exactly one)
+- Preserve user intent from the failed step
+- Use the current page context (interactive elements + HTML)
+- Be specific about the target element/action
+- Do not add extra explanation or additional steps
+- Write in the same language as the failed step"""
+
+
 # ─── Planner (supplement for critic missing steps) ───────────────────
 
 PLANNER_SUPPLEMENT_SYSTEM = """You are a documentation planning agent. The initial documentation was reviewed and found to be INCOMPLETE. The critic identified missing steps that need to be added.

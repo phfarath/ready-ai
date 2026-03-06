@@ -6,6 +6,7 @@ Supports authentication via cookies or credentials, and separate annotation mode
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import websockets
@@ -18,7 +19,12 @@ from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
-from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_REPLAN_SYSTEM, PLANNER_SUPPLEMENT_SYSTEM
+from ..llm.prompts import (
+    ANNOTATOR_PROMPT,
+    PLANNER_REPLAN_SYSTEM,
+    PLANNER_SPA_REPLAN_SYSTEM,
+    PLANNER_SUPPLEMENT_SYSTEM,
+)
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
 from . import planner, executor, critic
@@ -303,6 +309,8 @@ class AgenticLoop:
         i = start_number + step_idx
         crashes = 0
         MAX_CRASHES = 3
+        MAX_SPA_REPLANS_PER_STEP = 2
+        spa_replan_attempts_by_index: dict[int, int] = {}
 
         while step_idx < len(step_list):
             try:
@@ -312,16 +320,17 @@ class AgenticLoop:
                 # Get fresh DOM state and current URL for context awareness
                 dom_html = await page.get_dom_html(max_length=4000)
                 elements = await runtime.get_interactive_elements()
-                current_url = await runtime.evaluate("window.location.href")
+                pre_url = await runtime.evaluate("window.location.href")
+                pre_fingerprint = await self._dom_fingerprint(runtime)
 
                 # URL drift detection with replanning
-                if self._last_url is not None and self._last_url != current_url:
+                if self._last_url is not None and self._last_url != pre_url:
                     logger.warning(
-                        f"    ⚠ URL changed between steps: {self._last_url} → {current_url}"
+                        f"    ⚠ URL changed between steps: {self._last_url} → {pre_url}"
                     )
                     remaining = step_list[step_idx:]
                     replanned = await self._replan_remaining(
-                        remaining, dom_html, elements, current_url, llm
+                        remaining, dom_html, elements, pre_url, llm
                     )
                     if replanned:
                         logger.info(
@@ -333,13 +342,13 @@ class AgenticLoop:
                         self._save_checkpoint("EXECUTING")
                         step = step_list[step_idx]
 
-                self._last_url = current_url
+                self._last_url = pre_url
                 self._cursor_moving = False
 
                 # Execute with verification + retries (with URL context)
                 result = await executor.execute_step(
                     step, dom_html, elements, llm, page, input_domain, runtime,
-                    current_url=current_url,
+                    current_url=pre_url,
                 )
 
                 logger.info(
@@ -352,6 +361,52 @@ class AgenticLoop:
                     await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
                 except Exception as e:
                     logger.debug(f"Wait for network idle failed/timed out: {e}")
+
+                post_url = await runtime.evaluate("window.location.href")
+                post_fingerprint = await self._dom_fingerprint(runtime)
+
+                if self._is_spa_drift(
+                    pre_fingerprint=pre_fingerprint,
+                    post_fingerprint=post_fingerprint,
+                    result_success=result.success,
+                    pre_url=pre_url,
+                    post_url=post_url,
+                ):
+                    logger.warning(
+                        "    ⚠ SPA state drift detected (same URL, fingerprint changed, step failed)"
+                    )
+                    replan_attempts = spa_replan_attempts_by_index.get(step_idx, 0)
+                    if replan_attempts >= MAX_SPA_REPLANS_PER_STEP:
+                        logger.warning(
+                            f"    ⚠ SPA replan limit reached for step index {step_idx}; "
+                            "continuing with original failed step"
+                        )
+                    else:
+                        spa_replan_attempts_by_index[step_idx] = replan_attempts + 1
+                        latest_dom_html = await page.get_dom_html(max_length=4000)
+                        latest_elements = await runtime.get_interactive_elements()
+                        adapted_step = await self._replan_spa_step(
+                            failed_step=step,
+                            failure_reason=result.failure_reason,
+                            action_desc=result.action_desc,
+                            current_url=post_url,
+                            dom_html=latest_dom_html,
+                            elements=latest_elements,
+                            llm=llm,
+                        )
+                        if adapted_step:
+                            logger.info(
+                                f"    ⟳ SPA-replanned current step: '{step}' → '{adapted_step}'"
+                            )
+                            step_list[step_idx] = adapted_step
+                            self._state.planned_steps = step_list
+                            self._save_checkpoint("EXECUTING")
+                            self._cursor_moving = True
+                            continue
+                        logger.warning(
+                            "    SPA replan returned no usable step; "
+                            "continuing with original failed step"
+                        )
 
                 # Highlight the interacted element before screenshot
                 last_selector = self._extract_selector(result.action_desc)
@@ -423,6 +478,67 @@ class AgenticLoop:
 
         return results
 
+    @staticmethod
+    async def _dom_fingerprint(runtime: RuntimeDomain) -> str:
+        """Compute a fast hash for SPA-relevant interactive DOM state."""
+        js = """
+            (() => {
+                const selectors = [
+                    'button', 'input', 'select', 'textarea',
+                    '[role="tab"]', '[role="menuitem"]',
+                    '[aria-expanded]', '[aria-selected]', '[data-state]'
+                ].join(',');
+
+                const normalize = (value) => (value || '')
+                    .replace(/\\s+/g, ' ')
+                    .trim()
+                    .slice(0, 50);
+
+                const entries = Array.from(document.querySelectorAll(selectors))
+                    .filter(el => {
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    })
+                    .map(el => {
+                        const text = normalize(el.innerText || el.textContent || el.value);
+                        const state = [
+                            el.tagName.toLowerCase(),
+                            el.getAttribute('role') || '',
+                            text,
+                            el.getAttribute('aria-expanded') || '',
+                            el.getAttribute('aria-selected') || '',
+                            el.getAttribute('data-state') || '',
+                            el.hasAttribute('disabled') ? 'disabled' : 'enabled',
+                        ];
+                        return state.join('|');
+                    });
+
+                const uniqueSorted = Array.from(new Set(entries)).sort();
+                return uniqueSorted.slice(0, 250).join('\\n');
+            })()
+        """
+        try:
+            payload = await runtime.evaluate(js)
+            payload_str = str(payload) if payload is not None else ""
+        except Exception:
+            payload_str = ""
+        return hashlib.md5(payload_str.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _is_spa_drift(
+        pre_fingerprint: str,
+        post_fingerprint: str,
+        result_success: bool,
+        pre_url: str,
+        post_url: str,
+    ) -> bool:
+        """SPA drift policy (v1): failed step + changed fingerprint + same URL."""
+        return (
+            result_success is False
+            and pre_fingerprint != post_fingerprint
+            and pre_url == post_url
+        )
+
     async def _replan_remaining(
         self,
         remaining_steps: list[str],
@@ -466,6 +582,53 @@ class AgenticLoop:
             self._cursor_moving = False
             logger.warning(f"    Replanning failed: {e}, continuing with original steps")
             return remaining_steps
+
+    async def _replan_spa_step(
+        self,
+        failed_step: str,
+        failure_reason: str,
+        action_desc: str,
+        current_url: str,
+        dom_html: str,
+        elements: str,
+        llm: LLMClient,
+    ) -> Optional[str]:
+        """
+        Adapt only the current failed step for SPA state changes on the same URL.
+
+        Returns an adapted single step, or None if replanning fails.
+        """
+        user_prompt = (
+            f"CURRENT PAGE URL: {current_url}\n\n"
+            f"FAILED CURRENT STEP:\n- {failed_step}\n\n"
+            f"LAST ACTION DESCRIPTION:\n{action_desc}\n\n"
+            f"FAILURE REASON:\n{failure_reason or 'No explicit reason provided'}\n\n"
+            f"INTERACTIVE ELEMENTS ON CURRENT PAGE:\n{elements}\n\n"
+            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
+            f"The URL stayed the same, but SPA state changed. Rewrite ONLY the failed "
+            f"current step so it is executable in this updated in-page state. "
+            f"Output ONLY one numbered step."
+        )
+        if self.language:
+            user_prompt += f"\nIMPORTANT: Write all output in {self.language}."
+
+        messages = [
+            {"role": "system", "content": PLANNER_SPA_REPLAN_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            self._cursor_moving = True
+            response = await llm.complete(messages)
+            self._cursor_moving = False
+            candidate_steps = planner._parse_steps(response)
+            if not candidate_steps:
+                return None
+            return candidate_steps[0]
+        except Exception as e:
+            self._cursor_moving = False
+            logger.warning(f"    SPA step replanning failed: {e}")
+            return None
 
     async def _critic_loop(
         self,
