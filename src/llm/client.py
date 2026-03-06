@@ -7,10 +7,12 @@ for rate limit errors.
 """
 
 import asyncio
+import importlib
 import logging
 from typing import Any, Optional
 
 import litellm
+import openai._compat as openai_compat
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,61 @@ litellm.suppress_debug_info = True
 
 MAX_LLM_RETRIES = 5
 INITIAL_RETRY_DELAY = 1.0  # seconds
+
+
+def _patch_openai_model_dump() -> None:
+    """
+    Work around OpenAI/Pydantic compatibility where by_alias=None crashes.
+
+    Some installed combinations call pydantic v2's model_dump(by_alias=None),
+    which raises `TypeError: argument 'by_alias': 'NoneType' object cannot be
+    converted to 'PyBool'`. Coerce None to False before delegating.
+    """
+    original_model_dump = openai_compat.model_dump
+
+    def patched_model_dump(
+        model: Any,
+        *,
+        exclude: Any = None,
+        exclude_unset: bool = False,
+        exclude_defaults: bool = False,
+        warnings: bool = True,
+        mode: str = "python",
+        by_alias: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        return original_model_dump(
+            model,
+            exclude=exclude,
+            exclude_unset=exclude_unset,
+            exclude_defaults=exclude_defaults,
+            warnings=warnings,
+            mode=mode,
+            by_alias=False if by_alias is None else by_alias,
+        )
+
+    if getattr(openai_compat.model_dump, "__name__", "") == "patched_model_dump":
+        return
+
+    openai_compat.model_dump = patched_model_dump
+
+    # The OpenAI SDK imports `model_dump` directly into several modules at import
+    # time, so patch those bound references too.
+    for module_name in (
+        "openai._base_client",
+        "openai._utils._transform",
+        "openai._utils._json",
+        "openai.lib.streaming._assistants",
+        "openai.lib.streaming.chat._completions",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        if hasattr(module, "model_dump"):
+            setattr(module, "model_dump", patched_model_dump)
+
+
+_patch_openai_model_dump()
 
 
 class LLMClient:
