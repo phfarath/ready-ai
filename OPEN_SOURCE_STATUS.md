@@ -24,19 +24,11 @@ Completed:
 - `git ls-files` does not include `.env`, `output/`, or local run artifacts
 - `python3 main.py --help` works and shows the documented `run` and `api` commands
 - repository remote points to `https://github.com/phfarath/ready-ai.git`
+- `python3 -m pytest -q` passes locally
 
 ## Remaining Blockers
 
-### 1. Test suite is not green
-
-Current result from `python3 -m pytest -q`:
-
-- collection fails in `tests/test_api.py`
-- error: `TypeError: Client.__init__() got an unexpected keyword argument 'app'`
-
-This strongly suggests a dependency mismatch in the FastAPI / Starlette / httpx test stack.
-
-### 2. API install story is still inconsistent
+### 1. API install story is still inconsistent
 
 The repository currently uses both:
 
@@ -45,7 +37,7 @@ The repository currently uses both:
 
 This is workable, but not yet polished for outside contributors.
 
-### 3. Public release polish can still improve
+### 2. Public release polish can still improve
 
 Not blocking, but still useful:
 
@@ -55,15 +47,14 @@ Not blocking, but still useful:
 
 ## Recommended Next Actions
 
-1. Fix the API test dependency mismatch.
-2. Make the installation path consistent for contributors.
-3. Re-run `python3 -m pytest -q` until green.
-4. Review the GitHub repo settings, description, and visibility.
+1. Make the installation path consistent for contributors.
+2. Review the GitHub repo settings, description, and visibility.
+3. Optionally add issue templates for public triage.
 
 ## Assessment
 
 This repository is now:
 
 - **safe enough to exist publicly as code**
+- **functionally healthy enough for outside testing**
 - **not yet fully polished as a contributor-ready project**
-- **not yet release-complete from a test reliability standpoint**

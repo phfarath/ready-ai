@@ -46,23 +46,18 @@ Core modules:
 
 ## Installation
 
-CLI development setup:
+Recommended development setup:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-API server and API tests currently rely on extra packages listed in `requirements.txt`:
+This now includes the API and test dependencies needed for local development.
+
+If you prefer a plain requirements-based install:
 
 ```bash
 pip install -r requirements.txt
-```
-
-Or, if you want the full local setup in one environment:
-
-```bash
-pip install -e ".[dev]"
-pip install fastapi uvicorn requests
 ```
 
 ## Environment

@@ -1,42 +1,32 @@
-import requests
-import time
-import subprocess
-import os
-import signal
+import pytest
+from httpx import ASGITransport, AsyncClient
 
-def test_api():
-    print("Starting API server...")
-    proc = subprocess.Popen(["python3", "main.py", "api", "--port", "8001"])
-    time.sleep(3) # wait for server to start
-    
-    try:
-        print("Testing POST /runs...")
-        res = requests.post("http://localhost:8001/runs", json={
-            "goal": "Test API",
-            "url": "http://example.com",
-            "model": "gpt-4o-mini"
-        })
-        print(f"POST status: {res.status_code}")
-        assert res.status_code == 200
-        data = res.json()
-        print(f"POST response: {data}")
-        run_id = data.get("run_id")
-        assert run_id is not None
-        
-        print(f"Testing GET /runs/{run_id}...")
-        res_get = requests.get(f"http://localhost:8001/runs/{run_id}")
-        assert res_get.status_code == 200
-        data_get = res_get.json()
-        print(f"GET response: {data_get}")
-        assert data_get.get("status") == "PLANNING"
-        
-        print("All basic API tests passed!")
-    finally:
-        print("Shutting down API server...")
-        try:
-             os.kill(proc.pid, signal.SIGTERM)
-        except Exception as e:
-             pass
+from src.api.manager import RunManager
+from src.api.server import app
 
-if __name__ == "__main__":
-    test_api()
+
+@pytest.mark.asyncio
+async def test_create_run_returns_conflict_for_active_run(monkeypatch):
+    async def fake_start_run(_req):
+        raise ValueError("Run 'duplicate-run' is already active.")
+
+    monkeypatch.setattr(RunManager, "start_run", fake_start_run)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/runs", json={"goal": "Test API", "url": "http://example.com"}
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Run 'duplicate-run' is already active."
+
+
+@pytest.mark.asyncio
+async def test_get_run_output_returns_404_when_output_is_missing():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/runs/missing-run/output")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Output directory not found."
