@@ -1,8 +1,8 @@
-# browser-auto
+# ready-ai
 
-Agentic browser automation for SaaS documentation generation.
+Open-source core for browser-auto: agentic browser automation for SaaS documentation generation.
 
-browser-auto controls Chrome through raw CDP, plans documentation steps with an LLM, executes them, critiques the result, and writes portable Markdown plus screenshots.
+This repository contains the local CLI, the raw CDP browser engine, the planner/executor/critic loop, Markdown plus screenshot generation, and an early FastAPI service scaffold.
 
 ## Open Source Status
 
@@ -52,9 +52,9 @@ Recommended development setup:
 pip install -e ".[dev]"
 ```
 
-This now includes the API and test dependencies needed for local development.
+This is the canonical local install path. It includes the CLI, API, and test dependencies needed for local development.
 
-If you prefer a plain requirements-based install:
+If you need a `requirements.txt` entry point for local tooling, it resolves to the same dependency set:
 
 ```bash
 pip install -r requirements.txt

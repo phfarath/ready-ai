@@ -14,8 +14,9 @@ Install the project for local development:
 
 ```bash
 pip install -e ".[dev]"
-pip install -r requirements.txt
 ```
+
+`requirements.txt` is kept only as a thin wrapper for tools that expect that filename and resolves to the same dependency set.
 
 Set at least one LLM provider key in your local environment:
 

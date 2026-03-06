@@ -25,6 +25,17 @@ Use this checklist before making the repository public.
 - [ ] `SECURITY.md` exists
 - [ ] MVP and roadmap docs reflect the intended public story
 
+## GitHub Repository Page
+
+- [ ] Set GitHub description to: `Open-source core for agentic browser automation that generates step-by-step SaaS documentation with screenshots.`
+- [ ] Add GitHub topics: `browser-automation`, `chrome-devtools-protocol`, `cdp`, `agentic-ai`, `llm`, `documentation`, `screenshots`, `markdown`, `fastapi`, `saas`
+- [ ] Keep the homepage field empty until there is a real public landing page
+- [ ] Verify the README first screen states that this repo is the open-source core
+- [ ] Enable `Issues` only if incoming triage will actually be monitored
+- [ ] Leave `Wiki`, `Projects`, and `Discussions` off unless they will be actively maintained
+- [ ] Add a social preview image only after there is intentional branding
+- [ ] Switch visibility to `Public` only after the About box and README are aligned
+
 ## Product Positioning
 
 - [ ] Position the repo as the open-source core, not the full future platform

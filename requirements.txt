@@ -1,13 +1,3 @@
-websockets>=12.0
-litellm>=1.40.0
-aiohttp>=3.9.0
-Pillow>=10.0.0
-python-dotenv>=1.0.0
-
-# Dev dependencies
-httpx>=0.28,<1.0
-pytest>=8.0
-pytest-asyncio>=0.23
-requests>=2.31,<3.0
-fastapi>=0.104,<1.0
-uvicorn>=0.24,<1.0
+# Canonical local install path lives in pyproject.toml.
+# Keep this file as a thin wrapper for tooling that expects requirements.txt.
+-e .[dev]

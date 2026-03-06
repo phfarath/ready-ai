@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a focused improvement to the open-source core
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please keep requests narrow and concrete. This repository is the open-source core, not the full long-term platform.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What user or developer problem is not handled well today?
+      placeholder: I cannot reuse the same run configuration without repeating a long list of CLI flags.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest change that would help.
+      placeholder: Add support for a YAML or TOML config file that maps to the existing CLI options.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+      description: Mention assumptions, non-goals, or why this belongs in the open-source core.
+      placeholder: This should stay CLI-first and should not require a hosted dashboard.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: Shell aliases help, but they do not scale across multiple flows or environments.
+    validations:
+      required: false
