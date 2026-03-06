@@ -4,6 +4,10 @@ Open-source core for `browser-auto`: agentic browser automation that drives Chro
 
 It plans a flow from the current DOM, executes the actions, critiques the result, and writes portable Markdown plus PNG screenshots to disk.
 
+<p align="center">
+  <img src="assets/ready-ai-hero.png" alt="ready-ai hero image" width="100%" />
+</p>
+
 ## What This Repo Is
 
 - A local CLI for documentation runs
