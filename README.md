@@ -1,6 +1,6 @@
 # ready-ai
 
-Open-source core for `browser-auto`: agentic browser automation that drives Chrome over raw CDP and generates step-by-step documentation with screenshots.
+`ready-ai` is an open-source agentic browser automation tool that drives Chrome over raw CDP and generates step-by-step documentation with screenshots.
 
 It plans a flow from the current DOM, executes the actions, critiques the result, and writes portable Markdown plus PNG screenshots to disk.
 
@@ -63,7 +63,7 @@ export OPENAI_API_KEY="your-key-here"
 ### 4. Run a first job
 
 ```bash
-python main.py run \
+ready-ai run \
   --goal "Document the login flow" \
   --url "https://app.example.com" \
   --title "Login Guide" \
@@ -112,7 +112,7 @@ Two auth modes are supported.
 This is usually the best option for authenticated SaaS apps.
 
 ```bash
-python main.py run \
+ready-ai run \
   --goal "Document account settings" \
   --url "https://app.example.com/settings" \
   --cookies-file "./cookies.json"
@@ -142,7 +142,7 @@ Notes:
 ### Option 2: Username/password
 
 ```bash
-python main.py run \
+ready-ai run \
   --goal "Document the billing page" \
   --url "https://app.example.com/login" \
   --username "user@example.com" \
@@ -156,7 +156,7 @@ This works best with straightforward email/password forms.
 Main command:
 
 ```bash
-python main.py run --help
+ready-ai run --help
 ```
 
 Useful flags:
@@ -183,7 +183,7 @@ Useful flags:
 Portuguese output:
 
 ```bash
-python main.py run \
+ready-ai run \
   --goal "Documentar o fluxo de onboarding" \
   --url "https://app.example.com" \
   --language pt \
@@ -193,7 +193,7 @@ python main.py run \
 Cheaper model for screenshot annotations:
 
 ```bash
-python main.py run \
+ready-ai run \
   --goal "Document the dashboard" \
   --url "https://app.example.com" \
   --model "claude-sonnet-4-20250514" \
@@ -205,7 +205,7 @@ python main.py run \
 Start the API:
 
 ```bash
-python main.py api --port 8000
+ready-ai api --port 8000
 ```
 
 Main endpoints:

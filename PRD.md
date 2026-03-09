@@ -1,4 +1,4 @@
-# Product Requirements Document — browser-auto
+# Product Requirements Document — ready-ai
 
 **Version:** 0.2
 **Last updated:** 2026-03-06
@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-browser-auto is an agentic browser automation engine that generates screenshot-rich user documentation for SaaS applications. Given a goal and a URL, it plans a documentation run, executes it step-by-step through raw Chrome DevTools Protocol, critiques the result, and produces a portable Markdown document with screenshots.
+ready-ai is an agentic browser automation engine that generates screenshot-rich user documentation for SaaS applications. Given a goal and a URL, it plans a documentation run, executes it step-by-step through raw Chrome DevTools Protocol, critiques the result, and produces a portable Markdown document with screenshots.
 
 The product is no longer "CLI only". The repository now contains:
 
@@ -29,13 +29,13 @@ Writing user documentation for SaaS products is:
 - **Inconsistent** — different writers produce different quality; annotations are subjective.
 - **Expensive** — technical writers or PMs spend significant time on documentation that is not core product work.
 
-Existing solutions either require a human to operate a screen recorder or depend on brittle scripted macros. browser-auto is designed to use LLM planning, adaptive execution, and critique in one automated loop.
+Existing solutions either require a human to operate a screen recorder or depend on brittle scripted macros. ready-ai is designed to use LLM planning, adaptive execution, and critique in one automated loop.
 
 ---
 
 ## 3. Solution & Product Vision
 
-browser-auto closes this gap with a three-agent pipeline:
+ready-ai closes this gap with a three-agent pipeline:
 
 1. **Planner** — given a goal and the current page DOM, generates a step-by-step plan.
 2. **Executor** — converts each step into a CDP action, verifies success, retries on failure, and annotates screenshots with a vision LLM.
@@ -54,7 +54,7 @@ The loop is self-healing:
 
 ## 4. Target Users
 
-| Persona | Pain | How browser-auto helps |
+| Persona | Pain | How ready-ai helps |
 |---------|------|------------------------|
 | **Solo developer / indie hacker** | No time or budget for a technical writer | Run the CLI after shipping and get docs immediately |
 | **Startup product team** | UI changes faster than docs can keep up | Re-run docs through the API or future schedules |
@@ -236,4 +236,3 @@ Items intentionally deferred, but still plausible later:
 - cross-origin iframe support
 - multi-tab flows
 - MFA / TOTP
-

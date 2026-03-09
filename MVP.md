@@ -1,4 +1,4 @@
-# MVP — browser-auto
+# MVP — ready-ai
 
 **Version:** 0.1
 **Last updated:** 2026-03-06
@@ -8,7 +8,7 @@
 
 ## 1. MVP Goal
 
-Launch browser-auto to the market in the smallest form that can validate real demand.
+Launch ready-ai to the market in the smallest form that can validate real demand.
 
 This MVP is not "a complete documentation platform".
 This MVP is:
@@ -62,7 +62,7 @@ The MVP should not try to support every browser workflow from day one.
 
 ## 4. MVP Value Proposition
 
-Given a URL and a documentation goal, browser-auto should:
+Given a URL and a documentation goal, ready-ai should:
 
 1. open the app
 2. authenticate with cookies or username/password
@@ -141,7 +141,7 @@ If any of these block launch, the launch scope is too broad.
 
 ## 7. Product Positioning for Launch
 
-browser-auto should be positioned narrowly.
+ready-ai should be positioned narrowly.
 
 Recommended positioning:
 
@@ -159,7 +159,7 @@ The MVP should sell one sharp promise, not the full long-term vision.
 
 ## 8. Definition of "Ready for Pilot"
 
-browser-auto is ready for pilot validation when all of the following are true:
+ready-ai is ready for pilot validation when all of the following are true:
 
 ### Product
 
@@ -242,4 +242,4 @@ To move from technical MVP to market MVP:
 
 ## 12. One-Sentence MVP
 
-**browser-auto generates publishable step-by-step documentation with screenshots for a core authenticated SaaS flow using a simple goal and URL.**
+**ready-ai generates publishable step-by-step documentation with screenshots for a core authenticated SaaS flow using a simple goal and URL.**

@@ -82,7 +82,7 @@ def launch_chrome(
     """
     chrome_bin = _find_chrome_binary()
     if user_data_dir is None:
-        user_data_dir = tempfile.mkdtemp(prefix="browser-auto-chrome-")
+        user_data_dir = tempfile.mkdtemp(prefix="ready-ai-chrome-")
 
     args = [
         chrome_bin,

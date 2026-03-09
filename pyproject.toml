@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "browser-auto"
+name = "ready-ai"
 version = "0.1.0"
-description = "Agentic browser automation for SaaS documentation generation using CDP + LLM"
+description = "ready-ai: agentic browser automation for SaaS documentation generation using CDP + LLM"
 requires-python = ">=3.10"
 
 dependencies = [
@@ -23,7 +27,13 @@ dev = [
 ]
 
 [project.scripts]
-browser-auto = "main:cli"
+ready-ai = "main:cli"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

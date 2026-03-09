@@ -1,4 +1,4 @@
-# AI Development Instructions — browser-auto
+# AI Development Instructions — ready-ai
 
 Guidelines for AI assistants working in this repository.
 
@@ -6,7 +6,7 @@ Guidelines for AI assistants working in this repository.
 
 ## 1. Mental Model
 
-browser-auto is an agentic documentation engine that controls Chrome through raw CDP.
+ready-ai is an agentic documentation engine that controls Chrome through raw CDP.
 
 Core loop:
 
@@ -18,8 +18,8 @@ docs       -> Critic -> score + gaps -> re-execution
 
 The repository now has two entry points:
 
-- `python main.py run` for local runs
-- `python main.py api` for the FastAPI server
+- `ready-ai run` for local runs
+- `ready-ai api` for the FastAPI server
 
 Current product phase: **CLI hardening + API stabilization**.
 

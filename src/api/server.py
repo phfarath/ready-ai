@@ -1,5 +1,5 @@
 """
-FastAPI Server Endpoints for browser-auto.
+FastAPI Server Endpoints for ready-ai.
 Starts the server and exposes runs/ endpoints.
 """
 
@@ -12,7 +12,7 @@ from src.api.models import RunRequest, RunStatusResponse
 from src.api.manager import RunManager
 
 app = FastAPI(
-    title="browser-auto API",
+    title="ready-ai API",
     description="Agentic browser automation for seamless documentation generation.",
     version="0.1.0",
 )

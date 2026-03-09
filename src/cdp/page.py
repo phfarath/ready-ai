@@ -34,11 +34,11 @@ class PageDomain:
                 let border = null;
                 
                 const initAssets = () => {
-                    if (document.getElementById('browser-auto-cursor-global')) return;
+                    if (document.getElementById('ready-ai-cursor-global')) return;
                     
                     // 1. Create the Animated Active Border
                     border = document.createElement('div');
-                    border.id = 'browser-auto-border-global';
+                    border.id = 'ready-ai-border-global';
                     border.style.position = 'fixed';
                     border.style.inset = '0';
                     border.style.pointerEvents = 'none';
@@ -46,18 +46,18 @@ class PageDomain:
                     
                     // Black and yellow pixelated 'smoke' glowing border
                     border.style.boxShadow = 'inset 0 0 0 2px rgba(255, 215, 0, 0.4), inset 0 0 0 4px rgba(0, 0, 0, 0.5)';
-                    border.style.animation = 'browser-auto-pixel-smoke 1.2s steps(4, end) infinite alternate';
+                    border.style.animation = 'ready-ai-pixel-smoke 1.2s steps(4, end) infinite alternate';
                     
                     // Add keyframes for pixel-smoke pulse and ripple effect
                     const style = document.createElement('style');
                     style.textContent = `
-                        @keyframes browser-auto-pixel-smoke {
+                        @keyframes ready-ai-pixel-smoke {
                             0%   { box-shadow: inset 0 0 0 2px rgba(255, 215, 0, 0.4), inset 0 0 0 6px rgba(0, 0, 0, 0.4),  inset 0 0 4px 6px rgba(255, 215, 0, 0.2); }
                             33%  { box-shadow: inset 0 0 0 4px rgba(255, 215, 0, 0.6), inset 0 0 0 8px rgba(0, 0, 0, 0.6),  inset 0 0 6px 8px rgba(255, 215, 0, 0.3); }
                             66%  { box-shadow: inset 0 0 0 6px rgba(255, 215, 0, 0.5), inset 0 0 0 10px rgba(0, 0, 0, 0.7), inset 0 0 8px 10px rgba(255, 215, 0, 0.4); }
                             100% { box-shadow: inset 0 0 0 8px rgba(255, 215, 0, 0.8), inset 0 0 0 12px rgba(0, 0, 0, 0.9), inset 0 0 10px 14px rgba(255, 215, 0, 0.5); }
                         }
-                        @keyframes browser-auto-ripple {
+                        @keyframes ready-ai-ripple {
                             0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
                             100% { transform: translate(-50%, -50%) scale(3); opacity: 0; }
                         }
@@ -66,7 +66,7 @@ class PageDomain:
 
                     // 2. Create the Custom SVG Cursor
                     cursor = document.createElement('div');
-                    cursor.id = 'browser-auto-cursor-global';
+                    cursor.id = 'ready-ai-cursor-global';
                     cursor.style.position = 'fixed';
                     cursor.style.width = '24px';
                     cursor.style.height = '24px';
@@ -122,7 +122,7 @@ class PageDomain:
                     ripple.style.pointerEvents = 'none';
                     ripple.style.zIndex = '2147483646'; // Below the cursor
                     ripple.style.transform = 'translate(-50%, -50%)';
-                    ripple.style.animation = 'browser-auto-ripple 0.4s ease-out forwards';
+                    ripple.style.animation = 'ready-ai-ripple 0.4s ease-out forwards';
                     
                     document.documentElement.appendChild(ripple);
                     

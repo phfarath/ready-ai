@@ -5,7 +5,7 @@
 
 ## Current State
 
-The repository is now in good shape to exist publicly as the open-source core of browser-auto.
+The repository is now in good shape to exist publicly as ready-ai.
 
 Completed:
 

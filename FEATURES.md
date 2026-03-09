@@ -2,7 +2,7 @@
 
 ## Estado Atual
 
-browser-auto ja entrega dois modos principais:
+ready-ai ja entrega dois modos principais:
 
 - **CLI local** para gerar documentacao a partir de `goal + url`
 - **API HTTP experimental** para disparar runs em background, acompanhar status e baixar artefatos
@@ -76,8 +76,8 @@ O projeto esta na fase de **CLI hardening + API stabilization**.
 Comandos disponiveis:
 
 ```text
-python main.py run ...
-python main.py api ...
+ready-ai run ...
+ready-ai api ...
 ```
 
 Flags principais do `run`:

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-browser-auto: Agentic browser automation for SaaS documentation.
+ready-ai: Agentic browser automation for SaaS documentation.
 
 Uses raw CDP (Chrome DevTools Protocol) + LLM to navigate SaaS UIs,
 capture screenshots, and generate annotated Markdown documentation.
 
 Usage:
-    python main.py run --goal "Documentar fluxo de login" --url "https://app.example.com"
-    python main.py api --port 8000
+    ready-ai run --goal "Documentar fluxo de login" --url "https://app.example.com"
+    ready-ai api --port 8000
 """
 
 import argparse
@@ -21,9 +21,6 @@ load_dotenv()  # Load .env file (API keys etc.)
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
-
-from src.agent.loop import AgenticLoop
-
 
 def setup_logging(verbose: bool = False) -> None:
     """Configure logging with colored output."""
@@ -44,7 +41,7 @@ def setup_logging(verbose: bool = False) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="🤖 Agentic browser automation for SaaS documentation",
+        description="🤖 ready-ai: Agentic browser automation for SaaS documentation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     
@@ -78,8 +75,10 @@ def parse_args() -> argparse.Namespace:
 
 
 async def async_main_run(args: argparse.Namespace) -> None:
+    from src.agent.loop import AgenticLoop
+
     logger = logging.getLogger("main")
-    logger.info("🚀 browser-auto — Local CLI Run")
+    logger.info("🚀 ready-ai — Local CLI Run")
     
     loop = AgenticLoop(
         goal=args.goal,

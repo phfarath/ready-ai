@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to browser-auto.
+Thanks for contributing to ready-ai.
 
 ## Before You Start
 

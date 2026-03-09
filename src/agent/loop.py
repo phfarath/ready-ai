@@ -1019,7 +1019,7 @@ class AgenticLoop:
                     el.style.outline = '3px solid #FF0000';
                     el.style.outlineOffset = '2px';
                     el.style.boxShadow = '0 0 0 4px rgba(255, 0, 0, 0.25)';
-                    el.setAttribute('data-browser-auto-highlight', 'true');
+                    el.setAttribute('data-ready-ai-highlight', 'true');
                     
                     // Move the global cursor to the element for the screenshot
                     if (window.__browserAutoCursorMove) {{
@@ -1039,12 +1039,12 @@ class AgenticLoop:
         try:
             await runtime.evaluate("""
                 (() => {
-                    const el = document.querySelector('[data-browser-auto-highlight]');
+                    const el = document.querySelector('[data-ready-ai-highlight]');
                     if (el) {
                         el.style.outline = el.dataset._prevOutline || '';
                         el.style.outlineOffset = el.dataset._prevOutlineOffset || '';
                         el.style.boxShadow = el.dataset._prevBoxShadow || '';
-                        el.removeAttribute('data-browser-auto-highlight');
+                        el.removeAttribute('data-ready-ai-highlight');
                         delete el.dataset._prevOutline;
                         delete el.dataset._prevOutlineOffset;
                         delete el.dataset._prevBoxShadow;
