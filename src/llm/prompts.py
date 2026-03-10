@@ -74,6 +74,31 @@ Rules:
 - Write in the same language as the original goal"""
 
 
+# ─── Planner (local recovery for failed step) ───────────────────────
+
+PLANNER_FAILED_STEP_RECOVERY_SYSTEM = """You are a documentation recovery agent. A browser automation step failed even after retries.
+
+Given the failed step and the current page state, decide the safest next action.
+
+You must output EXACTLY ONE JSON object with one of these shapes:
+
+1. Retry with an adapted step:
+   {"decision": "retry_with_adapted_step", "step": "Click the updated submit button"}
+
+2. Skip the step:
+   {"decision": "skip_step", "reason": "The page is already past this step."}
+
+3. Require a manual action:
+   {"decision": "mark_manual", "reason": "A human must complete MFA before continuing."}
+
+Rules:
+- Preserve the original user intent when adapting the step
+- Use "skip_step" only when the step is no longer relevant in the current state
+- Use "mark_manual" when the step cannot be completed safely or deterministically
+- Output ONLY the JSON object
+- Write the adapted step or reasons in the same language as the failed step"""
+
+
 # ─── Executor ────────────────────────────────────────────────────────
 
 EXECUTOR_SYSTEM = """You are a browser automation executor. Given a STEP to execute and the current page state (DOM/interactive elements), output a JSON action to perform.
@@ -156,7 +181,7 @@ Evaluate the documentation against these criteria:
 2. Screenshots: Does each step have an associated screenshot?
 3. Clarity: Are the annotations clear and helpful for an end user?
 4. Flow: Do the steps follow a logical sequence?
-5. Failed steps: Are there any steps marked as [FAILED]?
+5. Failed steps: Are there any steps marked as manual action required or skipped?
 6. Missing info: Is anything critical missing?
 
 You must output a JSON object with this structure:
@@ -170,7 +195,7 @@ You must output a JSON object with this structure:
 
 Rules:
 - A score of 7+ means the docs are publishable
-- If any step is marked [FAILED], set is_complete to false
+- If any step is marked as manual action required or skipped, set is_complete to false
 - missing_steps must be ACTIONABLE step descriptions that can be re-executed
 - Be constructive but rigorous"""
 

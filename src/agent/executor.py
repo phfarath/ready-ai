@@ -13,6 +13,7 @@ import logging
 import re
 import websockets
 from dataclasses import dataclass
+from typing import Optional
 
 from ..cdp.input import InputDomain
 from ..cdp.page import PageDomain
@@ -40,10 +41,16 @@ _PIERCE_JS = (
 class StepResult:
     """Result of executing a single step."""
     action_desc: str
-    success: bool
-    retry_needed: bool
+    success: bool = True
+    retry_needed: bool = False
     attempts: int = 1
     failure_reason: str = ""
+    status: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.status is None:
+            self.status = "completed" if self.success else "manual_required"
+        self.success = self.status == "completed"
 
 
 async def execute_step(
@@ -163,11 +170,10 @@ async def execute_step(
     # All retries exhausted
     logger.error(f"  [FAILED] Step after {MAX_RETRIES} attempts: {step}")
     return StepResult(
-        action_desc=f"[FAILED after {MAX_RETRIES} attempts] {last_action_desc}",
-        success=False,
-        retry_needed=False,
+        action_desc=last_action_desc or "No executable action was completed",
         attempts=MAX_RETRIES,
         failure_reason="; ".join(failures),
+        status="manual_required",
     )
 
 

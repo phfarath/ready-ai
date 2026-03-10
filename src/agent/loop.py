@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import websockets
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,7 @@ from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
 from ..llm.prompts import (
     ANNOTATOR_PROMPT,
+    PLANNER_FAILED_STEP_RECOVERY_SYSTEM,
     PLANNER_REPLAN_SYSTEM,
     PLANNER_SPA_REPLAN_SYSTEM,
     PLANNER_SUPPLEMENT_SYSTEM,
@@ -61,9 +63,11 @@ class AgenticLoop:
         language: Optional[str] = None,
         run_id: str = "local_run",
         resume_from: Optional[str] = None,
+        plan_only: bool = False,
     ):
         self.run_id = run_id
         self.resume_from = resume_from
+        self.plan_only = plan_only
         self.goal = goal
         self.title = title
         self.language = language
@@ -83,6 +87,7 @@ class AgenticLoop:
         self._last_url: Optional[str] = None
         self._cursor_task: Optional[asyncio.Task] = None
         self._cursor_moving = False
+        self._max_replans_per_step = 2
         
         # Checkpointing state
         self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
@@ -114,6 +119,8 @@ class AgenticLoop:
                     action_description=s.action_description,
                     annotation=s.annotation,
                     screenshot_path=f"step_{s.step_number:02d}.png",
+                    status=s.status,
+                    status_reason=s.status_reason,
                 ) for s in self.doc.steps
             ]
             
@@ -189,38 +196,15 @@ class AgenticLoop:
                 self._cursor_task = asyncio.create_task(self._thinking_cursor_loop())
 
             # 5. Plan (or load from checkpoint)
-            if self._state.planned_steps and self._state.current_step_index < len(self._state.planned_steps):
-                logger.info(f"═══ Resuming planned steps from checkpoint ({self._state.current_step_index}/{len(self._state.planned_steps)})")
-                steps = self._state.planned_steps
-                
-                # Restore doc renderer state if any
-                if self._state.doc_steps:
-                    for ds in self._state.doc_steps:
-                        doc.add_step(
-                            step_number=ds.number,
-                            title=ds.title,
-                            screenshot_b64="", # Not restoring base64 images from JSON
-                            annotation=ds.annotation,
-                            action_description=ds.action_description
-                        )
-                        # Patch the path manually since add_step expects base64
-                        if ds.screenshot_path and doc.steps:
-                            doc.steps[-1]["screenshot_path"] = Path(ds.screenshot_path)
-            else:
-                logger.info(f"═══ Planning steps for: {self.goal}")
-                self._save_checkpoint("PLANNING")
-                self._cursor_moving = True
-                dom_html = await self.page.get_dom_html(max_length=4000)
-                elements = await self.runtime.get_interactive_elements()
-                steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
-                self._cursor_moving = False
-                
-                self._state.planned_steps = steps
-                self._state.current_step_index = 0
-                self._save_checkpoint("EXECUTING")
+            steps = await self._resolve_steps(llm, doc)
 
             if not steps:
                 raise RuntimeError("Planner returned no steps")
+
+            if self.plan_only:
+                self._save_checkpoint("PLANNED")
+                self._log_plan(steps)
+                return str(self._state_path)
 
             # 6. Execute each step with verification
             step_results = await self._execute_steps(
@@ -258,6 +242,59 @@ class AgenticLoop:
         self.llm = llm
         self.annotation_llm = annotation_llm
         self.doc = doc
+
+    def _restore_doc_from_state(self, doc: DocRenderer) -> None:
+        """Restore rendered step metadata from checkpoint state."""
+        if not self._state.doc_steps:
+            return
+
+        for ds in self._state.doc_steps:
+            doc.add_step(
+                step_number=ds.number,
+                title=ds.title,
+                screenshot_b64="",
+                annotation=ds.annotation,
+                action_description=ds.action_description,
+                status=ds.status,
+                status_reason=ds.status_reason,
+            )
+
+    def _log_plan(self, steps: list[str]) -> None:
+        """Log a numbered plan for plan-only mode."""
+        logger.info("═══ Planned steps")
+        for index, step in enumerate(steps, 1):
+            logger.info("    %s. %s", index, step)
+
+    async def _resolve_steps(self, llm: LLMClient, doc: DocRenderer) -> list[str]:
+        """Load a saved plan or generate a new one for the current page state."""
+        has_saved_plan = bool(self._state.planned_steps)
+        should_resume_plan = has_saved_plan and (
+            self.plan_only or self._state.current_step_index < len(self._state.planned_steps)
+        )
+
+        if should_resume_plan:
+            logger.info(
+                "═══ Resuming planned steps from checkpoint (%s/%s)",
+                self._state.current_step_index,
+                len(self._state.planned_steps),
+            )
+            self._restore_doc_from_state(doc)
+            return self._state.planned_steps
+
+        logger.info("═══ Planning steps for: %s", self.goal)
+        self._save_checkpoint("PLANNING")
+        self._cursor_moving = True
+        dom_html = await self.page.get_dom_html(max_length=4000)
+        elements = await self.runtime.get_interactive_elements()
+        steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
+        self._cursor_moving = False
+
+        self._state.planned_steps = steps
+        self._state.current_step_index = 0
+        self._state.executed_results = []
+        self._state.doc_steps = []
+        self._save_checkpoint("PLANNED" if self.plan_only else "EXECUTING")
+        return steps
 
     async def _recover_browser_session(self) -> None:
         """
@@ -309,8 +346,7 @@ class AgenticLoop:
         i = start_number + step_idx
         crashes = 0
         MAX_CRASHES = 3
-        MAX_SPA_REPLANS_PER_STEP = 2
-        spa_replan_attempts_by_index: dict[int, int] = {}
+        replan_attempts_by_index: dict[int, int] = {}
 
         while step_idx < len(step_list):
             try:
@@ -365,48 +401,24 @@ class AgenticLoop:
                 post_url = await runtime.evaluate("window.location.href")
                 post_fingerprint = await self._dom_fingerprint(runtime)
 
-                if self._is_spa_drift(
-                    pre_fingerprint=pre_fingerprint,
-                    post_fingerprint=post_fingerprint,
-                    result_success=result.success,
-                    pre_url=pre_url,
-                    post_url=post_url,
-                ):
-                    logger.warning(
-                        "    ⚠ SPA state drift detected (same URL, fingerprint changed, step failed)"
+                if not result.success:
+                    result, step, replan_attempts = await self._recover_failed_step(
+                        step=step,
+                        result=result,
+                        pre_url=pre_url,
+                        post_url=post_url,
+                        pre_fingerprint=pre_fingerprint,
+                        post_fingerprint=post_fingerprint,
+                        page=page,
+                        input_domain=input_domain,
+                        runtime=runtime,
+                        llm=llm,
+                        replan_attempts=replan_attempts_by_index.get(step_idx, 0),
                     )
-                    replan_attempts = spa_replan_attempts_by_index.get(step_idx, 0)
-                    if replan_attempts >= MAX_SPA_REPLANS_PER_STEP:
-                        logger.warning(
-                            f"    ⚠ SPA replan limit reached for step index {step_idx}; "
-                            "continuing with original failed step"
-                        )
-                    else:
-                        spa_replan_attempts_by_index[step_idx] = replan_attempts + 1
-                        latest_dom_html = await page.get_dom_html(max_length=4000)
-                        latest_elements = await runtime.get_interactive_elements()
-                        adapted_step = await self._replan_spa_step(
-                            failed_step=step,
-                            failure_reason=result.failure_reason,
-                            action_desc=result.action_desc,
-                            current_url=post_url,
-                            dom_html=latest_dom_html,
-                            elements=latest_elements,
-                            llm=llm,
-                        )
-                        if adapted_step:
-                            logger.info(
-                                f"    ⟳ SPA-replanned current step: '{step}' → '{adapted_step}'"
-                            )
-                            step_list[step_idx] = adapted_step
-                            self._state.planned_steps = step_list
-                            self._save_checkpoint("EXECUTING")
-                            self._cursor_moving = True
-                            continue
-                        logger.warning(
-                            "    SPA replan returned no usable step; "
-                            "continuing with original failed step"
-                        )
+                    replan_attempts_by_index[step_idx] = replan_attempts
+                    step_list[step_idx] = step
+                    self._state.planned_steps = step_list
+                    self._save_checkpoint("EXECUTING")
 
                 # Highlight the interacted element before screenshot
                 last_selector = self._extract_selector(result.action_desc)
@@ -435,18 +447,14 @@ class AgenticLoop:
                     image_b64=screenshot_b64,
                 )
 
-                # Mark failed steps in the doc
-                title = step if result.success else f"[FAILED] {step}"
-                action_desc = result.action_desc
-                if result.failure_reason:
-                    action_desc += f"\n\n**Failure details:** {result.failure_reason}"
-
                 doc.add_step(
                     step_number=i,
-                    title=title,
+                    title=step,
                     screenshot_b64=screenshot_b64,
                     annotation=annotation,
-                    action_description=action_desc,
+                    action_description=self._format_step_action_details(result),
+                    status=result.status or "completed",
+                    status_reason=result.failure_reason,
                 )
 
                 # Store step result state
@@ -538,6 +546,174 @@ class AgenticLoop:
             and pre_fingerprint != post_fingerprint
             and pre_url == post_url
         )
+
+    @staticmethod
+    def _format_step_action_details(result: executor.StepResult) -> str:
+        details = result.action_desc
+        if result.failure_reason:
+            details += f"\n\n**Failure details:** {result.failure_reason}"
+        return details
+
+    async def _recover_failed_step(
+        self,
+        step: str,
+        result: executor.StepResult,
+        pre_url: str,
+        post_url: str,
+        pre_fingerprint: str,
+        post_fingerprint: str,
+        page: PageDomain,
+        input_domain: InputDomain,
+        runtime: RuntimeDomain,
+        llm: LLMClient,
+        replan_attempts: int,
+    ) -> tuple[executor.StepResult, str, int]:
+        """Try bounded local recovery before finalizing a failed step."""
+        working_step = step
+        working_result = result
+
+        if (
+            replan_attempts < self._max_replans_per_step
+            and self._is_spa_drift(
+                pre_fingerprint=pre_fingerprint,
+                post_fingerprint=post_fingerprint,
+                result_success=working_result.success,
+                pre_url=pre_url,
+                post_url=post_url,
+            )
+        ):
+            logger.warning(
+                "    ⚠ SPA state drift detected (same URL, fingerprint changed, step failed)"
+            )
+            latest_dom_html = await page.get_dom_html(max_length=4000)
+            latest_elements = await runtime.get_interactive_elements()
+            adapted_step = await self._replan_spa_step(
+                failed_step=working_step,
+                failure_reason=working_result.failure_reason,
+                action_desc=working_result.action_desc,
+                current_url=post_url,
+                dom_html=latest_dom_html,
+                elements=latest_elements,
+                llm=llm,
+            )
+            if adapted_step:
+                logger.info("    ⟳ SPA-replanned current step: '%s' → '%s'", working_step, adapted_step)
+                replan_attempts += 1
+                working_step = adapted_step
+                working_result = await executor.execute_step(
+                    working_step,
+                    latest_dom_html,
+                    latest_elements,
+                    llm,
+                    page,
+                    input_domain,
+                    runtime,
+                    current_url=post_url,
+                )
+                if working_result.success:
+                    return working_result, working_step, replan_attempts
+
+        if replan_attempts >= self._max_replans_per_step:
+            logger.warning("    ⚠ Replan limit reached for current step; marking final outcome")
+            return working_result, working_step, replan_attempts
+
+        latest_dom_html = await page.get_dom_html(max_length=4000)
+        latest_elements = await runtime.get_interactive_elements()
+        decision = await self._recover_failed_step_locally(
+            failed_step=working_step,
+            result=working_result,
+            current_url=post_url,
+            dom_html=latest_dom_html,
+            elements=latest_elements,
+            llm=llm,
+        )
+
+        if decision.get("decision") == "retry_with_adapted_step" and decision.get("step"):
+            adapted_step = decision["step"].strip()
+            logger.info("    ⟳ Locally adapted failed step: '%s' → '%s'", working_step, adapted_step)
+            replan_attempts += 1
+            retry_result = await executor.execute_step(
+                adapted_step,
+                latest_dom_html,
+                latest_elements,
+                llm,
+                page,
+                input_domain,
+                runtime,
+                current_url=post_url,
+            )
+            return retry_result, adapted_step, replan_attempts
+
+        if decision.get("decision") == "skip_step":
+            return (
+                executor.StepResult(
+                    action_desc=working_result.action_desc,
+                    attempts=working_result.attempts,
+                    failure_reason=decision.get("reason") or working_result.failure_reason,
+                    status="skipped",
+                ),
+                working_step,
+                replan_attempts,
+            )
+
+        return (
+            executor.StepResult(
+                action_desc=working_result.action_desc,
+                attempts=working_result.attempts,
+                failure_reason=decision.get("reason") or working_result.failure_reason,
+                status="manual_required",
+            ),
+            working_step,
+            replan_attempts,
+        )
+
+    async def _recover_failed_step_locally(
+        self,
+        failed_step: str,
+        result: executor.StepResult,
+        current_url: str,
+        dom_html: str,
+        elements: str,
+        llm: LLMClient,
+    ) -> dict:
+        """Ask the LLM for a bounded recovery decision for a failed step."""
+        user_prompt = (
+            f"CURRENT PAGE URL: {current_url}\n\n"
+            f"FAILED CURRENT STEP:\n- {failed_step}\n\n"
+            f"LAST ACTION DESCRIPTION:\n{result.action_desc}\n\n"
+            f"FAILURE REASON:\n{result.failure_reason or 'No explicit reason provided'}\n\n"
+            f"INTERACTIVE ELEMENTS ON CURRENT PAGE:\n{elements}\n\n"
+            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
+            "Decide whether to adapt the step, skip it, or mark it as manual."
+        )
+        if self.language:
+            user_prompt += f"\nIMPORTANT: Write all output in {self.language}."
+
+        messages = [
+            {"role": "system", "content": PLANNER_FAILED_STEP_RECOVERY_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            self._cursor_moving = True
+            response = await llm.complete(messages, json_mode=True)
+            self._cursor_moving = False
+            return self._parse_recovery_decision(response)
+        except Exception as exc:
+            self._cursor_moving = False
+            logger.warning("    Local failed-step recovery fell back to manual handling: %s", exc)
+            return {"decision": "mark_manual", "reason": result.failure_reason}
+
+    @staticmethod
+    def _parse_recovery_decision(response: str) -> dict:
+        """Parse JSON returned by local failed-step recovery prompt."""
+        try:
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+        return {"decision": "mark_manual", "reason": "Recovery decision could not be parsed."}
 
     async def _replan_remaining(
         self,

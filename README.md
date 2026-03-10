@@ -176,6 +176,10 @@ Useful flags:
 | `--cookies-file` | | `None` | Cookie JSON file |
 | `--username` | | `None` | Login username/email |
 | `--password` | | `None` | Login password |
+| `--config` | | `None` | Load run settings from a flat YAML/TOML file |
+| `--run-id` | | `local_run` | Checkpoint identity inside the output directory |
+| `--resume` | | `false` | Resume from an existing checkpoint |
+| `--plan-only` | | `false` | Open the page, build the plan, save checkpoint, skip execution |
 | `--verbose` | `-v` | `false` | Debug logging |
 
 ### More examples
@@ -198,6 +202,22 @@ ready-ai run \
   --url "https://app.example.com" \
   --model "claude-sonnet-4-20250514" \
   --annotation-model "gpt-4o-mini"
+```
+
+Reusable config file:
+
+```yaml
+goal: Document the login flow
+url: https://app.example.com/login
+output: ./output/login-flow
+run_id: login-flow
+plan_only: true
+headless: true
+```
+
+```bash
+ready-ai run --config ./ready-ai.yaml
+ready-ai run --config ./ready-ai.yaml --resume
 ```
 
 ## API
@@ -252,9 +272,6 @@ Core modules:
 
 High-priority gaps today:
 
-- better failed-step recovery
-- `--config` file support
-- dry-run / plan-only mode
 - OAuth / SSO coverage
 - MFA / TOTP coverage
 - multi-tab flows
@@ -274,9 +291,6 @@ See:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [SECURITY.md](SECURITY.md)
-- [MVP.md](MVP.md)
-- [NEXT_STEPS.md](NEXT_STEPS.md)
-- [PRD.md](PRD.md)
 
 ## Safety Notes
 

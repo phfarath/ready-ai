@@ -93,77 +93,26 @@ async def test_execute_steps_replans_current_step_on_spa_drift(tmp_path, monkeyp
     loop = _new_loop(tmp_path)
     loop._state.planned_steps = ["Open modal and confirm"]
 
-    exec_mock = AsyncMock(side_effect=[
-        StepResult(
-            action_desc="[FAILED after 3 attempts] Clicked element: #confirm",
-            success=False,
-            retry_needed=False,
-            attempts=3,
-            failure_reason="Selector became stale after modal transition",
-        ),
-        StepResult(
-            action_desc="Clicked element: #modal-confirm",
-            success=True,
-            retry_needed=False,
-            attempts=1,
-        ),
-    ])
-    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
-
-    monkeypatch.setattr(loop, "_dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2", "fp2", "fp2"]))
-    replan_mock = AsyncMock(return_value="Click the modal confirm button")
-    monkeypatch.setattr(loop, "_replan_spa_step", replan_mock)
-    monkeypatch.setattr(loop, "_highlight_element", AsyncMock())
-    monkeypatch.setattr(loop, "_clear_highlight", AsyncMock())
-
-    page = _StubPage()
-    runtime = _StubRuntime(
-        [
-            "https://app.local",
-            "https://app.local",
-            "https://app.local",
-            "https://app.local",
+    exec_mock = AsyncMock(
+        side_effect=[
+            StepResult(
+                action_desc="Clicked element: #confirm",
+                success=False,
+                attempts=3,
+                failure_reason="Selector became stale after modal transition",
+            ),
+            StepResult(
+                action_desc="Clicked element: #modal-confirm",
+                success=True,
+                attempts=1,
+            ),
         ]
     )
-    doc = DocRenderer("Goal")
-
-    results = await loop._execute_steps(
-        ["Open modal and confirm"],
-        page,
-        _StubInput(),
-        runtime,
-        MagicMock(),
-        _annotation_llm(),
-        doc,
-    )
-
-    assert len(results) == 1
-    assert results[0].success is True
-    assert exec_mock.await_count == 2
-    assert exec_mock.await_args_list[0].args[0] == "Open modal and confirm"
-    assert exec_mock.await_args_list[1].args[0] == "Click the modal confirm button"
-    assert replan_mock.await_count == 1
-    assert loop._state.planned_steps[0] == "Click the modal confirm button"
-    assert len(doc.steps) == 1
-
-
-@pytest.mark.asyncio
-async def test_execute_steps_spa_replan_fallback_keeps_failed_step(tmp_path, monkeypatch):
-    loop = _new_loop(tmp_path)
-    loop._state.planned_steps = ["Open modal and confirm"]
-
-    exec_mock = AsyncMock(return_value=StepResult(
-        action_desc="[FAILED after 3 attempts] Clicked element: #confirm",
-        success=False,
-        retry_needed=False,
-        attempts=3,
-        failure_reason="State changed in SPA",
-    ))
     monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
 
     monkeypatch.setattr(loop, "_dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2"]))
-    replan_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(loop, "_replan_spa_step", replan_mock)
+    monkeypatch.setattr(loop, "_replan_spa_step", AsyncMock(return_value="Click the modal confirm button"))
+    monkeypatch.setattr(loop, "_recover_failed_step_locally", AsyncMock())
     monkeypatch.setattr(loop, "_highlight_element", AsyncMock())
     monkeypatch.setattr(loop, "_clear_highlight", AsyncMock())
 
@@ -182,49 +131,88 @@ async def test_execute_steps_spa_replan_fallback_keeps_failed_step(tmp_path, mon
     )
 
     assert len(results) == 1
-    assert results[0].success is False
-    assert replan_mock.await_count == 1
-    assert exec_mock.await_count == 1
-    assert len(doc.steps) == 1
-    assert doc.steps[0].title.startswith("[FAILED]")
+    assert results[0].success is True
+    assert exec_mock.await_count == 2
+    assert exec_mock.await_args_list[1].args[0] == "Click the modal confirm button"
+    assert loop._state.planned_steps[0] == "Click the modal confirm button"
+    assert doc.steps[0].title == "Click the modal confirm button"
+    assert doc.steps[0].status == "completed"
 
 
 @pytest.mark.asyncio
-async def test_execute_steps_spa_replan_respects_attempt_limit(tmp_path, monkeypatch):
+async def test_execute_steps_uses_local_adapted_step_when_recovery_succeeds(tmp_path, monkeypatch):
     loop = _new_loop(tmp_path)
-    loop._state.planned_steps = ["Open modal and confirm"]
+    loop._state.planned_steps = ["Submit form"]
 
-    failed_result = StepResult(
-        action_desc="[FAILED after 3 attempts] Clicked element: #confirm",
-        success=False,
-        retry_needed=False,
-        attempts=3,
-        failure_reason="State changed in SPA",
+    exec_mock = AsyncMock(
+        side_effect=[
+            StepResult(
+                action_desc="Clicked element: #submit",
+                success=False,
+                attempts=3,
+                failure_reason="Submit button selector changed",
+            ),
+            StepResult(
+                action_desc="Clicked element: [data-testid='submit']",
+                success=True,
+                attempts=1,
+            ),
+        ]
     )
-    exec_mock = AsyncMock(side_effect=[failed_result, failed_result, failed_result])
     monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
 
-    monkeypatch.setattr(
-        loop,
-        "_dom_fingerprint",
-        AsyncMock(side_effect=["a", "b", "b", "c", "c", "d"]),
-    )
-    replan_mock = AsyncMock(return_value="Click the modal confirm button")
-    monkeypatch.setattr(loop, "_replan_spa_step", replan_mock)
+    monkeypatch.setattr(loop, "_dom_fingerprint", AsyncMock(side_effect=["fp1", "fp1"]))
+    monkeypatch.setattr(loop, "_recover_failed_step_locally", AsyncMock(return_value={
+        "decision": "retry_with_adapted_step",
+        "step": "Click the primary submit button",
+    }))
     monkeypatch.setattr(loop, "_highlight_element", AsyncMock())
     monkeypatch.setattr(loop, "_clear_highlight", AsyncMock())
 
     page = _StubPage()
-    runtime = _StubRuntime(
-        [
-            "https://app.local",
-            "https://app.local",
-            "https://app.local",
-            "https://app.local",
-            "https://app.local",
-            "https://app.local",
-        ]
+    runtime = _StubRuntime(["https://app.local", "https://app.local"])
+    doc = DocRenderer("Goal")
+
+    results = await loop._execute_steps(
+        ["Submit form"],
+        page,
+        _StubInput(),
+        runtime,
+        MagicMock(),
+        _annotation_llm(),
+        doc,
     )
+
+    assert len(results) == 1
+    assert results[0].success is True
+    assert exec_mock.await_count == 2
+    assert loop._state.planned_steps[0] == "Click the primary submit button"
+    assert doc.steps[0].title == "Click the primary submit button"
+
+
+@pytest.mark.asyncio
+async def test_execute_steps_marks_manual_required_when_recovery_fails(tmp_path, monkeypatch):
+    loop = _new_loop(tmp_path)
+    loop._state.planned_steps = ["Open modal and confirm"]
+
+    exec_mock = AsyncMock(return_value=StepResult(
+        action_desc="Clicked element: #confirm",
+        success=False,
+        attempts=3,
+        failure_reason="MFA modal blocks the next action",
+    ))
+    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
+
+    monkeypatch.setattr(loop, "_dom_fingerprint", AsyncMock(side_effect=["fp1", "fp1"]))
+    monkeypatch.setattr(loop, "_recover_failed_step_locally", AsyncMock(return_value={
+        "decision": "mark_manual",
+        "reason": "Complete the MFA challenge manually.",
+    }))
+    monkeypatch.setattr(loop, "_highlight_element", AsyncMock())
+    monkeypatch.setattr(loop, "_clear_highlight", AsyncMock())
+
+    page = _StubPage()
+    runtime = _StubRuntime(["https://app.local", "https://app.local"])
     doc = DocRenderer("Goal")
 
     results = await loop._execute_steps(
@@ -238,9 +226,11 @@ async def test_execute_steps_spa_replan_respects_attempt_limit(tmp_path, monkeyp
     )
 
     assert len(results) == 1
-    assert results[0].success is False
-    assert exec_mock.await_count == 3
-    assert replan_mock.await_count == 2
+    assert results[0].status == "manual_required"
+    assert doc.steps[0].title == "Open modal and confirm"
+    assert doc.steps[0].status == "manual_required"
+    assert "Complete the MFA challenge manually." in doc.render()
+    assert "[FAILED]" not in doc.render()
 
 
 @pytest.mark.asyncio
@@ -249,9 +239,8 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
     loop._state.planned_steps = ["Submit form"]
 
     exec_mock = AsyncMock(return_value=StepResult(
-        action_desc="[FAILED after 3 attempts] Clicked element: #submit",
+        action_desc="Clicked element: #submit",
         success=False,
-        retry_needed=False,
         attempts=3,
         failure_reason="Navigation changed context",
     ))
@@ -260,6 +249,10 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
     monkeypatch.setattr(loop, "_dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2"]))
     replan_mock = AsyncMock(return_value="Click submit in redirected page")
     monkeypatch.setattr(loop, "_replan_spa_step", replan_mock)
+    monkeypatch.setattr(loop, "_recover_failed_step_locally", AsyncMock(return_value={
+        "decision": "mark_manual",
+        "reason": "Review the redirected state manually.",
+    }))
     monkeypatch.setattr(loop, "_highlight_element", AsyncMock())
     monkeypatch.setattr(loop, "_clear_highlight", AsyncMock())
 
@@ -279,4 +272,5 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
 
     assert len(results) == 1
     assert results[0].success is False
+    assert results[0].status == "manual_required"
     assert replan_mock.await_count == 0

@@ -20,6 +20,8 @@ class DocStepState:
     action_description: str
     annotation: str
     screenshot_path: str
+    status: str = "completed"
+    status_reason: str = ""
 
 
 @dataclass
@@ -28,7 +30,7 @@ class RunState:
     run_id: str
     goal: str
     url: str
-    status: str = "PLANNING"  # PLANNING, EXECUTING, CRITIQUE, FINISHED, FAILED
+    status: str = "PLANNING"  # PLANNING, PLANNED, EXECUTING, CRITIQUE, FINISHED, FAILED
     
     # Execution state
     planned_steps: list[str] = field(default_factory=list)

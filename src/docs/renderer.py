@@ -34,6 +34,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "review_notes":            "Review Notes",
         "review":                  "Review",
         "improvement_suggestions": "Improvement suggestions:",
+        "step_skipped":            "Step skipped",
+        "manual_required":         "Manual action required",
     },
     "portuguese": {
         "index":                   "Índice",
@@ -44,6 +46,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "review_notes":            "Notas de Revisão",
         "review":                  "Revisão",
         "improvement_suggestions": "Sugestões de melhoria:",
+        "step_skipped":            "Passo ignorado",
+        "manual_required":         "Ação manual necessária",
     },
     "spanish": {
         "index":                   "Índice",
@@ -54,6 +58,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "review_notes":            "Notas de revisión",
         "review":                  "Revisión",
         "improvement_suggestions": "Sugerencias de mejora:",
+        "step_skipped":            "Paso omitido",
+        "manual_required":         "Acción manual requerida",
     },
     "french": {
         "index":                   "Sommaire",
@@ -64,6 +70,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "review_notes":            "Notes de révision",
         "review":                  "Révision",
         "improvement_suggestions": "Suggestions d'amélioration :",
+        "step_skipped":            "Étape ignorée",
+        "manual_required":         "Action manuelle requise",
     },
     "german": {
         "index":                   "Inhaltsverzeichnis",
@@ -74,6 +82,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "review_notes":            "Überprüfungsnotizen",
         "review":                  "Überprüfung",
         "improvement_suggestions": "Verbesserungsvorschläge:",
+        "step_skipped":            "Schritt übersprungen",
+        "manual_required":         "Manuelle Aktion erforderlich",
     },
     "italian": {
         "index":                   "Indice",
@@ -84,6 +94,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "review_notes":            "Note di revisione",
         "review":                  "Revisione",
         "improvement_suggestions": "Suggerimenti per il miglioramento:",
+        "step_skipped":            "Passaggio saltato",
+        "manual_required":         "Azione manuale richiesta",
     },
 }
 
@@ -108,6 +120,8 @@ class DocStep:
     screenshot_b64: str
     annotation: str
     action_description: str
+    status: str = "completed"
+    status_reason: str = ""
 
 
 # ─── Renderer ────────────────────────────────────────────────────────────────
@@ -136,6 +150,8 @@ class DocRenderer:
         screenshot_b64: str,
         annotation: str,
         action_description: str = "",
+        status: str = "completed",
+        status_reason: str = "",
     ) -> None:
         """Add a documentation step with its screenshot and annotation."""
         step = DocStep(
@@ -144,12 +160,15 @@ class DocRenderer:
             screenshot_b64=screenshot_b64,
             annotation=annotation,
             action_description=action_description,
+            status=status,
+            status_reason=status_reason,
         )
         self.steps.append(step)
 
         # Store screenshot for later file output
-        filename = f"step_{step_number:02d}.png"
-        self.screenshots[filename] = screenshot_b64
+        if screenshot_b64:
+            filename = f"step_{step_number:02d}.png"
+            self.screenshots[filename] = screenshot_b64
 
         logger.debug(f"Added step {step_number}: {title}")
 
@@ -204,6 +223,13 @@ class DocRenderer:
             # Annotation
             lines.append(step.annotation)
             lines.append("")
+
+            if step.status == "manual_required":
+                lines.append(f"> **{lb['manual_required']}:** {step.status_reason}")
+                lines.append("")
+            elif step.status == "skipped":
+                lines.append(f"> **{lb['step_skipped']}:** {step.status_reason}")
+                lines.append("")
 
             # Action detail (collapsible)
             if step.action_description:

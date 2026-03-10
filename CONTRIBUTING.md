@@ -5,7 +5,6 @@ Thanks for contributing to ready-ai.
 ## Before You Start
 
 - Read [README.md](README.md) for product context and setup.
-- Read [AI_INSTRUCTIONS.md](AI_INSTRUCTIONS.md) for architecture and maintenance rules.
 - Keep changes focused. Small, reviewable pull requests are preferred.
 
 ## Development Setup
@@ -38,9 +37,8 @@ Do not commit secrets, cookies, generated outputs, or local environment files.
 If your change affects product behavior, also update the relevant docs:
 
 - [README.md](README.md) for setup and usage
-- [FEATURES.md](FEATURES.md) for capability inventory
-- [PRD.md](PRD.md) for phase and roadmap changes
-- [NEXT_STEPS.md](NEXT_STEPS.md) for active execution priorities
+- [CONTRIBUTING.md](CONTRIBUTING.md) for contributor workflow
+- [SECURITY.md](SECURITY.md) for reporting changes that affect disclosure guidance
 
 ## Testing
 
