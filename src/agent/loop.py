@@ -6,30 +6,19 @@ Supports authentication via cookies or credentials, and separate annotation mode
 """
 
 import asyncio
-import hashlib
-import json
 import logging
-import re
 import websockets
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from ..cdp.browser import launch_chrome, get_ws_url
-from ..cdp.connection import CDPConnection
-from ..cdp.page import PageDomain
-from ..cdp.input import InputDomain
-from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
-from ..llm.prompts import (
-    ANNOTATOR_PROMPT,
-    PLANNER_FAILED_STEP_RECOVERY_SYSTEM,
-    PLANNER_REPLAN_SYSTEM,
-    PLANNER_SPA_REPLAN_SYSTEM,
-    PLANNER_SUPPLEMENT_SYSTEM,
-)
+from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
-from . import planner, executor, critic
+from . import planner, executor, critic, recovery
+from .cursor import CursorAnimator, extract_selector
+from .browser_session import BrowserSession
 from .state import RunState, DocStepState
 
 logger = logging.getLogger(__name__)
@@ -75,23 +64,23 @@ class AgenticLoop:
         self.model = model
         self.annotation_model = annotation_model or model
         self.output_dir = output_dir
-        self.port = port
         self.headless = headless
         self.max_critic_rounds = max_critic_rounds
-        self.cookies_file = cookies_file
-        self.username = username
-        self.password = password
 
-        self._chrome_proc = None
-        self._conn: Optional[CDPConnection] = None
+        self._session = BrowserSession(
+            port=port,
+            headless=headless,
+            cookies_file=cookies_file,
+            username=username,
+            password=password,
+        )
+        self._cursor = CursorAnimator()
         self._last_url: Optional[str] = None
-        self._cursor_task: Optional[asyncio.Task] = None
-        self._cursor_moving = False
         self._max_replans_per_step = 2
-        
+
         # Checkpointing state
         self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
-        
+
         if self.resume_from and Path(self.resume_from).exists():
             self._state = RunState.from_file(self.resume_from)
             if self._state:
@@ -100,17 +89,15 @@ class AgenticLoop:
                 self._state = RunState(run_id=self.run_id, goal=self.goal, url=self.url)
         else:
             self._state = RunState(run_id=self.run_id, goal=self.goal, url=self.url)
-            
+
     def _save_checkpoint(self, status: Optional[str] = None) -> None:
         """Write current execution state to disk."""
         if status:
             self._state.status = status
-            
-        # Update URL
+
         if self._last_url:
             self._state.last_known_url = self._last_url
-            
-        # Serialize document steps
+
         if getattr(self, 'doc', None):
             self._state.doc_steps = [
                 DocStepState(
@@ -123,43 +110,9 @@ class AgenticLoop:
                     status_reason=s.status_reason,
                 ) for s in self.doc.steps
             ]
-            
-        # Write to disk
+
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state.to_file(self._state_path)
-
-    async def _thinking_cursor_loop(self) -> None:
-        """Background task that slightly moves the cursor simulating 'thinking'."""
-        import random
-        # Start at center
-        curr_x, curr_y = 500, 500
-        while True:
-            try:
-                await asyncio.sleep(random.uniform(1.0, 3.0))
-                if not self._cursor_moving or not self._conn:
-                    continue
-                
-                # Move occasionally
-                curr_x += random.randint(-40, 40)
-                curr_y += random.randint(-40, 40)
-                
-                # Keep within bounds (approximate)
-                curr_x = max(10, min(1000, curr_x))
-                curr_y = max(10, min(1000, curr_y))
-                
-                if self._conn:
-                    # Ignore errors if page is navigating
-                    try:
-                        await self._conn.send(
-                            "Runtime.evaluate", 
-                            {"expression": f"if (window.__browserAutoCursorMove) window.__browserAutoCursorMove({curr_x}, {curr_y})"}
-                        )
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.debug(f"Cursor loop error: {e}")
 
     async def run(self) -> str:
         """
@@ -170,30 +123,33 @@ class AgenticLoop:
         """
         try:
             # 1. Launch Chrome and connect
-            await self._setup_browser()
+            await self._session.setup()
 
             # 2. Create domain helpers
             llm = LLMClient(model=self.model)
             annotation_llm = LLMClient(model=self.annotation_model)
             doc = DocRenderer(goal=self.goal, title=self.title, language=self.language)
-            self._init_cdp_domains(llm, annotation_llm, doc)
+            self.llm = llm
+            self.annotation_llm = annotation_llm
+            self.doc = doc
 
             # Enable page events
-            await self.page.enable()
+            await self._session.page.enable()
 
             # 3. Inject auth if provided
-            if self.cookies_file:
-                await self._inject_cookies(self.page)
-            if self.username and self.password:
-                await self._handle_login(self.page, self.input_domain, self.runtime, llm)
+            if self._session.cookies_file:
+                await self._session.inject_cookies()
+            if self._session.username and self._session.password:
+                await self._session.page.navigate(self.url)
+                await self._session.handle_login(llm)
 
             # 4. Navigate to target URL
             logger.info(f"═══ Navigating to: {self.url}")
-            await self.page.navigate(self.url)
+            await self._session.page.navigate(self.url)
 
             # Start thinking cursor
             if not self.headless:
-                self._cursor_task = asyncio.create_task(self._thinking_cursor_loop())
+                self._cursor.start(self._session.conn)
 
             # 5. Plan (or load from checkpoint)
             steps = await self._resolve_steps(llm, doc)
@@ -207,18 +163,14 @@ class AgenticLoop:
                 return str(self._state_path)
 
             # 6. Execute each step with verification
-            step_results = await self._execute_steps(
-                steps, self.page, self.input_domain, self.runtime, llm, annotation_llm, doc
-            )
+            step_results = await self._execute_steps(steps, llm, annotation_llm, doc)
 
             # 7. Critic review with re-execution loop
             self._save_checkpoint("CRITIQUE")
-            self._cursor_moving = True
+            self._cursor.moving = True
             markdown = doc.render()
-            await self._critic_loop(
-                markdown, self.page, self.input_domain, self.runtime, llm, annotation_llm, doc, step_results
-            )
-            self._cursor_moving = False
+            await self._critic_loop(markdown, llm, annotation_llm, doc, step_results)
+            self._cursor.moving = False
 
             # 8. Save output
             self._save_checkpoint("FINISHED")
@@ -230,24 +182,14 @@ class AgenticLoop:
             logger.error(f"Pipeline error: {e}")
             self._save_checkpoint("FAILED")
             raise
-
         finally:
-            await self._cleanup()
-
-    def _init_cdp_domains(self, llm: LLMClient, annotation_llm: LLMClient, doc: DocRenderer) -> None:
-        """Initialize or re-initialize CDP domains after connection."""
-        self.page = PageDomain(self._conn)
-        self.input_domain = InputDomain(self._conn)
-        self.runtime = RuntimeDomain(self._conn)
-        self.llm = llm
-        self.annotation_llm = annotation_llm
-        self.doc = doc
+            await self._cursor.stop()
+            await self._session.teardown()
 
     def _restore_doc_from_state(self, doc: DocRenderer) -> None:
         """Restore rendered step metadata from checkpoint state."""
         if not self._state.doc_steps:
             return
-
         for ds in self._state.doc_steps:
             doc.add_step(
                 step_number=ds.number,
@@ -283,11 +225,13 @@ class AgenticLoop:
 
         logger.info("═══ Planning steps for: %s", self.goal)
         self._save_checkpoint("PLANNING")
-        self._cursor_moving = True
-        dom_html = await self.page.get_dom_html(max_length=4000)
-        elements = await self.runtime.get_interactive_elements()
+        self._cursor.moving = True
+        page = self._session.page
+        runtime = self._session.runtime
+        dom_html = await page.get_dom_html(max_length=4000)
+        elements = await runtime.get_interactive_elements()
         steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
-        self._cursor_moving = False
+        self._cursor.moving = False
 
         self._state.planned_steps = steps
         self._state.current_step_index = 0
@@ -296,42 +240,25 @@ class AgenticLoop:
         self._save_checkpoint("PLANNED" if self.plan_only else "EXECUTING")
         return steps
 
-    async def _recover_browser_session(self) -> None:
-        """
-        Recover from a catastrophic mid-execution browser crash or disconnect.
-        """
-        logger.error("⟲ Browser session completely lost. Attempting state machine recovery...")
-        
-        # 1. Ensure previous stale processes are totally torn down
-        await self._cleanup()
-        
-        # 2. Respawn Browser & Domain Helpers
-        await self._setup_browser()
-        self._init_cdp_domains(self.llm, self.annotation_llm, self.doc)
-        
-        # 3. Enable network and inputs
-        await self.page.enable()
-        
-        # 4. Inject original auth credentials 
-        if self.cookies_file:
-            await self._inject_cookies(self.page)
-        if self.username and self.password:
-            # We don't have LLM context easily handy for a brand new login loop if it's strictly required,
-            # but usually session cookies via inject_cookies suffice. Re-running formal login is riskier.
-            logger.warning("Recovery: Skipping full LLM-driven login; relying on surviving cached cookies.")
+    async def _get_page_context(self, max_length: int = 4000) -> tuple[str, str, str]:
+        """Get DOM HTML, interactive elements, and current URL in one call."""
+        page = self._session.page
+        runtime = self._session.runtime
+        dom_html = await page.get_dom_html(max_length=max_length)
+        elements = await runtime.get_interactive_elements()
+        url = await runtime.evaluate("window.location.href")
+        return dom_html, elements, url
 
-        # 5. Bring user exactly where the agent blew up
-        resume_url = self._last_url or self.url
-        logger.info(f"⟲ State recovery navigating back to: {resume_url}")
-        await self.page.navigate(resume_url, wait_for_network=True)
-        logger.info("⟲ State recovery complete. Re-attempting step.")
+    @staticmethod
+    def _format_step_action_details(result: executor.StepResult) -> str:
+        details = result.action_desc
+        if result.failure_reason:
+            details += f"\n\n**Failure details:** {result.failure_reason}"
+        return details
 
     async def _execute_steps(
         self,
         steps: list[str],
-        page: PageDomain,
-        input_domain: InputDomain,
-        runtime: RuntimeDomain,
         llm: LLMClient,
         annotation_llm: LLMClient,
         doc: DocRenderer,
@@ -339,10 +266,14 @@ class AgenticLoop:
     ) -> list[executor.StepResult]:
         """Execute a list of steps with verification, screenshots, and annotations."""
         results = []
-        self._last_url = None  # reset at start of each execution pass
+        self._last_url = None
+
+        page = self._session.page
+        input_domain = self._session.input_domain
+        runtime = self._session.runtime
 
         step_list = list(steps)
-        step_idx = self._state.current_step_index  # start from where we left off
+        step_idx = self._state.current_step_index
         i = start_number + step_idx
         crashes = 0
         MAX_CRASHES = 3
@@ -353,11 +284,11 @@ class AgenticLoop:
                 step = step_list[step_idx]
                 logger.info(f"═══ Step {i}: {step}")
 
-                # Get fresh DOM state and current URL for context awareness
+                # Get fresh DOM state and current URL
                 dom_html = await page.get_dom_html(max_length=4000)
                 elements = await runtime.get_interactive_elements()
                 pre_url = await runtime.evaluate("window.location.href")
-                pre_fingerprint = await self._dom_fingerprint(runtime)
+                pre_fingerprint = await recovery.dom_fingerprint(runtime)
 
                 # URL drift detection with replanning
                 if self._last_url is not None and self._last_url != pre_url:
@@ -365,8 +296,9 @@ class AgenticLoop:
                         f"    ⚠ URL changed between steps: {self._last_url} → {pre_url}"
                     )
                     remaining = step_list[step_idx:]
-                    replanned = await self._replan_remaining(
-                        remaining, dom_html, elements, pre_url, llm
+                    replanned = await recovery.replan_remaining(
+                        remaining, dom_html, elements, pre_url, llm,
+                        language=self.language,
                     )
                     if replanned:
                         logger.info(
@@ -379,9 +311,9 @@ class AgenticLoop:
                         step = step_list[step_idx]
 
                 self._last_url = pre_url
-                self._cursor_moving = False
+                self._cursor.moving = False
 
-                # Execute with verification + retries (with URL context)
+                # Execute with verification + retries
                 result = await executor.execute_step(
                     step, dom_html, elements, llm, page, input_domain, runtime,
                     current_url=pre_url,
@@ -399,10 +331,10 @@ class AgenticLoop:
                     logger.debug(f"Wait for network idle failed/timed out: {e}")
 
                 post_url = await runtime.evaluate("window.location.href")
-                post_fingerprint = await self._dom_fingerprint(runtime)
+                post_fingerprint = await recovery.dom_fingerprint(runtime)
 
                 if not result.success:
-                    result, step, replan_attempts = await self._recover_failed_step(
+                    result, step, replan_attempts = await recovery.recover_failed_step(
                         step=step,
                         result=result,
                         pre_url=pre_url,
@@ -414,6 +346,8 @@ class AgenticLoop:
                         runtime=runtime,
                         llm=llm,
                         replan_attempts=replan_attempts_by_index.get(step_idx, 0),
+                        max_replans_per_step=self._max_replans_per_step,
+                        language=self.language,
                     )
                     replan_attempts_by_index[step_idx] = replan_attempts
                     step_list[step_idx] = step
@@ -421,18 +355,18 @@ class AgenticLoop:
                     self._save_checkpoint("EXECUTING")
 
                 # Highlight the interacted element before screenshot
-                last_selector = self._extract_selector(result.action_desc)
+                last_selector = extract_selector(result.action_desc)
                 if last_selector:
-                    await self._highlight_element(runtime, last_selector)
+                    await CursorAnimator.highlight_element(runtime, last_selector)
 
                 # Screenshot
                 screenshot_b64 = await page.screenshot()
 
                 # Clear highlight after screenshot
                 if last_selector:
-                    await self._clear_highlight(runtime)
+                    await CursorAnimator.clear_highlight(runtime)
 
-                # Annotate via vision LLM (uses annotation_model for cost)
+                # Annotate via vision LLM
                 language_instruction = (
                     f"Write in {self.language}"
                     if self.language
@@ -457,361 +391,32 @@ class AgenticLoop:
                     status_reason=result.failure_reason,
                 )
 
-                # Store step result state
-                from dataclasses import asdict
                 self._state.executed_results.append(asdict(result))
-                
                 results.append(result)
                 step_idx += 1
                 self._state.current_step_index = step_idx
                 self._save_checkpoint("EXECUTING")
-                
+
                 i += 1
-                
-                self._cursor_moving = True
-                
+                self._cursor.moving = True
+
             except websockets.exceptions.ConnectionClosed:
                 crashes += 1
                 if crashes > MAX_CRASHES:
                     logger.error(f"Exceeded maximum global crashes ({MAX_CRASHES}). Aborting pipeline.")
                     raise
-                
-                # Initiate State Machine Crash Recovery
-                await self._recover_browser_session()
-                # Re-sync local loop variables to the newly recovered globals
-                page = self.page
-                input_domain = self.input_domain
-                runtime = self.runtime
-                # Loop will naturally restart at the exact same step_idx where it failed!
+
+                resume_url = self._last_url or self.url
+                await self._session.recover(resume_url)
+                page = self._session.page
+                input_domain = self._session.input_domain
+                runtime = self._session.runtime
 
         return results
-
-    @staticmethod
-    async def _dom_fingerprint(runtime: RuntimeDomain) -> str:
-        """Compute a fast hash for SPA-relevant interactive DOM state."""
-        js = """
-            (() => {
-                const selectors = [
-                    'button', 'input', 'select', 'textarea',
-                    '[role="tab"]', '[role="menuitem"]',
-                    '[aria-expanded]', '[aria-selected]', '[data-state]'
-                ].join(',');
-
-                const normalize = (value) => (value || '')
-                    .replace(/\\s+/g, ' ')
-                    .trim()
-                    .slice(0, 50);
-
-                const entries = Array.from(document.querySelectorAll(selectors))
-                    .filter(el => {
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 0 && rect.height > 0;
-                    })
-                    .map(el => {
-                        const text = normalize(el.innerText || el.textContent || el.value);
-                        const state = [
-                            el.tagName.toLowerCase(),
-                            el.getAttribute('role') || '',
-                            text,
-                            el.getAttribute('aria-expanded') || '',
-                            el.getAttribute('aria-selected') || '',
-                            el.getAttribute('data-state') || '',
-                            el.hasAttribute('disabled') ? 'disabled' : 'enabled',
-                        ];
-                        return state.join('|');
-                    });
-
-                const uniqueSorted = Array.from(new Set(entries)).sort();
-                return uniqueSorted.slice(0, 250).join('\\n');
-            })()
-        """
-        try:
-            payload = await runtime.evaluate(js)
-            payload_str = str(payload) if payload is not None else ""
-        except Exception:
-            payload_str = ""
-        return hashlib.md5(payload_str.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _is_spa_drift(
-        pre_fingerprint: str,
-        post_fingerprint: str,
-        result_success: bool,
-        pre_url: str,
-        post_url: str,
-    ) -> bool:
-        """SPA drift policy (v1): failed step + changed fingerprint + same URL."""
-        return (
-            result_success is False
-            and pre_fingerprint != post_fingerprint
-            and pre_url == post_url
-        )
-
-    @staticmethod
-    def _format_step_action_details(result: executor.StepResult) -> str:
-        details = result.action_desc
-        if result.failure_reason:
-            details += f"\n\n**Failure details:** {result.failure_reason}"
-        return details
-
-    async def _recover_failed_step(
-        self,
-        step: str,
-        result: executor.StepResult,
-        pre_url: str,
-        post_url: str,
-        pre_fingerprint: str,
-        post_fingerprint: str,
-        page: PageDomain,
-        input_domain: InputDomain,
-        runtime: RuntimeDomain,
-        llm: LLMClient,
-        replan_attempts: int,
-    ) -> tuple[executor.StepResult, str, int]:
-        """Try bounded local recovery before finalizing a failed step."""
-        working_step = step
-        working_result = result
-
-        if (
-            replan_attempts < self._max_replans_per_step
-            and self._is_spa_drift(
-                pre_fingerprint=pre_fingerprint,
-                post_fingerprint=post_fingerprint,
-                result_success=working_result.success,
-                pre_url=pre_url,
-                post_url=post_url,
-            )
-        ):
-            logger.warning(
-                "    ⚠ SPA state drift detected (same URL, fingerprint changed, step failed)"
-            )
-            latest_dom_html = await page.get_dom_html(max_length=4000)
-            latest_elements = await runtime.get_interactive_elements()
-            adapted_step = await self._replan_spa_step(
-                failed_step=working_step,
-                failure_reason=working_result.failure_reason,
-                action_desc=working_result.action_desc,
-                current_url=post_url,
-                dom_html=latest_dom_html,
-                elements=latest_elements,
-                llm=llm,
-            )
-            if adapted_step:
-                logger.info("    ⟳ SPA-replanned current step: '%s' → '%s'", working_step, adapted_step)
-                replan_attempts += 1
-                working_step = adapted_step
-                working_result = await executor.execute_step(
-                    working_step,
-                    latest_dom_html,
-                    latest_elements,
-                    llm,
-                    page,
-                    input_domain,
-                    runtime,
-                    current_url=post_url,
-                )
-                if working_result.success:
-                    return working_result, working_step, replan_attempts
-
-        if replan_attempts >= self._max_replans_per_step:
-            logger.warning("    ⚠ Replan limit reached for current step; marking final outcome")
-            return working_result, working_step, replan_attempts
-
-        latest_dom_html = await page.get_dom_html(max_length=4000)
-        latest_elements = await runtime.get_interactive_elements()
-        decision = await self._recover_failed_step_locally(
-            failed_step=working_step,
-            result=working_result,
-            current_url=post_url,
-            dom_html=latest_dom_html,
-            elements=latest_elements,
-            llm=llm,
-        )
-
-        if decision.get("decision") == "retry_with_adapted_step" and decision.get("step"):
-            adapted_step = decision["step"].strip()
-            logger.info("    ⟳ Locally adapted failed step: '%s' → '%s'", working_step, adapted_step)
-            replan_attempts += 1
-            retry_result = await executor.execute_step(
-                adapted_step,
-                latest_dom_html,
-                latest_elements,
-                llm,
-                page,
-                input_domain,
-                runtime,
-                current_url=post_url,
-            )
-            return retry_result, adapted_step, replan_attempts
-
-        if decision.get("decision") == "skip_step":
-            return (
-                executor.StepResult(
-                    action_desc=working_result.action_desc,
-                    attempts=working_result.attempts,
-                    failure_reason=decision.get("reason") or working_result.failure_reason,
-                    status="skipped",
-                ),
-                working_step,
-                replan_attempts,
-            )
-
-        return (
-            executor.StepResult(
-                action_desc=working_result.action_desc,
-                attempts=working_result.attempts,
-                failure_reason=decision.get("reason") or working_result.failure_reason,
-                status="manual_required",
-            ),
-            working_step,
-            replan_attempts,
-        )
-
-    async def _recover_failed_step_locally(
-        self,
-        failed_step: str,
-        result: executor.StepResult,
-        current_url: str,
-        dom_html: str,
-        elements: str,
-        llm: LLMClient,
-    ) -> dict:
-        """Ask the LLM for a bounded recovery decision for a failed step."""
-        user_prompt = (
-            f"CURRENT PAGE URL: {current_url}\n\n"
-            f"FAILED CURRENT STEP:\n- {failed_step}\n\n"
-            f"LAST ACTION DESCRIPTION:\n{result.action_desc}\n\n"
-            f"FAILURE REASON:\n{result.failure_reason or 'No explicit reason provided'}\n\n"
-            f"INTERACTIVE ELEMENTS ON CURRENT PAGE:\n{elements}\n\n"
-            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
-            "Decide whether to adapt the step, skip it, or mark it as manual."
-        )
-        if self.language:
-            user_prompt += f"\nIMPORTANT: Write all output in {self.language}."
-
-        messages = [
-            {"role": "system", "content": PLANNER_FAILED_STEP_RECOVERY_SYSTEM},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        try:
-            self._cursor_moving = True
-            response = await llm.complete(messages, json_mode=True)
-            self._cursor_moving = False
-            return self._parse_recovery_decision(response)
-        except Exception as exc:
-            self._cursor_moving = False
-            logger.warning("    Local failed-step recovery fell back to manual handling: %s", exc)
-            return {"decision": "mark_manual", "reason": result.failure_reason}
-
-    @staticmethod
-    def _parse_recovery_decision(response: str) -> dict:
-        """Parse JSON returned by local failed-step recovery prompt."""
-        try:
-            return json.loads(response.strip())
-        except json.JSONDecodeError:
-            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
-            if match:
-                return json.loads(match.group(1))
-        return {"decision": "mark_manual", "reason": "Recovery decision could not be parsed."}
-
-    async def _replan_remaining(
-        self,
-        remaining_steps: list[str],
-        dom_html: str,
-        elements: str,
-        current_url: str,
-        llm: LLMClient,
-    ) -> list[str]:
-        """
-        Replan remaining steps after an unexpected URL change.
-
-        Returns adapted step list, or the original list if replanning fails.
-        """
-        remaining_context = "\n".join(f"- {s}" for s in remaining_steps)
-        user_prompt = (
-            f"CURRENT PAGE URL: {current_url}\n\n"
-            f"REMAINING PLANNED STEPS (may reference elements from the previous page):\n"
-            f"{remaining_context}\n\n"
-            f"INTERACTIVE ELEMENTS ON CURRENT PAGE:\n{elements}\n\n"
-            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
-            f"The browser navigated to a new page. Adapt the remaining steps to this "
-            f"page's context. Preserve steps that still apply, modify steps that "
-            f"reference old-page elements, and remove steps that are no longer relevant. "
-            f"Output ONLY the numbered list:"
-        )
-        if self.language:
-            user_prompt += f"\nIMPORTANT: Write all output in {self.language}."
-
-        messages = [
-            {"role": "system", "content": PLANNER_REPLAN_SYSTEM},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        try:
-            self._cursor_moving = True
-            response = await llm.complete(messages)
-            self._cursor_moving = False
-            new_steps = planner._parse_steps(response)
-            return new_steps if new_steps else remaining_steps
-        except Exception as e:
-            self._cursor_moving = False
-            logger.warning(f"    Replanning failed: {e}, continuing with original steps")
-            return remaining_steps
-
-    async def _replan_spa_step(
-        self,
-        failed_step: str,
-        failure_reason: str,
-        action_desc: str,
-        current_url: str,
-        dom_html: str,
-        elements: str,
-        llm: LLMClient,
-    ) -> Optional[str]:
-        """
-        Adapt only the current failed step for SPA state changes on the same URL.
-
-        Returns an adapted single step, or None if replanning fails.
-        """
-        user_prompt = (
-            f"CURRENT PAGE URL: {current_url}\n\n"
-            f"FAILED CURRENT STEP:\n- {failed_step}\n\n"
-            f"LAST ACTION DESCRIPTION:\n{action_desc}\n\n"
-            f"FAILURE REASON:\n{failure_reason or 'No explicit reason provided'}\n\n"
-            f"INTERACTIVE ELEMENTS ON CURRENT PAGE:\n{elements}\n\n"
-            f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
-            f"The URL stayed the same, but SPA state changed. Rewrite ONLY the failed "
-            f"current step so it is executable in this updated in-page state. "
-            f"Output ONLY one numbered step."
-        )
-        if self.language:
-            user_prompt += f"\nIMPORTANT: Write all output in {self.language}."
-
-        messages = [
-            {"role": "system", "content": PLANNER_SPA_REPLAN_SYSTEM},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        try:
-            self._cursor_moving = True
-            response = await llm.complete(messages)
-            self._cursor_moving = False
-            candidate_steps = planner._parse_steps(response)
-            if not candidate_steps:
-                return None
-            return candidate_steps[0]
-        except Exception as e:
-            self._cursor_moving = False
-            logger.warning(f"    SPA step replanning failed: {e}")
-            return None
 
     async def _critic_loop(
         self,
         markdown: str,
-        page: PageDomain,
-        input_domain: InputDomain,
-        runtime: RuntimeDomain,
         llm: LLMClient,
         annotation_llm: LLMClient,
         doc: DocRenderer,
@@ -837,28 +442,22 @@ class AgenticLoop:
             if feedback.suggestions:
                 logger.info(f"    Suggestions: {feedback.suggestions}")
 
-            # Critic found missing steps → re-execute them
             if feedback.missing_steps:
                 logger.info(f"    ⟳ Re-executing {len(feedback.missing_steps)} missing steps")
                 new_results = await self._reexecute_missing_steps(
-                    feedback.missing_steps,
-                    page, input_domain, runtime, llm, annotation_llm, doc,
+                    feedback.missing_steps, llm, annotation_llm, doc,
                 )
                 step_results.extend(new_results)
                 markdown = doc.render()
-                self._cursor_moving = True # Resume moving while reviewing next round
+                self._cursor.moving = True
             else:
-                # No missing steps, but not approved — add notes and move on
                 doc.add_critic_notes(feedback.feedback, feedback.suggestions)
                 markdown = doc.render()
-                self._cursor_moving = True
+                self._cursor.moving = True
 
     async def _reexecute_missing_steps(
         self,
         missing_steps: list[str],
-        page: PageDomain,
-        input_domain: InputDomain,
-        runtime: RuntimeDomain,
         llm: LLMClient,
         annotation_llm: LLMClient,
         doc: DocRenderer,
@@ -869,11 +468,12 @@ class AgenticLoop:
         Returns:
             List of StepResult from the re-executed steps
         """
-        # Get current page context
+        page = self._session.page
+        runtime = self._session.runtime
+
         dom_html = await page.get_dom_html(max_length=4000)
         elements = await runtime.get_interactive_elements()
 
-        # Ask planner to generate concrete actions for the missing steps
         missing_context = "\n".join(f"- {s}" for s in missing_steps)
         supplement_prompt = (
             f"MISSING STEPS TO COVER:\n{missing_context}\n\n"
@@ -898,334 +498,8 @@ class AgenticLoop:
 
         logger.info(f"    Planner generated {len(new_steps)} supplement steps")
 
-        # Execute the new steps starting from the next step number
         next_num = len(doc.steps) + 1
         return await self._execute_steps(
-            new_steps, page, input_domain, runtime, llm, annotation_llm, doc,
+            new_steps, llm, annotation_llm, doc,
             start_number=next_num,
         )
-
-    async def _inject_cookies(self, page: PageDomain) -> None:
-        """Inject cookies from a JSON file for session authentication."""
-        if not self.cookies_file:
-            return
-
-        cookie_path = Path(self.cookies_file)
-        if not cookie_path.exists():
-            logger.error(f"Cookies file not found: {self.cookies_file}")
-            return
-
-        try:
-            cookies = json.loads(cookie_path.read_text())
-            if not isinstance(cookies, list):
-                logger.error("Cookies file must contain a JSON array of cookie objects")
-                return
-
-            for cookie in cookies:
-                # Ensure required fields
-                if "name" not in cookie or "value" not in cookie:
-                    continue
-
-                # Map common cookie export format to CDP format
-                cdp_cookie = {
-                    "name": cookie["name"],
-                    "value": cookie["value"],
-                    "domain": cookie.get("domain", ""),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                }
-                if "sameSite" in cookie:
-                    cdp_cookie["sameSite"] = cookie["sameSite"]
-                if "expirationDate" in cookie:
-                    cdp_cookie["expires"] = cookie["expirationDate"]
-
-                await self._conn.send("Network.setCookie", cdp_cookie)
-
-            logger.info(f"Injected {len(cookies)} cookies from {self.cookies_file}")
-
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to parse cookies file: {e}")
-
-    async def _handle_login(
-        self,
-        page: PageDomain,
-        input_domain: InputDomain,
-        runtime: RuntimeDomain,
-        llm: LLMClient,
-    ) -> None:
-        """
-        Automatically detect and fill a login form using provided credentials.
-        Navigates to the URL first, detects login fields, fills them, and submits.
-        """
-        logger.info("═══ Handling authentication...")
-        await self._conn.send("Network.enable")
-        await page.navigate(self.url)
-
-        # Check if there's a login form on the page
-        # Also checks autocomplete attribute for apps using type="text" with autocomplete="email"
-        has_login = await runtime.evaluate("""
-            (() => {
-                const inputs = document.querySelectorAll('input');
-                let hasEmail = false, hasPassword = false;
-                inputs.forEach(i => {
-                    const ac = (i.getAttribute('autocomplete') || '').toLowerCase();
-                    if (i.type === 'email' ||
-                        (i.type === 'text' && (
-                            i.name?.includes('email') || i.name?.includes('user') ||
-                            i.placeholder?.toLowerCase().includes('email') ||
-                            i.placeholder?.toLowerCase().includes('user') ||
-                            ac.includes('email') || ac.includes('username')
-                        ))
-                    ) hasEmail = true;
-                    if (i.type === 'password') hasPassword = true;
-                });
-                return hasEmail && hasPassword;
-            })()
-        """)
-
-        if not has_login:
-            # Try to find a navigation link to the login page
-            navigated = await runtime.evaluate("""
-                (() => {
-                    const links = Array.from(document.querySelectorAll('a, button, [role="button"]'));
-                    const loginNode = links.find(el => {
-                        const t = (el.innerText || '').toLowerCase();
-                        const h = (el.getAttribute('href') || '').toLowerCase();
-                        return (
-                            t.includes('log in') || t.includes('login') || t.includes('sign in') || 
-                            t.includes('entrar') || t.includes('acessar') || h.includes('login') || h.includes('signin')
-                        );
-                    });
-                    if (loginNode) {
-                        loginNode.click();
-                        return true;
-                    }
-                    return false;
-                })()
-            """)
-            
-            if navigated:
-                logger.info("    Login link found, navigating to authentication page...")
-                try:
-                    await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
-                except Exception:
-                    pass
-                
-                # Check again if form is present
-                has_login = await runtime.evaluate("""
-                    (() => {
-                        const inputs = document.querySelectorAll('input');
-                        let hasE = false, hasP = false;
-                        inputs.forEach(i => {
-                            const ac = (i.getAttribute('autocomplete') || '').toLowerCase();
-                            if (i.type === 'email' || (i.type === 'text' && (
-                                i.name?.includes('email') || i.name?.includes('user') ||
-                                i.placeholder?.toLowerCase().includes('email') || i.placeholder?.toLowerCase().includes('user') ||
-                                ac.includes('email') || ac.includes('username')
-                            ))) hasE = true;
-                            if (i.type === 'password') hasP = true;
-                        });
-                        return hasE && hasP;
-                    })()
-                """)
-
-        if not has_login:
-            logger.info("    No login form detected, skipping auth")
-            return
-
-        logger.info("    Login form detected, filling credentials")
-
-        # Escape credentials for safe JS interpolation
-        safe_username = json.dumps(self.username)
-        safe_password = json.dumps(self.password)
-
-        # Find and fill email/username field.
-        # Uses the native HTMLInputElement.prototype value setter to bypass React's
-        # instance-level property override, so React's synthetic event system correctly
-        # picks up the new value and updates the component state.
-        email_filled = await runtime.evaluate(f"""
-            (() => {{
-                const nativeSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
-                ).set;
-                const inputs = document.querySelectorAll('input');
-                for (const i of inputs) {{
-                    const ac = (i.getAttribute('autocomplete') || '').toLowerCase();
-                    if (i.type === 'email' ||
-                        (i.type === 'text' && (
-                            i.name?.includes('email') || i.name?.includes('user') ||
-                            i.placeholder?.toLowerCase().includes('email') ||
-                            i.placeholder?.toLowerCase().includes('user') ||
-                            ac.includes('email') || ac.includes('username')
-                        ))
-                    ) {{
-                        i.focus();
-                        i.select();
-                        nativeSetter.call(i, {safe_username});
-                        i.dispatchEvent(new InputEvent('input', {{
-                            bubbles: true, cancelable: true,
-                            inputType: 'insertText', data: {safe_username}
-                        }}));
-                        i.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return true;
-                    }}
-                }}
-                return false;
-            }})()
-        """)
-
-        # Find and fill password field (same native setter approach)
-        pass_filled = await runtime.evaluate(f"""
-            (() => {{
-                const nativeSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
-                ).set;
-                const i = document.querySelector('input[type="password"]');
-                if (i) {{
-                    i.focus();
-                    i.select();
-                    nativeSetter.call(i, {safe_password});
-                    i.dispatchEvent(new InputEvent('input', {{
-                        bubbles: true, cancelable: true,
-                        inputType: 'insertText', data: {safe_password}
-                    }}));
-                    i.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return true;
-                }}
-                return false;
-            }})()
-        """)
-
-        if email_filled and pass_filled:
-            # Submit the form
-            submitted = await runtime.evaluate("""
-                (() => {
-                    // Try submit button first
-                    const btn = document.querySelector(
-                        'button[type="submit"], input[type="submit"], ' +
-                        'button:not([type]), [role="button"]'
-                    );
-                    if (btn) { btn.click(); return 'button'; }
-                    // Fallback: submit the form directly
-                    const form = document.querySelector('form');
-                    if (form) { form.submit(); return 'form'; }
-                    return false;
-                })()
-            """)
-            logger.info(f"    Login submitted via: {submitted}")
-            # Wait for the auth redirect to fully settle instead of a fixed sleep
-            try:
-                await self._conn.wait_for_event("Page.loadEventFired", timeout=10.0)
-                await page.wait_for_network_idle(timeout=5.0, idle_time=0.5)
-            except TimeoutError:
-                logger.warning("    Auth redirect timed out, continuing anyway")
-            logger.info("    Authentication complete")
-        else:
-            logger.warning("    Could not fill login form automatically")
-
-    async def _setup_browser(self) -> None:
-        """Launch Chrome and establish CDP connection."""
-        logger.info("Launching Chrome...")
-        self._chrome_proc = launch_chrome(
-            port=self.port,
-            headless=self.headless,
-        )
-
-        ws_url = await get_ws_url(port=self.port)
-
-        self._conn = CDPConnection()
-        await self._conn.connect(ws_url)
-        await self._conn.attach_to_page()
-
-    async def _cleanup(self) -> None:
-        """Close connections and kill Chrome process."""
-        self._cursor_moving = False
-        if self._cursor_task:
-            self._cursor_task.cancel()
-            try:
-                await self._cursor_task
-            except asyncio.CancelledError:
-                pass
-                
-        if self._conn:
-            try:
-                await self._conn.close()
-            except Exception:
-                pass
-
-        if self._chrome_proc:
-            try:
-                self._chrome_proc.terminate()
-                self._chrome_proc.wait(timeout=5)
-            except Exception:
-                try:
-                    self._chrome_proc.kill()
-                except Exception:
-                    pass
-            logger.info("Chrome process terminated")
-
-    @staticmethod
-    def _extract_selector(action_desc: str) -> str | None:
-        """Extract CSS selector from an action description like 'Clicked element: #btn'."""
-        import re
-        # Match patterns like "Clicked element: <selector>" or "Scrolled to element: <selector>"
-        match = re.search(r"element(?:\s+via\s+\w+\s+fallback)?:\s*(.+?)(?:\n|$)", action_desc)
-        if match:
-            selector = match.group(1).strip()
-            # Don't try to highlight if it's a failure or text-based click
-            if selector and not selector.startswith("[Failed") and not selector.startswith("[Error"):
-                return selector
-        return None
-
-    @staticmethod
-    async def _highlight_element(runtime: RuntimeDomain, selector: str) -> None:
-        """Draw a visual highlight (red border + semi-transparent overlay) on an element and move the global cursor to it."""
-        safe_selector = json.dumps(selector)
-        try:
-            await runtime.evaluate(f"""
-                (() => {{
-                    const el = document.querySelector({safe_selector});
-                    if (!el) return;
-                    
-                    // Highlight the element
-                    el.dataset._prevOutline = el.style.outline || '';
-                    el.dataset._prevOutlineOffset = el.style.outlineOffset || '';
-                    el.dataset._prevBoxShadow = el.style.boxShadow || '';
-                    el.style.outline = '3px solid #FF0000';
-                    el.style.outlineOffset = '2px';
-                    el.style.boxShadow = '0 0 0 4px rgba(255, 0, 0, 0.25)';
-                    el.setAttribute('data-ready-ai-highlight', 'true');
-                    
-                    // Move the global cursor to the element for the screenshot
-                    if (window.__browserAutoCursorMove) {{
-                        const rect = el.getBoundingClientRect();
-                        const centerX = rect.left + rect.width / 2;
-                        const centerY = rect.top + rect.height / 2;
-                        window.__browserAutoCursorMove(centerX, centerY);
-                    }}
-                }})()
-            """)
-        except Exception:
-            pass  # Non-critical — screenshot still works without highlight
-
-    @staticmethod
-    async def _clear_highlight(runtime: RuntimeDomain, selector: str = "") -> None:
-        """Remove visual highlight from the previously highlighted element."""
-        try:
-            await runtime.evaluate("""
-                (() => {
-                    const el = document.querySelector('[data-ready-ai-highlight]');
-                    if (el) {
-                        el.style.outline = el.dataset._prevOutline || '';
-                        el.style.outlineOffset = el.dataset._prevOutlineOffset || '';
-                        el.style.boxShadow = el.dataset._prevBoxShadow || '';
-                        el.removeAttribute('data-ready-ai-highlight');
-                        delete el.dataset._prevOutline;
-                        delete el.dataset._prevOutlineOffset;
-                        delete el.dataset._prevBoxShadow;
-                    }
-                })()
-            """)
-        except Exception:
-            pass
