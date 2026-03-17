@@ -119,16 +119,12 @@ async def test_plan_only_creates_checkpoint_without_docs(tmp_path, monkeypatch):
         headless=True,
     )
 
-    monkeypatch.setattr(loop, "_setup_browser", AsyncMock(return_value=None))
-    monkeypatch.setattr(loop, "_cleanup", AsyncMock(return_value=None))
+    monkeypatch.setattr(loop._session, "setup", AsyncMock(return_value=None))
+    monkeypatch.setattr(loop._session, "teardown", AsyncMock(return_value=None))
+    monkeypatch.setattr(loop._session, "_page", _PlanPage())
+    monkeypatch.setattr(loop._session, "_input", SimpleNamespace())
+    monkeypatch.setattr(loop._session, "_runtime", _PlanRuntime())
 
-    def fake_init(_llm, _annotation_llm, doc):
-        loop.page = _PlanPage()
-        loop.input_domain = SimpleNamespace()
-        loop.runtime = _PlanRuntime()
-        loop.doc = doc
-
-    monkeypatch.setattr(loop, "_init_cdp_domains", fake_init)
     plan_mock = AsyncMock(return_value=["Click Sign In", "Verify dashboard loads"])
     monkeypatch.setattr("src.agent.loop.planner.plan", plan_mock)
 
@@ -164,16 +160,12 @@ async def test_plan_only_resume_reuses_saved_plan(tmp_path, monkeypatch):
         headless=True,
     )
 
-    monkeypatch.setattr(loop, "_setup_browser", AsyncMock(return_value=None))
-    monkeypatch.setattr(loop, "_cleanup", AsyncMock(return_value=None))
+    monkeypatch.setattr(loop._session, "setup", AsyncMock(return_value=None))
+    monkeypatch.setattr(loop._session, "teardown", AsyncMock(return_value=None))
+    monkeypatch.setattr(loop._session, "_page", _PlanPage())
+    monkeypatch.setattr(loop._session, "_input", SimpleNamespace())
+    monkeypatch.setattr(loop._session, "_runtime", _PlanRuntime())
 
-    def fake_init(_llm, _annotation_llm, doc):
-        loop.page = _PlanPage()
-        loop.input_domain = SimpleNamespace()
-        loop.runtime = _PlanRuntime()
-        loop.doc = doc
-
-    monkeypatch.setattr(loop, "_init_cdp_domains", fake_init)
     plan_mock = AsyncMock(side_effect=AssertionError("planner.plan should not be called"))
     monkeypatch.setattr("src.agent.loop.planner.plan", plan_mock)
 
