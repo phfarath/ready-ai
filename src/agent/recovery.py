@@ -20,6 +20,7 @@ from ..llm.prompts import (
     PLANNER_REPLAN_SYSTEM,
     PLANNER_SPA_REPLAN_SYSTEM,
 )
+from ..observability import get_metrics, log_event
 from . import planner, executor
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,10 @@ async def recover_failed_step(
         logger.warning(
             "    ⚠ SPA state drift detected (same URL, fingerprint changed, step failed)"
         )
+        metrics = get_metrics()
+        if metrics:
+            metrics.increment("recovery.spa_drift")
+        log_event("recovery_spa_drift", step=working_step, url=post_url)
         latest_dom_html = await page.get_dom_html(max_length=4000)
         latest_elements = await runtime.get_interactive_elements()
         adapted_step = await replan_spa_step(
@@ -177,6 +182,9 @@ async def recover_failed_step(
     if decision.get("decision") == "retry_with_adapted_step" and decision.get("step"):
         adapted_step = decision["step"].strip()
         logger.info("    ⟳ Locally adapted failed step: '%s' → '%s'", working_step, adapted_step)
+        metrics = get_metrics()
+        if metrics:
+            metrics.increment("recovery.local_recovery")
         replan_attempts += 1
         retry_result = await executor.execute_step(
             adapted_step,
@@ -242,7 +250,7 @@ async def recover_locally(
     ]
 
     try:
-        response = await llm.complete(messages, json_mode=True)
+        response = await llm.complete(messages, json_mode=True, role="recovery")
         return parse_recovery_decision(response)
     except Exception as exc:
         logger.warning("    Local failed-step recovery fell back to manual handling: %s", exc)
@@ -282,7 +290,7 @@ async def replan_remaining(
     ]
 
     try:
-        response = await llm.complete(messages)
+        response = await llm.complete(messages, role="recovery")
         new_steps = planner._parse_steps(response)
         return new_steps if new_steps else remaining_steps
     except Exception as e:
@@ -324,7 +332,7 @@ async def replan_spa_step(
     ]
 
     try:
-        response = await llm.complete(messages)
+        response = await llm.complete(messages, role="recovery")
         candidate_steps = planner._parse_steps(response)
         if not candidate_steps:
             return None

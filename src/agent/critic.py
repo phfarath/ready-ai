@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from ..llm.client import LLMClient
 from ..llm.prompts import CRITIC_SYSTEM
+from ..observability import get_metrics, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ async def review(docs_markdown: str, goal: str, llm: LLMClient) -> CriticFeedbac
         {"role": "user", "content": user_prompt},
     ]
 
-    response = await llm.complete(messages, json_mode=True)
+    response = await llm.complete(messages, json_mode=True, role="critic")
 
     try:
         data = json.loads(response)
@@ -70,6 +71,16 @@ async def review(docs_markdown: str, goal: str, llm: LLMClient) -> CriticFeedbac
         f"Critic review: score={feedback.score}/10, "
         f"complete={feedback.is_complete}, "
         f"suggestions={len(feedback.suggestions)}"
+    )
+
+    metrics = get_metrics()
+    if metrics:
+        metrics.record("critic.score", feedback.score)
+    log_event(
+        "critic_review",
+        score=feedback.score,
+        is_complete=feedback.is_complete,
+        missing_steps=len(feedback.missing_steps),
     )
 
     return feedback
