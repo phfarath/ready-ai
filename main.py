@@ -59,18 +59,9 @@ class RunConfigError(ValueError):
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Configure logging with colored output."""
-    level = logging.DEBUG if verbose else logging.INFO
-
-    fmt = "%(asctime)s │ %(levelname)-8s │ %(name)-20s │ %(message)s"
-    datefmt = "%H:%M:%S"
-
-    logging.basicConfig(level=level, format=fmt, datefmt=datefmt)
-
-    logging.getLogger("websockets").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("litellm").setLevel(logging.WARNING)
+    """Configure logging with structured output and observability."""
+    from src.observability import setup_observability
+    setup_observability(verbose=verbose, json_output=not verbose)
 
 
 def _build_parser() -> argparse.ArgumentParser:

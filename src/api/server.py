@@ -3,8 +3,10 @@ FastAPI Server Endpoints for ready-ai.
 Starts the server and exposes runs/ endpoints.
 """
 
+import json
+
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
 import shutil
 
@@ -64,7 +66,18 @@ async def get_run_output(run_id: str):
         raise HTTPException(status_code=500, detail="Failed to generate ZIP archive.")
         
     return FileResponse(
-        path=zip_path, 
-        media_type="application/zip", 
+        path=zip_path,
+        media_type="application/zip",
         filename=f"browser_docs_{run_id}.zip"
     )
+
+@app.get("/runs/{run_id}/metrics")
+async def get_run_metrics(run_id: str):
+    """Retrieve observability metrics for a completed run."""
+    metrics_path = Path(f"./output/{run_id}_metrics.json")
+
+    if not metrics_path.exists():
+        raise HTTPException(status_code=404, detail="Metrics not found for this run.")
+
+    data = json.loads(metrics_path.read_text())
+    return JSONResponse(content=data)

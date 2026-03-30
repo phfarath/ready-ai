@@ -6,7 +6,9 @@ Supports authentication via cookies or credentials, and separate annotation mode
 """
 
 import asyncio
+import json
 import logging
+import time
 import websockets
 from dataclasses import asdict
 from pathlib import Path
@@ -16,6 +18,7 @@ from ..llm.client import LLMClient
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
+from ..observability import Span, init_run_context, get_run_context, get_metrics, log_event
 from . import planner, executor, critic, recovery
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
@@ -121,70 +124,96 @@ class AgenticLoop:
         Returns:
             Path to the generated markdown file
         """
-        try:
-            # 1. Launch Chrome and connect
-            await self._session.setup()
+        run_ctx = init_run_context(run_id=self.run_id)
+        status = "FINISHED"
 
-            # 2. Create domain helpers
-            llm = LLMClient(model=self.model)
-            annotation_llm = LLMClient(model=self.annotation_model)
-            doc = DocRenderer(goal=self.goal, title=self.title, language=self.language)
-            self.llm = llm
-            self.annotation_llm = annotation_llm
-            self.doc = doc
+        async with Span(name="pipeline", attributes={"goal": self.goal, "url": self.url}):
+            try:
+                # 1. Launch Chrome and connect
+                async with Span(name="browser_setup"):
+                    await self._session.setup()
 
-            # Enable page events
-            await self._session.page.enable()
+                # 2. Create domain helpers
+                llm = LLMClient(model=self.model)
+                annotation_llm = LLMClient(model=self.annotation_model)
+                doc = DocRenderer(goal=self.goal, title=self.title, language=self.language)
+                self.llm = llm
+                self.annotation_llm = annotation_llm
+                self.doc = doc
 
-            # 3. Inject auth if provided
-            if self._session.cookies_file:
-                await self._session.inject_cookies()
-            if self._session.username and self._session.password:
+                # Enable page events
+                await self._session.page.enable()
+
+                # 3. Inject auth if provided
+                if self._session.cookies_file:
+                    await self._session.inject_cookies()
+                if self._session.username and self._session.password:
+                    await self._session.page.navigate(self.url)
+                    await self._session.handle_login(llm)
+
+                # 4. Navigate to target URL
+                logger.info(f"═══ Navigating to: {self.url}")
                 await self._session.page.navigate(self.url)
-                await self._session.handle_login(llm)
 
-            # 4. Navigate to target URL
-            logger.info(f"═══ Navigating to: {self.url}")
-            await self._session.page.navigate(self.url)
+                # Start thinking cursor
+                if not self.headless:
+                    self._cursor.start(self._session.conn)
 
-            # Start thinking cursor
-            if not self.headless:
-                self._cursor.start(self._session.conn)
+                # 5. Plan (or load from checkpoint)
+                async with Span(name="planning"):
+                    steps = await self._resolve_steps(llm, doc)
 
-            # 5. Plan (or load from checkpoint)
-            steps = await self._resolve_steps(llm, doc)
+                if not steps:
+                    raise RuntimeError("Planner returned no steps")
 
-            if not steps:
-                raise RuntimeError("Planner returned no steps")
+                if self.plan_only:
+                    self._save_checkpoint("PLANNED")
+                    self._log_plan(steps)
+                    return str(self._state_path)
 
-            if self.plan_only:
-                self._save_checkpoint("PLANNED")
-                self._log_plan(steps)
-                return str(self._state_path)
+                # 6. Execute each step with verification
+                async with Span(name="execute_steps"):
+                    step_results = await self._execute_steps(steps, llm, annotation_llm, doc)
 
-            # 6. Execute each step with verification
-            step_results = await self._execute_steps(steps, llm, annotation_llm, doc)
+                # 7. Critic review with re-execution loop
+                self._save_checkpoint("CRITIQUE")
+                self._cursor.moving = True
+                markdown = doc.render()
+                async with Span(name="critic_loop"):
+                    await self._critic_loop(markdown, llm, annotation_llm, doc, step_results)
+                self._cursor.moving = False
 
-            # 7. Critic review with re-execution loop
-            self._save_checkpoint("CRITIQUE")
-            self._cursor.moving = True
-            markdown = doc.render()
-            await self._critic_loop(markdown, llm, annotation_llm, doc, step_results)
-            self._cursor.moving = False
+                # 8. Save output
+                self._save_checkpoint("FINISHED")
+                markdown = doc.render()
+                output_path = save_docs(markdown, doc.screenshots, self.output_dir)
+                logger.info(f"═══ Documentation saved to: {output_path}")
 
-            # 8. Save output
-            self._save_checkpoint("FINISHED")
-            markdown = doc.render()
-            output_path = save_docs(markdown, doc.screenshots, self.output_dir)
-            logger.info(f"═══ Documentation saved to: {output_path}")
-            return output_path
-        except Exception as e:
-            logger.error(f"Pipeline error: {e}")
-            self._save_checkpoint("FAILED")
-            raise
-        finally:
-            await self._cursor.stop()
-            await self._session.teardown()
+                # Save metrics alongside output
+                self._save_metrics(run_ctx, status="FINISHED", steps_planned=len(steps))
+
+                return output_path
+            except Exception as e:
+                status = "FAILED"
+                logger.error(f"Pipeline error: {e}")
+                self._save_checkpoint("FAILED")
+                self._save_metrics(run_ctx, status="FAILED")
+                raise
+            finally:
+                await self._cursor.stop()
+                await self._session.teardown()
+
+    def _save_metrics(self, run_ctx, status: str = "FINISHED", **extra) -> None:
+        """Write run metrics to a JSON file alongside the output."""
+        try:
+            summary = run_ctx.run_summary(status=status, **extra)
+            metrics_path = Path(self.output_dir) / f"{self.run_id}_metrics.json"
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics_path.write_text(json.dumps(summary, indent=2, default=str))
+            log_event("run_complete", **summary)
+            logger.info(f"═══ Metrics saved to: {metrics_path}")
+        except Exception as exc:
+            logger.warning(f"Failed to save metrics: {exc}")
 
     def _restore_doc_from_state(self, doc: DocRenderer) -> None:
         """Restore rendered step metadata from checkpoint state."""
@@ -282,6 +311,7 @@ class AgenticLoop:
         while step_idx < len(step_list):
             try:
                 step = step_list[step_idx]
+                step_start = time.monotonic()
                 logger.info(f"═══ Step {i}: {step}")
 
                 # Get fresh DOM state and current URL
@@ -393,6 +423,20 @@ class AgenticLoop:
 
                 self._state.executed_results.append(asdict(result))
                 results.append(result)
+
+                # Track step metrics
+                step_latency = (time.monotonic() - step_start) * 1000
+                metrics = get_metrics()
+                if metrics:
+                    metrics.increment("step.executed")
+                    metrics.record("step.latency_ms", step_latency)
+                    if result.success:
+                        metrics.increment("step.succeeded")
+                    else:
+                        metrics.increment("step.failed")
+                    if result.attempts > 1:
+                        metrics.increment("step.retries", result.attempts - 1)
+
                 step_idx += 1
                 self._state.current_step_index = step_idx
                 self._save_checkpoint("EXECUTING")
@@ -402,6 +446,9 @@ class AgenticLoop:
 
             except websockets.exceptions.ConnectionClosed:
                 crashes += 1
+                metrics = get_metrics()
+                if metrics:
+                    metrics.increment("recovery.crash")
                 if crashes > MAX_CRASHES:
                     logger.error(f"Exceeded maximum global crashes ({MAX_CRASHES}). Aborting pipeline.")
                     raise
@@ -489,7 +536,7 @@ class AgenticLoop:
             {"role": "user", "content": supplement_prompt},
         ]
 
-        response = await llm.complete(messages)
+        response = await llm.complete(messages, role="planner")
         new_steps = planner._parse_steps(response)
 
         if not new_steps:
