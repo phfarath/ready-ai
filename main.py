@@ -116,6 +116,9 @@ def _build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("--username", default=None, help="Username for auto-login")
     test_parser.add_argument("--password", default=None, help="Password for auto-login")
     test_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
+    test_parser.add_argument("--watch", action="store_true", help="Re-run tests periodically (use with --watch-interval)")
+    test_parser.add_argument("--watch-interval", type=int, default=5, help="Watch interval in minutes (default: 5)")
+    test_parser.add_argument("--auto-heal", action="store_true", help="Auto-update docs when drift is detected but steps still pass")
 
     api_parser = subparsers.add_parser("api", help="Start the FastAPI server")
     api_parser.add_argument("--port", "-p", type=int, default=8000, help="API server port")
@@ -238,29 +241,66 @@ async def async_main_test(args: argparse.Namespace) -> None:
         cookies_file=args.cookies_file,
         username=args.username,
         password=args.password,
+        auto_heal=getattr(args, "auto_heal", False),
     )
 
     try:
-        report = await runner.run()
-        print(f"\n{report.summary()}\n")
-
-        if report.overall_status == "PASSED":
-            logger.info("✅ All documentation steps are up to date!")
-        elif report.overall_status == "DRIFT_DETECTED":
-            logger.warning(
-                f"⚠️  UI drift detected in steps: {report.steps_outdated}"
-            )
-            sys.exit(2)  # exit code 2 = drift detected
+        if getattr(args, "watch", False):
+            await _watch_loop(runner, args.watch_interval, logger)
         else:
-            logger.error(
-                f"❌ Broken steps: {report.steps_broken}"
-            )
-            sys.exit(1)
+            report = await runner.run()
+            _handle_report_exit(report, logger)
     except KeyboardInterrupt:
         logger.info("⚠️  Interrupted by user")
         sys.exit(1)
     except Exception as e:
         logger.error(f"❌ Test failed: {e}", exc_info=True)
+        sys.exit(1)
+
+
+async def _watch_loop(runner, interval_minutes: int, logger) -> None:
+    """Re-run tests periodically until interrupted."""
+    from datetime import datetime
+
+    prev_status = None
+    logger.info(f"👀 Watch mode enabled — running every {interval_minutes} min (Ctrl+C to stop)")
+
+    while True:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"\n{'=' * 60}")
+        print(f"  Watch run at {timestamp}")
+        print(f"{'=' * 60}")
+
+        try:
+            report = await runner.run()
+        except Exception as e:
+            logger.error(f"Watch run failed: {e}")
+            await asyncio.sleep(interval_minutes * 60)
+            continue
+
+        # Alert on status transitions
+        if prev_status and prev_status == "PASSED" and report.overall_status != "PASSED":
+            print(f"\a⚠️  Status changed: {prev_status} → {report.overall_status}")
+
+        prev_status = report.overall_status
+
+        logger.info(f"Next run in {interval_minutes} minutes...")
+        await asyncio.sleep(interval_minutes * 60)
+
+
+def _handle_report_exit(report, logger) -> None:
+    """Handle exit codes based on report status."""
+    if report.overall_status == "PASSED":
+        logger.info("✅ All documentation steps are up to date!")
+    elif report.overall_status == "DRIFT_DETECTED":
+        logger.warning(
+            f"⚠️  UI drift detected in steps: {report.steps_outdated}"
+        )
+        sys.exit(2)  # exit code 2 = drift detected
+    else:
+        logger.error(
+            f"❌ Broken steps: {report.steps_broken}"
+        )
         sys.exit(1)
 
 

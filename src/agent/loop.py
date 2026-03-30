@@ -5,7 +5,6 @@ V2: Full Planner → Executor (with verification) → Critic (with re-execution)
 Supports authentication via cookies or credentials, and separate annotation model.
 """
 
-import asyncio
 import json
 import logging
 import time
@@ -18,7 +17,7 @@ from ..llm.client import LLMClient
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
-from ..observability import Span, init_run_context, get_run_context, get_metrics, log_event
+from ..observability import Span, init_run_context, get_metrics, log_event
 from . import planner, executor, critic, recovery
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
@@ -128,7 +127,6 @@ class AgenticLoop:
             Path to the generated markdown file
         """
         run_ctx = init_run_context(run_id=self.run_id)
-        status = "FINISHED"
 
         async with Span(name="pipeline", attributes={"goal": self.goal, "url": self.url}):
             try:
@@ -197,7 +195,6 @@ class AgenticLoop:
 
                 return output_path
             except Exception as e:
-                status = "FAILED"
                 logger.error(f"Pipeline error: {e}")
                 self._save_checkpoint("FAILED")
                 self._save_metrics(run_ctx, status="FAILED")

@@ -15,7 +15,7 @@ from typing import Any, Optional
 import litellm
 import openai._compat as openai_compat
 
-from ..observability import Span, get_metrics, log_event
+from ..observability import get_metrics, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,53 @@ class LLMClient:
         Returns:
             The assistant's response text
         """
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        return await self._call_with_retry(kwargs, role=role)
+
+    async def complete_with_vision_multi(
+        self,
+        prompt: str,
+        images_b64: list[str],
+        system: Optional[str] = None,
+        json_mode: bool = False,
+        role: str = "annotator",
+    ) -> str:
+        """
+        Send a vision request with multiple base64 images.
+
+        Args:
+            prompt: Text prompt describing what to analyze
+            images_b64: List of base64-encoded images (PNG/JPEG)
+            system: Optional system prompt
+            json_mode: Request JSON output format
+
+        Returns:
+            The assistant's response text
+        """
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for img_b64 in images_b64:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                    "detail": "high",
+                },
+            })
+        messages.append({"role": "user", "content": content})
+
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,

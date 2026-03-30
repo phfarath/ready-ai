@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 from src.agent.executor import StepResult
 from src.agent.loop import AgenticLoop
 from src.agent import recovery
-from src.agent.cursor import CursorAnimator
 from src.docs.renderer import DocRenderer
 
 

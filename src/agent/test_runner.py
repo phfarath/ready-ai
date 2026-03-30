@@ -8,7 +8,6 @@ compares screenshots with baselines, and produces a DocTestReport.
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, asdict
@@ -21,7 +20,9 @@ from ..cdp.connection import CDPConnection
 from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
-from ..docs.parser import parse_doc, extract_goal
+from ..docs.parser import parse_doc
+from ..docs.report_html import render_html_report
+from ..docs.terminal_output import ProgressPrinter
 from ..docs.visual_diff import compare_screenshots
 from ..llm.client import LLMClient
 from . import executor
@@ -39,12 +40,13 @@ class StepTestResult:
     """Result of testing a single documented step."""
     step_number: int
     title: str
-    status: str  # "PASSED" | "DRIFT" | "BROKEN"
+    status: str  # "PASSED" | "DRIFT" | "BROKEN" | "HEALED"
     visual_similarity: float
     dom_changed: bool
     new_screenshot_path: Optional[str] = None
     diff_image_path: Optional[str] = None
     error: str = ""
+    semantic_description: str = ""
 
 
 @dataclass
@@ -113,6 +115,7 @@ class DocTestRunner:
         cookies_file: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        auto_heal: bool = False,
     ):
         self.doc_path = doc_path
         self.url = url
@@ -124,6 +127,7 @@ class DocTestRunner:
         self.cookies_file = cookies_file
         self.username = username
         self.password = password
+        self.auto_heal = auto_heal
 
         self._chrome_proc = None
         self._conn: Optional[CDPConnection] = None
@@ -193,11 +197,17 @@ class DocTestRunner:
                 await login_session.handle_login(llm)
 
             # 6. Test each step
+            printer = ProgressPrinter()
+            printer.header(self.doc_path, self.url, self.threshold)
+            total_steps = len(steps)
+
             for step_state in steps:
+                printer.step_start(step_state.number, total_steps, step_state.title)
                 result = await self._test_step(
                     step_state, page, input_domain, runtime, llm,
                     screenshots_dir, diffs_dir,
                 )
+                printer.step_result(result)
                 report.results.append(result)
 
                 if result.status == "DRIFT":
@@ -213,11 +223,26 @@ class DocTestRunner:
             else:
                 report.overall_status = "PASSED"
 
+            printer.summary(report)
+
+            # 7b. Auto-heal drifted steps and persist selector recoveries
+            has_drift = bool(report.steps_outdated)
+            has_healed = any(r.status == "HEALED" for r in report.results)
+            if self.auto_heal and (has_drift or has_healed):
+                from ..docs.auto_healer import DocAutoHealer
+                healer = DocAutoHealer(self.doc_path, llm)
+                healing = await healer.heal_report(report)
+                if healing.total_healed:
+                    logger.info(
+                        f"Auto-healed {healing.total_healed} step(s) in {self.doc_path}"
+                    )
+
             # 8. Save report
             report.to_file(output_path / "test_report.json")
             (output_path / "test_summary.txt").write_text(
                 report.summary(), encoding="utf-8"
             )
+            render_html_report(report, output_path / "test_report.html")
             logger.info(f"Test report saved to {output_path}")
 
         except Exception as e:
@@ -247,7 +272,7 @@ class DocTestRunner:
             # Get current DOM state
             dom_html = await page.get_dom_html(max_length=4000)
             elements = await runtime.get_interactive_elements()
-            pre_fingerprint = await _dom_fingerprint(runtime)
+            await _dom_fingerprint(runtime)  # warm up fingerprinting
 
             # Re-execute the step
             result = await executor.execute_step(
@@ -301,10 +326,54 @@ class DocTestRunner:
             # Determine step status
             if not result.success:
                 status = "BROKEN"
+                # Try selector recovery if auto-heal is enabled
+                action_desc = getattr(result, "action_desc", "") or ""
+                failure_reason = getattr(result, "failure_reason", "") or ""
+                failure_text = f"{action_desc} {failure_reason}".lower()
+                if self.auto_heal and ("not found" in failure_text or "failed" in failure_text):
+                    try:
+                        from ..docs.auto_healer import DocAutoHealer
+                        healer = DocAutoHealer(self.doc_path, llm)
+                        heal = await healer.recover_selector(
+                            step_num,
+                            step_state.action_description,
+                            elements,
+                        )
+                        if heal.selector_recovered:
+                            # Re-execute with recovered selector to verify it works
+                            logger.info(f"  Step {step_num}: verifying recovered selector → {heal.new_selector}")
+                            dom_html2 = await page.get_dom_html(max_length=4000)
+                            elements2 = await runtime.get_interactive_elements()
+                            retry_result = await executor.execute_step(
+                                step_state.title, dom_html2, elements2,
+                                llm, page, input_domain, runtime,
+                            )
+                            if retry_result.success:
+                                status = "HEALED"
+                                logger.info(f"  Step {step_num}: selector recovery verified ✓")
+                            else:
+                                logger.warning(f"  Step {step_num}: recovered selector failed verification")
+                    except Exception as heal_err:
+                        logger.warning(f"  Step {step_num}: selector recovery failed — {heal_err}")
             elif visual_sim < self.threshold:
                 status = "DRIFT"
             else:
                 status = "PASSED"
+
+            # Semantic diff for drifted steps
+            semantic_desc = ""
+            if status == "DRIFT" and baseline_screenshot.exists():
+                try:
+                    from ..docs.semantic_diff import describe_visual_change
+                    raw = await describe_visual_change(
+                        baseline_path=str(baseline_screenshot),
+                        current_path=str(new_screenshot_path),
+                        step_title=step_state.title,
+                        llm=llm,
+                    )
+                    semantic_desc = str(raw) if raw else ""
+                except Exception as sd_err:
+                    logger.warning(f"  Step {step_num}: semantic diff failed — {sd_err}")
 
             logger.info(
                 f"  Step {step_num}: {status} "
@@ -319,6 +388,7 @@ class DocTestRunner:
                 dom_changed=dom_changed,
                 new_screenshot_path=str(new_screenshot_path),
                 diff_image_path=diff_image_path,
+                semantic_description=semantic_desc,
             )
 
         except Exception as e:
