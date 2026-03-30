@@ -98,12 +98,14 @@ async def test_execute_steps_replans_current_step_on_spa_drift(tmp_path, monkeyp
             StepResult(
                 action_desc="Clicked element: #confirm",
                 success=False,
+                retry_needed=True,
                 attempts=3,
                 failure_reason="Selector became stale after modal transition",
             ),
             StepResult(
                 action_desc="Clicked element: #modal-confirm",
                 success=True,
+                retry_needed=False,
                 attempts=1,
             ),
         ]
@@ -115,6 +117,7 @@ async def test_execute_steps_replans_current_step_on_spa_drift(tmp_path, monkeyp
         StepResult(
             action_desc="Clicked element: #modal-confirm",
             success=True,
+            retry_needed=False,
             attempts=1,
         ),
         "Click the modal confirm button",
@@ -153,12 +156,14 @@ async def test_execute_steps_uses_local_adapted_step_when_recovery_succeeds(tmp_
             StepResult(
                 action_desc="Clicked element: #submit",
                 success=False,
+                retry_needed=True,
                 attempts=3,
                 failure_reason="Submit button selector changed",
             ),
             StepResult(
                 action_desc="Clicked element: [data-testid='submit']",
                 success=True,
+                retry_needed=False,
                 attempts=1,
             ),
         ]
@@ -170,6 +175,7 @@ async def test_execute_steps_uses_local_adapted_step_when_recovery_succeeds(tmp_
         StepResult(
             action_desc="Clicked element: [data-testid='submit']",
             success=True,
+            retry_needed=False,
             attempts=1,
         ),
         "Click the primary submit button",
@@ -205,6 +211,7 @@ async def test_execute_steps_marks_manual_required_when_recovery_fails(tmp_path,
     exec_mock = AsyncMock(return_value=StepResult(
         action_desc="Clicked element: #confirm",
         success=False,
+        retry_needed=True,
         attempts=3,
         failure_reason="MFA modal blocks the next action",
     ))
@@ -215,6 +222,7 @@ async def test_execute_steps_marks_manual_required_when_recovery_fails(tmp_path,
         StepResult(
             action_desc="Clicked element: #confirm",
             success=False,
+            retry_needed=False,
             attempts=3,
             failure_reason="MFA modal blocks the next action",
             status="manual_required",
@@ -253,6 +261,7 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
     exec_mock = AsyncMock(return_value=StepResult(
         action_desc="Clicked element: #submit",
         success=False,
+        retry_needed=True,
         attempts=3,
         failure_reason="Navigation changed context",
     ))
@@ -265,6 +274,7 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
         StepResult(
             action_desc="Clicked element: #submit",
             success=False,
+            retry_needed=False,
             attempts=3,
             failure_reason="Navigation changed context",
             status="manual_required",

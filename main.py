@@ -103,6 +103,20 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--resume", action="store_true", default=argparse.SUPPRESS, help="Resume from an existing checkpoint")
     run_parser.add_argument("--plan-only", action="store_true", default=argparse.SUPPRESS, help="Generate a plan without executing steps")
 
+    # --- TEST Command ---
+    test_parser = subparsers.add_parser("test", help="Test documentation against live UI (self-healing)")
+    test_parser.add_argument("--doc", "-d", required=True, help="Path to docs.md file to test")
+    test_parser.add_argument("--url", "-u", required=True, help="Target SaaS URL to test against")
+    test_parser.add_argument("--model", "-m", default="gpt-4o-mini", help="LLM model (default: gpt-4o-mini)")
+    test_parser.add_argument("--threshold", type=float, default=0.85, help="Visual similarity threshold (default: 0.85)")
+    test_parser.add_argument("--output", "-o", default="./test-report", help="Test report output directory")
+    test_parser.add_argument("--port", "-p", type=int, default=9222, help="Chrome debugging port")
+    test_parser.add_argument("--headless", action="store_true", help="Run headless")
+    test_parser.add_argument("--cookies-file", default=None, help="JSON cookies file")
+    test_parser.add_argument("--username", default=None, help="Username for auto-login")
+    test_parser.add_argument("--password", default=None, help="Password for auto-login")
+    test_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
+
     api_parser = subparsers.add_parser("api", help="Start the FastAPI server")
     api_parser.add_argument("--port", "-p", type=int, default=8000, help="API server port")
     api_parser.add_argument("--host", default="0.0.0.0", help="API server host")
@@ -207,6 +221,49 @@ async def async_main_run(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def async_main_test(args: argparse.Namespace) -> None:
+    from src.agent.test_runner import DocTestRunner
+
+    logger = logging.getLogger("main")
+    logger.info("🧪 ready-ai — Documentation Test Runner")
+
+    runner = DocTestRunner(
+        doc_path=args.doc,
+        url=args.url,
+        model=args.model,
+        threshold=args.threshold,
+        output_dir=args.output,
+        port=args.port,
+        headless=args.headless,
+        cookies_file=args.cookies_file,
+        username=args.username,
+        password=args.password,
+    )
+
+    try:
+        report = await runner.run()
+        print(f"\n{report.summary()}\n")
+
+        if report.overall_status == "PASSED":
+            logger.info("✅ All documentation steps are up to date!")
+        elif report.overall_status == "DRIFT_DETECTED":
+            logger.warning(
+                f"⚠️  UI drift detected in steps: {report.steps_outdated}"
+            )
+            sys.exit(2)  # exit code 2 = drift detected
+        else:
+            logger.error(
+                f"❌ Broken steps: {report.steps_broken}"
+            )
+            sys.exit(1)
+    except KeyboardInterrupt:
+        logger.info("⚠️  Interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"❌ Test failed: {e}", exc_info=True)
+        sys.exit(1)
+
+
 def cli() -> None:
     """Entry point for pyproject.toml scripts."""
     raw_args = parse_args()
@@ -224,6 +281,8 @@ def cli() -> None:
 
     if args.command == "run":
         asyncio.run(async_main_run(args))
+    elif args.command == "test":
+        asyncio.run(async_main_test(args))
     elif args.command == "api":
         import uvicorn
 

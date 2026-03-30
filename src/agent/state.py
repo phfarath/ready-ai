@@ -22,6 +22,9 @@ class DocStepState:
     screenshot_path: str
     status: str = "completed"
     status_reason: str = ""
+    # Baselines for self-healing documentation (doc-as-test)
+    baseline_dom_hash: str = ""
+    baseline_url: str = ""
 
 
 @dataclass
