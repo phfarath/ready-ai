@@ -225,8 +225,10 @@ class DocTestRunner:
 
             printer.summary(report)
 
-            # 7b. Auto-heal drifted steps if enabled
-            if self.auto_heal and report.steps_outdated:
+            # 7b. Auto-heal drifted steps and persist selector recoveries
+            has_drift = bool(report.steps_outdated)
+            has_healed = any(r.status == "HEALED" for r in report.results)
+            if self.auto_heal and (has_drift or has_healed):
                 from ..docs.auto_healer import DocAutoHealer
                 healer = DocAutoHealer(self.doc_path, llm)
                 healing = await healer.heal_report(report)
@@ -338,8 +340,19 @@ class DocTestRunner:
                             elements,
                         )
                         if heal.selector_recovered:
-                            status = "HEALED"
-                            logger.info(f"  Step {step_num}: selector recovered → {heal.new_selector}")
+                            # Re-execute with recovered selector to verify it works
+                            logger.info(f"  Step {step_num}: verifying recovered selector → {heal.new_selector}")
+                            dom_html2 = await page.get_dom_html(max_length=4000)
+                            elements2 = await runtime.get_interactive_elements()
+                            retry_result = await executor.execute_step(
+                                step_state.title, dom_html2, elements2,
+                                llm, page, input_domain, runtime,
+                            )
+                            if retry_result.success:
+                                status = "HEALED"
+                                logger.info(f"  Step {step_num}: selector recovery verified ✓")
+                            else:
+                                logger.warning(f"  Step {step_num}: recovered selector failed verification")
                     except Exception as heal_err:
                         logger.warning(f"  Step {step_num}: selector recovery failed — {heal_err}")
             elif visual_sim < self.threshold:
