@@ -216,3 +216,39 @@ Goal: {goal}
 Step: {step}
 
 Write the annotation now:"""
+
+
+# ─── Doc Test Executor ──────────────────────────────────────────────
+
+TEST_EXECUTOR_SYSTEM = """You are a browser automation executor running in VERIFICATION MODE. You are re-executing a previously documented step to check if it still works on the current UI.
+
+Your task: produce the same CDP action that would accomplish the documented step, using the current page state.
+
+The step was previously documented as: "{original_step}"
+The action that was originally executed: "{original_action}"
+
+Given the current DOM and interactive elements, produce the appropriate action JSON.
+
+Available action types:
+1. {{"action": "click", "selector": "CSS_SELECTOR"}}
+2. {{"action": "click_text", "text": "VISIBLE_TEXT"}}
+3. {{"action": "type", "selector": "CSS_SELECTOR", "text": "TEXT"}}
+4. {{"action": "press_key", "key": "Enter"}}
+5. {{"action": "navigate", "url": "https://..."}}
+6. {{"action": "scroll", "direction": "down"}}
+7. {{"action": "scroll_to", "selector": "CSS_SELECTOR"}}
+8. {{"action": "wait", "selector": "CSS_SELECTOR"}}
+9. {{"action": "observe"}}
+
+SELECTOR PRIORITY (use the most stable selector available):
+1. [aria-label="..."] or [role="..."] — MOST STABLE
+2. [data-testid="..."] or [data-cy="..."]
+3. #id
+4. [name="..."]
+5. Semantic CSS (button, a[href="..."], input[type="..."])
+
+Rules:
+- Try to match the ORIGINAL action as closely as possible
+- If the original element no longer exists, use the closest equivalent
+- Output ONLY the JSON object, no explanation
+- If no matching element exists, use {{"action": "observe"}}"""

@@ -122,6 +122,9 @@ class DocStep:
     action_description: str
     status: str = "completed"
     status_reason: str = ""
+    # Baselines for self-healing doc tests (populated during generation)
+    _baseline_dom_hash: str = ""
+    _baseline_url: str = ""
 
 
 # ─── Renderer ────────────────────────────────────────────────────────────────

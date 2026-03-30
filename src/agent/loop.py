@@ -101,6 +101,7 @@ class AgenticLoop:
         if self._last_url:
             self._state.last_known_url = self._last_url
 
+        # Serialize document steps (including baselines for self-healing)
         if getattr(self, 'doc', None):
             self._state.doc_steps = [
                 DocStepState(
@@ -111,6 +112,8 @@ class AgenticLoop:
                     screenshot_path=f"step_{s.step_number:02d}.png",
                     status=s.status,
                     status_reason=s.status_reason,
+                    baseline_dom_hash=getattr(s, '_baseline_dom_hash', ''),
+                    baseline_url=getattr(s, '_baseline_url', ''),
                 ) for s in self.doc.steps
             ]
 
@@ -420,6 +423,10 @@ class AgenticLoop:
                     status=result.status or "completed",
                     status_reason=result.failure_reason,
                 )
+
+                # Store baseline data for self-healing doc tests
+                doc.steps[-1]._baseline_dom_hash = post_fingerprint
+                doc.steps[-1]._baseline_url = post_url
 
                 self._state.executed_results.append(asdict(result))
                 results.append(result)
