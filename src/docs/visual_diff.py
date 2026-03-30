@@ -59,14 +59,19 @@ def compare_screenshots(
     diff = ImageChops.difference(baseline, current)
 
     # Calculate similarity score: 1.0 - (mean absolute difference / 255)
-    _getdata = getattr(diff, "get_flattened_data", None) or diff.getdata
-    diff_data = list(_getdata())
-    total_channels = len(diff_data) * 3  # RGB
-    if total_channels == 0:
+    # Convert to grayscale (average of RGB) and use histogram for fast stats
+    pixel_count = diff.size[0] * diff.size[1]
+    if pixel_count == 0:
         similarity = 1.0
     else:
-        total_diff = sum(r + g + b for r, g, b in diff_data)
-        similarity = 1.0 - (total_diff / (total_channels * 255))
+        # Histogram-based: sum(value * count) across all 3 channels
+        histogram = diff.histogram()  # 768 entries: 256 R + 256 G + 256 B
+        channel_sums = sum(
+            value * count
+            for channel_offset in (0, 256, 512)
+            for value, count in enumerate(histogram[channel_offset:channel_offset + 256])
+        )
+        similarity = 1.0 - (channel_sums / (pixel_count * 3 * 255))
 
     # Generate diff image if requested
     saved_diff_path: Optional[str] = None
@@ -110,11 +115,8 @@ def _generate_diff_image(
     r_ch, g_ch, b_ch = diff.split()
     # Max of RGB channels per pixel
     intensity = ImageChops.lighter(ImageChops.lighter(r_ch, g_ch), b_ch)
-    # Zero out noise below threshold (intensity <= 10)
-    threshold_mask = intensity.point(lambda v: 255 if v > 10 else 0)
-    # Amplify 3x and clamp to 255 for red channel
-    red_channel = intensity.point(lambda v: min(255, v * 3))
-    red_channel = ImageChops.multiply(red_channel, threshold_mask.point(lambda v: v // 255))
+    # Amplify 3x, clamp to 255, and zero out noise (intensity <= 10)
+    red_channel = intensity.point(lambda v: min(255, v * 3) if v > 10 else 0)
     zero = Image.new("L", (width, height), 0)
     highlighted = Image.merge("RGB", (red_channel, zero, zero))
 

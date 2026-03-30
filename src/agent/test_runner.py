@@ -26,7 +26,7 @@ from ..docs.visual_diff import compare_screenshots
 from ..llm.client import LLMClient
 from . import executor
 from .dom_utils import dom_fingerprint as _dom_fingerprint
-from .state import DocStepState
+from .state import DocStepState, RunState
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +142,7 @@ class DocTestRunner:
             if not Path(self.doc_path).exists():
                 raise FileNotFoundError(f"Documentation file not found: {self.doc_path}")
             steps = parse_doc(self.doc_path)
+            self._enrich_from_checkpoint(steps)
             logger.info(f"Parsed {len(steps)} steps from {self.doc_path}")
 
             # 2. Setup output dirs
@@ -151,13 +152,14 @@ class DocTestRunner:
             screenshots_dir.mkdir(parents=True, exist_ok=True)
             diffs_dir.mkdir(parents=True, exist_ok=True)
 
-            # 3. Launch browser
-            self._chrome_proc = await launch_chrome(
+            # 3. Launch browser (launch_chrome is sync, returns Popen)
+            self._chrome_proc = launch_chrome(
                 port=self.port, headless=self.headless
             )
             ws_url = await get_ws_url(self.port)
-            self._conn = CDPConnection(ws_url)
-            await self._conn.connect()
+            self._conn = CDPConnection()
+            await self._conn.connect(ws_url)
+            await self._conn.attach_to_page()
 
             page = PageDomain(self._conn)
             input_domain = InputDomain(self._conn)
@@ -309,6 +311,33 @@ class DocTestRunner:
                 error=str(e),
             )
 
+    def _enrich_from_checkpoint(self, steps: list[DocStepState]) -> None:
+        """Enrich parsed steps with baseline data from checkpoint JSON if available."""
+        doc_dir = Path(self.doc_path).parent
+        # Look for any checkpoint state file in the doc output directory
+        state_files = list(doc_dir.glob("*_state.json"))
+        if not state_files:
+            logger.debug("No checkpoint state file found; DOM baselines unavailable")
+            return
+
+        state = RunState.from_file(state_files[0])
+        if not state or not state.doc_steps:
+            return
+
+        # Build lookup by step number
+        baseline_by_num = {ds.number: ds for ds in state.doc_steps}
+        enriched = 0
+        for step in steps:
+            baseline = baseline_by_num.get(step.number)
+            if baseline:
+                step.baseline_dom_hash = baseline.baseline_dom_hash
+                step.baseline_url = baseline.baseline_url
+                if baseline.baseline_dom_hash:
+                    enriched += 1
+
+        if enriched:
+            logger.info(f"Enriched {enriched} steps with baseline data from checkpoint")
+
     async def _inject_cookies(self, page: PageDomain) -> None:
         """Inject cookies from file for authentication."""
         cookies_path = Path(self.cookies_file)
@@ -331,6 +360,7 @@ class DocTestRunner:
         if self._chrome_proc:
             try:
                 self._chrome_proc.terminate()
+                self._chrome_proc.poll()  # update returncode
                 await asyncio.sleep(0.5)
                 if self._chrome_proc.returncode is None:
                     self._chrome_proc.kill()
