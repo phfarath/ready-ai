@@ -44,6 +44,7 @@ class StepResult:
     retry_needed: bool
     attempts: int = 1
     failure_reason: str = ""
+    status: str = ""
 
 
 async def execute_step(

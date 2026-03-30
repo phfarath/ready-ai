@@ -176,6 +176,22 @@ class DocTestRunner:
             logger.info(f"Navigating to: {self.url}")
             await page.navigate(self.url)
 
+            # 5b. Credential-based login if provided
+            if self.username and self.password:
+                from .browser_session import BrowserSession
+                login_session = BrowserSession(
+                    port=self.port,
+                    headless=self.headless,
+                    username=self.username,
+                    password=self.password,
+                )
+                # Reuse the existing connection instead of launching a new browser
+                login_session._conn = self._conn
+                login_session._page = page
+                login_session._input = input_domain
+                login_session._runtime = runtime
+                await login_session.handle_login(llm)
+
             # 6. Test each step
             for step_state in steps:
                 result = await self._test_step(
@@ -271,6 +287,11 @@ class DocTestRunner:
                 )
                 visual_sim = diff_result.similarity_score
                 diff_image_path = diff_result.diff_image_path
+            else:
+                logger.warning(
+                    f"  Step {step_num}: baseline screenshot missing at {baseline_screenshot}"
+                )
+                visual_sim = 0.0  # no baseline = cannot verify
 
             # DOM change detection
             dom_changed = False
