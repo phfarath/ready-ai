@@ -12,6 +12,7 @@ This transforms the system from "detection" to "auto-correction".
 """
 
 import base64
+import json
 import logging
 import re
 import shutil
@@ -166,13 +167,16 @@ class DocAutoHealer:
                 role="healer",
             )
 
-            import json
             data = json.loads(response)
-            if data.get("found"):
-                new_selector = data["selector"]
-                self._update_action_in_doc(step_number, original_action, new_selector)
-                heal.selector_recovered = True
-                heal.new_selector = new_selector
+            new_selector = data.get("selector", "")
+            if data.get("found") and isinstance(new_selector, str) and new_selector.strip():
+                # Validate selector doesn't contain suspicious patterns
+                if re.search(r"[{}]|javascript:|<script", new_selector, re.IGNORECASE):
+                    logger.warning(f"  Step {step_number}: rejected suspicious selector: {new_selector}")
+                else:
+                    self._update_action_in_doc(step_number, original_action, new_selector)
+                    heal.selector_recovered = True
+                    heal.new_selector = new_selector
                 logger.info(
                     f"  Step {step_number}: selector recovered "
                     f"'{original_selector}' → '{new_selector}'"
@@ -220,6 +224,8 @@ class DocAutoHealer:
         new_content = pattern.sub(replacer, self._doc_content, count=1)
         if new_content != self._doc_content:
             self._doc_content = new_content
+        else:
+            logger.warning(f"  Step {step_number}: annotation pattern not found in doc — skipping update")
 
     def _update_action_in_doc(
         self, step_number: int, original_action: str, new_selector: str,

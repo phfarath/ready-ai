@@ -162,7 +162,7 @@ def render_html_report(report: "DocTestReport", output_path: str | Path) -> str:
         </h1>
         <div class="meta">
             <div>Document: {_esc(report.doc_path)}</div>
-            <div>URL: {_esc(report.url)} &middot; Threshold: {report.threshold:.0%} &middot; {report.timestamp}</div>
+            <div>URL: {_esc(report.url)} &middot; Threshold: {report.threshold:.0%} &middot; {_esc(report.timestamp)}</div>
         </div>
 
         <div class="summary-bar">
@@ -220,10 +220,6 @@ def render_html_report(report: "DocTestReport", output_path: str | Path) -> str:
 
 
 def _esc(text: str) -> str:
-    """Escape HTML special characters."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+    """Escape HTML special characters using stdlib html.escape."""
+    from html import escape
+    return escape(text, quote=True)

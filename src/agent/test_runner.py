@@ -8,7 +8,6 @@ compares screenshots with baselines, and produces a DocTestReport.
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, asdict
@@ -326,7 +325,10 @@ class DocTestRunner:
             if not result.success:
                 status = "BROKEN"
                 # Try selector recovery if auto-heal is enabled
-                if self.auto_heal and "not found" in getattr(result, "action_desc", "").lower():
+                action_desc = getattr(result, "action_desc", "") or ""
+                failure_reason = getattr(result, "failure_reason", "") or ""
+                failure_text = f"{action_desc} {failure_reason}".lower()
+                if self.auto_heal and ("not found" in failure_text or "failed" in failure_text):
                     try:
                         from ..docs.auto_healer import DocAutoHealer
                         healer = DocAutoHealer(self.doc_path, llm)
