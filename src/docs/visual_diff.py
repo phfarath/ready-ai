@@ -105,18 +105,18 @@ def _generate_diff_image(
     """
     width, height = baseline.size
 
-    # Amplify the diff for visibility and tint it red
-    highlighted = Image.new("RGB", (width, height), (0, 0, 0))
-    diff_pixels = diff.load()
-    high_pixels = highlighted.load()
-
-    for y in range(height):
-        for x in range(width):
-            r, g, b = diff_pixels[x, y]
-            intensity = max(r, g, b)
-            if intensity > 10:  # threshold for noise
-                # Highlight changes in red with amplified intensity
-                high_pixels[x, y] = (min(255, intensity * 3), 0, 0)
+    # Amplify the diff for visibility and tint it red using channel operations
+    # Split into channels, find max intensity per pixel, threshold noise
+    r_ch, g_ch, b_ch = diff.split()
+    # Max of RGB channels per pixel
+    intensity = ImageChops.lighter(ImageChops.lighter(r_ch, g_ch), b_ch)
+    # Zero out noise below threshold (intensity <= 10)
+    threshold_mask = intensity.point(lambda v: 255 if v > 10 else 0)
+    # Amplify 3x and clamp to 255 for red channel
+    red_channel = intensity.point(lambda v: min(255, v * 3))
+    red_channel = ImageChops.multiply(red_channel, threshold_mask.point(lambda v: v // 255))
+    zero = Image.new("L", (width, height), 0)
+    highlighted = Image.merge("RGB", (red_channel, zero, zero))
 
     # Create side-by-side: baseline | current | diff
     margin = 4

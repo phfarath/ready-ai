@@ -7,6 +7,7 @@ compares screenshots with baselines, and produces a DocTestReport.
 """
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -23,8 +24,8 @@ from ..cdp.runtime import RuntimeDomain
 from ..docs.parser import parse_doc, extract_goal
 from ..docs.visual_diff import compare_screenshots
 from ..llm.client import LLMClient
-from ..llm.prompts import TEST_EXECUTOR_SYSTEM
 from . import executor
+from .dom_utils import dom_fingerprint as _dom_fingerprint
 from .state import DocStepState
 
 logger = logging.getLogger(__name__)
@@ -84,57 +85,6 @@ class DocTestReport:
         return "\n".join(lines)
 
 
-# ─── DOM fingerprint (extracted from AgenticLoop) ──────────────────────
-
-
-_DOM_FINGERPRINT_JS = """
-(() => {
-    const selectors = [
-        'button', 'input', 'select', 'textarea',
-        '[role="tab"]', '[role="menuitem"]',
-        '[aria-expanded]', '[aria-selected]', '[data-state]'
-    ].join(',');
-
-    const normalize = (value) => (value || '')
-        .replace(/\\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
-
-    const entries = Array.from(document.querySelectorAll(selectors))
-        .filter(el => {
-            const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-        })
-        .map(el => {
-            const text = normalize(el.innerText || el.textContent || el.value);
-            const state = [
-                el.tagName.toLowerCase(),
-                el.getAttribute('role') || '',
-                text,
-                el.getAttribute('aria-expanded') || '',
-                el.getAttribute('aria-selected') || '',
-                el.getAttribute('data-state') || '',
-                el.hasAttribute('disabled') ? 'disabled' : 'enabled',
-            ];
-            return state.join('|');
-        });
-
-    const uniqueSorted = Array.from(new Set(entries)).sort();
-    return uniqueSorted.slice(0, 250).join('\\n');
-})()
-"""
-
-
-async def _dom_fingerprint(runtime: RuntimeDomain) -> str:
-    """Compute a fast hash for SPA-relevant interactive DOM state."""
-    try:
-        payload = await runtime.evaluate(_DOM_FINGERPRINT_JS)
-        payload_str = str(payload) if payload is not None else ""
-    except Exception:
-        payload_str = ""
-    return hashlib.md5(payload_str.encode("utf-8")).hexdigest()
-
-
 # ─── Test Runner ───────────────────────────────────────────────────────
 
 
@@ -188,7 +138,9 @@ class DocTestRunner:
         )
 
         try:
-            # 1. Parse the docs
+            # 1. Validate and parse docs (before launching browser)
+            if not Path(self.doc_path).exists():
+                raise FileNotFoundError(f"Documentation file not found: {self.doc_path}")
             steps = parse_doc(self.doc_path)
             logger.info(f"Parsed {len(steps)} steps from {self.doc_path}")
 
@@ -299,7 +251,6 @@ class DocTestRunner:
             post_fingerprint = await _dom_fingerprint(runtime)
 
             # Take screenshot
-            import base64
             screenshot_b64 = await page.screenshot()
             new_screenshot_path = screenshots_dir / f"step_{step_num:02d}.png"
             new_screenshot_path.write_bytes(base64.b64decode(screenshot_b64))

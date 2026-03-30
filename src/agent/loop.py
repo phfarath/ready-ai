@@ -232,6 +232,10 @@ class AgenticLoop:
                 status=ds.status,
                 status_reason=ds.status_reason,
             )
+            # Restore baselines from checkpoint
+            if doc.steps:
+                doc.steps[-1]._baseline_dom_hash = ds.baseline_dom_hash
+                doc.steps[-1]._baseline_url = ds.baseline_url
 
     def _log_plan(self, steps: list[str]) -> None:
         """Log a numbered plan for plan-only mode."""
