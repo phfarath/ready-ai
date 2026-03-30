@@ -20,7 +20,7 @@ from ..cdp.connection import CDPConnection
 from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
-from ..docs.parser import parse_doc, extract_goal
+from ..docs.parser import parse_doc
 from ..docs.report_html import render_html_report
 from ..docs.terminal_output import ProgressPrinter
 from ..docs.visual_diff import compare_screenshots
@@ -270,7 +270,7 @@ class DocTestRunner:
             # Get current DOM state
             dom_html = await page.get_dom_html(max_length=4000)
             elements = await runtime.get_interactive_elements()
-            pre_fingerprint = await _dom_fingerprint(runtime)
+            await _dom_fingerprint(runtime)  # warm up fingerprinting
 
             # Re-execute the step
             result = await executor.execute_step(

@@ -5,7 +5,6 @@ Encapsulates launching Chrome, CDP connection management, cookie injection,
 login form handling, and browser crash recovery.
 """
 
-import asyncio
 import json
 import logging
 from pathlib import Path

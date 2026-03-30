@@ -5,7 +5,6 @@ Tests the full flow: parse docs → execute steps → compare screenshots → ge
 Uses mocked CDP/browser so no real Chrome instance is needed.
 """
 
-import asyncio
 import base64
 import json
 import shutil
@@ -15,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from PIL import Image
 
-from src.agent.test_runner import DocTestRunner, DocTestReport
+from src.agent.test_runner import DocTestRunner
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "sample_doc"
@@ -273,7 +272,7 @@ class TestE2EReportStructure:
                 output_dir=str(output_dir),
                 threshold=0.90,
             )
-            report = await runner.run()
+            await runner.run()
 
         data = json.loads((output_dir / "test_report.json").read_text())
 

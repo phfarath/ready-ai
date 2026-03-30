@@ -8,7 +8,7 @@ method names, and session IDs — without needing a real browser connection.
 import asyncio
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import sys
 from pathlib import Path
@@ -44,7 +44,6 @@ class TestCDPConnection:
         conn._ws = mock_ws
 
         # Create a future that resolves with a mock response
-        loop = asyncio.get_event_loop()
         sent_messages = []
 
         async def capture_send(data):
@@ -67,7 +66,7 @@ class TestCDPConnection:
 
             return await task
 
-        result = await send_and_resolve()
+        await send_and_resolve()
 
         # Verify sent message
         assert len(sent_messages) == 1

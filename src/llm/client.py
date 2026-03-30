@@ -15,7 +15,7 @@ from typing import Any, Optional
 import litellm
 import openai._compat as openai_compat
 
-from ..observability import Span, get_metrics, log_event
+from ..observability import get_metrics, log_event
 
 logger = logging.getLogger(__name__)
 

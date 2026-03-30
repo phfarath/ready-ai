@@ -11,7 +11,6 @@ Provides a lightweight instrumentation layer with:
 Designed with OTel-ready interfaces: swap backend in this file only.
 """
 
-import asyncio
 import functools
 import json
 import logging
@@ -84,7 +83,6 @@ class Metrics:
         """Increment a counter, optionally keyed by attributes."""
         self._counters[name] = self._counters.get(name, 0.0) + value
         if attrs:
-            key = f"{name}:{json.dumps(attrs, sort_keys=True)}"
             if name not in self._counter_attrs:
                 self._counter_attrs[name] = {}
             attr_key = json.dumps(attrs, sort_keys=True)

@@ -4,7 +4,6 @@ Documentation Output — writes markdown and screenshot files to disk.
 
 import base64
 import logging
-import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
