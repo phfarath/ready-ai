@@ -15,7 +15,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 import yaml
@@ -119,6 +119,10 @@ def _build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("--watch", action="store_true", help="Re-run tests periodically (use with --watch-interval)")
     test_parser.add_argument("--watch-interval", type=int, default=5, help="Watch interval in minutes (default: 5)")
     test_parser.add_argument("--auto-heal", action="store_true", help="Auto-update docs when drift is detected but steps still pass")
+    test_parser.add_argument("--open-pr", action="store_true", help="After auto-heal, commit changes to a new branch and open a PR (implies --auto-heal)")
+    test_parser.add_argument("--pr-base-branch", default="dev", help="Base branch for the auto-heal PR (default: dev)")
+    test_parser.add_argument("--pr-remote", default="origin", help="Git remote used to push the auto-heal branch (default: origin)")
+    test_parser.add_argument("--pr-dry-run", action="store_true", help="Run git steps locally but skip push and PR creation")
 
     api_parser = subparsers.add_parser("api", help="Start the FastAPI server")
     api_parser.add_argument("--port", "-p", type=int, default=8000, help="API server port")
@@ -230,6 +234,10 @@ async def async_main_test(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("🧪 ready-ai — Documentation Test Runner")
 
+    # --open-pr implies --auto-heal (publishing nothing makes no sense).
+    open_pr = getattr(args, "open_pr", False)
+    auto_heal = getattr(args, "auto_heal", False) or open_pr
+
     runner = DocTestRunner(
         doc_path=args.doc,
         url=args.url,
@@ -241,14 +249,16 @@ async def async_main_test(args: argparse.Namespace) -> None:
         cookies_file=args.cookies_file,
         username=args.username,
         password=args.password,
-        auto_heal=getattr(args, "auto_heal", False),
+        auto_heal=auto_heal,
     )
 
     try:
         if getattr(args, "watch", False):
-            await _watch_loop(runner, args.watch_interval, logger)
+            await _watch_loop(runner, args.watch_interval, logger, args)
         else:
             report = await runner.run()
+            if open_pr:
+                _maybe_publish_healing(report, args, logger)
             _handle_report_exit(report, logger)
     except KeyboardInterrupt:
         logger.info("⚠️  Interrupted by user")
@@ -258,7 +268,7 @@ async def async_main_test(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def _watch_loop(runner, interval_minutes: int, logger) -> None:
+async def _watch_loop(runner, interval_minutes: int, logger, args: argparse.Namespace) -> None:
     """Re-run tests periodically until interrupted."""
     from datetime import datetime
 
@@ -278,6 +288,9 @@ async def _watch_loop(runner, interval_minutes: int, logger) -> None:
             await asyncio.sleep(interval_minutes * 60)
             continue
 
+        if getattr(args, "open_pr", False):
+            _maybe_publish_healing(report, args, logger)
+
         # Alert on status transitions
         if prev_status and prev_status == "PASSED" and report.overall_status != "PASSED":
             print(f"\a⚠️  Status changed: {prev_status} → {report.overall_status}")
@@ -286,6 +299,76 @@ async def _watch_loop(runner, interval_minutes: int, logger) -> None:
 
         logger.info(f"Next run in {interval_minutes} minutes...")
         await asyncio.sleep(interval_minutes * 60)
+
+
+def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
+    """Publish auto-heal results as a PR when requested.
+
+    Runs only when the test-runner actually healed something. Any failure is
+    logged but never changes the doc-test exit code — publishing is a side
+    effect of healing, not the source of truth.
+    """
+    healing = getattr(report, "healing_report", None)
+    if healing is None or getattr(healing, "total_healed", 0) == 0:
+        logger.info("No healed steps to publish; skipping PR creation.")
+        return
+
+    from src.docs.healing_publisher import (
+        HealingPublishError,
+        PublishConfig,
+        publish_healing,
+    )
+
+    doc_path = Path(args.doc).resolve()
+    repo_root = _find_repo_root(doc_path)
+    if repo_root is None:
+        logger.error(
+            "Could not locate a git repository for %s; skipping PR creation.",
+            doc_path,
+        )
+        return
+
+    html_report_path = Path(args.output) / "test_report.html"
+    config = PublishConfig(
+        repo_root=repo_root,
+        doc_path=doc_path,
+        base_branch=args.pr_base_branch,
+        remote=args.pr_remote,
+        dry_run=args.pr_dry_run,
+    )
+
+    try:
+        result = publish_healing(
+            healing_report=healing,
+            doc_test_report=report,
+            html_report_path=html_report_path if html_report_path.exists() else None,
+            config=config,
+        )
+    except HealingPublishError as exc:
+        logger.error("Failed to publish healing PR: %s", exc)
+        return
+
+    if result.skipped_reason == "no-op":
+        logger.info("Publisher: nothing to publish.")
+    elif result.skipped_reason == "dry-run":
+        logger.info(
+            "Publisher (dry-run): branch %s committed locally (sha=%s). "
+            "Push and PR creation were skipped.",
+            result.branch_name, result.commit_sha,
+        )
+    else:
+        logger.info(
+            "Publisher: opened PR %s on branch %s (sha=%s).",
+            result.pr_url, result.branch_name, result.commit_sha,
+        )
+
+
+def _find_repo_root(start: Path) -> Optional[Path]:
+    """Walk up from `start` until a `.git` directory is found."""
+    for parent in [start, *start.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
 
 
 def _handle_report_exit(report, logger) -> None:

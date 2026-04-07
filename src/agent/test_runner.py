@@ -232,6 +232,9 @@ class DocTestRunner:
                 from ..docs.auto_healer import DocAutoHealer
                 healer = DocAutoHealer(self.doc_path, llm)
                 healing = await healer.heal_report(report)
+                # Expose the healing outcome so downstream consumers (CLI,
+                # publisher) can act on it without re-running the healer.
+                report.healing_report = healing
                 if healing.total_healed:
                     logger.info(
                         f"Auto-healed {healing.total_healed} step(s) in {self.doc_path}"

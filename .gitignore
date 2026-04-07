@@ -5,6 +5,9 @@ __pycache__/
 .DS_Store
 output/
 test-output/
+test-report/
+ready-ai-test.yaml
+test-cookies.json
 *.egg-info/
 dist/
 build/
