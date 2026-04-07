@@ -89,6 +89,12 @@ def _run(cmd: list[str], cwd: Path) -> str:
             capture_output=True,
             text=True,
         )
+    except FileNotFoundError as exc:
+        # Missing executable (e.g., `gh` not installed). Wrap so callers that
+        # suppress HealingPublishError keep publishing as a pure side effect.
+        raise HealingPublishError(
+            f"command not found: {cmd[0]!r} (is it installed and on PATH?)"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         stdout = (exc.stdout or "").strip()
@@ -157,6 +163,21 @@ def publish_healing(
         ),
         runner=runner,
     )
+
+    if commit_sha is None:
+        # Nothing changed relative to the base branch — pushing would yield an
+        # empty branch and `gh pr create` would error with "no commits between".
+        logger.info(
+            "publisher: no commit created (healed files match base branch) — "
+            "skipping push and PR"
+        )
+        return PublishResult(
+            branch_name=branch_name,
+            commit_sha=None,
+            pr_url=None,
+            files_changed=files_changed,
+            skipped_reason="no-op",
+        )
 
     if config.dry_run:
         logger.info("publisher: dry-run enabled — skipping push and PR creation")

@@ -24,9 +24,9 @@ on:
         description: "Base branch for the auto-heal PR"
         required: false
         default: "dev"
-  # Uncomment to run on a schedule (daily at 03:00 UTC):
-  # schedule:
-  #   - cron: "0 3 * * *"
+  schedule:
+    # Daily at 03:00 UTC. Adjust or remove as needed.
+    - cron: "0 3 * * *"
 
 permissions:
   contents: write
@@ -64,7 +64,11 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Only exit codes 0 (passed) and 2 (drift detected — expected when a
+        # PR is opened) are treated as success. Anything else (broken steps,
+        # auth failure, runtime error) fails the job.
         run: |
+          set +e
           python main.py test \
             --doc "${{ inputs.doc_path }}" \
             --url "${{ inputs.target_url }}" \
@@ -73,8 +77,11 @@ jobs:
             --open-pr \
             --pr-base-branch "${{ inputs.base_branch }}" \
             --output ./test-report
-        # Exit code 2 = drift detected (expected when a PR is opened).
-        continue-on-error: true
+          status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+            exit "$status"
+          fi
+          exit 0
 
       - name: Upload test report artifact
         if: always()

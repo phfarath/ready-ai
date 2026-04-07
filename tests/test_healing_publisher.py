@@ -249,7 +249,11 @@ def test_publish_skips_commit_when_nothing_staged(
 
     cmds = runner.commands()
     assert result.commit_sha is None
+    assert result.skipped_reason == "no-op"
     assert not any(c[:2] == ["git", "commit"] for c in cmds)
+    # Must not push or open a PR when nothing was committed.
+    assert not any(c[:2] == ["git", "push"] for c in cmds)
+    assert not any(c[:1] == ["gh"] for c in cmds)
 
 
 def test_render_pr_body_contains_step_summary(healing_report, doc_test_report):
@@ -323,6 +327,14 @@ def test_main_maybe_publish_healing_dry_run(
     assert captured["config"].base_branch == "dev"
     assert captured["config"].doc_path == (repo / "docs" / "docs.md").resolve()
     assert captured["config"].repo_root == repo.resolve()
+
+
+def test_run_wraps_missing_executable_in_publish_error(tmp_path):
+    """Missing `git`/`gh` binary must be raised as HealingPublishError, not FileNotFoundError."""
+    from src.docs.healing_publisher import _run
+
+    with pytest.raises(HealingPublishError, match="command not found"):
+        _run(["definitely-not-a-real-binary-xyz"], tmp_path)
 
 
 def test_publish_propagates_gh_failure(
