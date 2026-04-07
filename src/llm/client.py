@@ -9,10 +9,13 @@ for rate limit errors.
 import asyncio
 import importlib
 import logging
+import time
 from typing import Any, Optional
 
 import litellm
 import openai._compat as openai_compat
+
+from ..observability import get_metrics, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +94,7 @@ class LLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    async def _call_with_retry(self, kwargs: dict[str, Any]) -> str:
+    async def _call_with_retry(self, kwargs: dict[str, Any], role: str = "unknown") -> str:
         """
         Call litellm.acompletion with exponential backoff on rate limit errors.
 
@@ -99,10 +102,43 @@ class LLMClient:
         (1s, 2s, 4s, 8s, 16s) on 429 RateLimitError.
         """
         last_error = None
+        call_start = time.monotonic()
+
         for attempt in range(1, MAX_LLM_RETRIES + 1):
             try:
                 response = await litellm.acompletion(**kwargs)
                 content = response.choices[0].message.content
+                latency_ms = (time.monotonic() - call_start) * 1000
+
+                # Track usage metrics
+                metrics = get_metrics()
+                if metrics:
+                    metrics.increment("llm.calls", role=role)
+                    metrics.record("llm.latency_ms", latency_ms)
+
+                    usage = getattr(response, "usage", None)
+                    if usage:
+                        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                        metrics.increment("llm.prompt_tokens", prompt_tokens, role=role)
+                        metrics.increment("llm.completion_tokens", completion_tokens, role=role)
+
+                        try:
+                            cost = litellm.completion_cost(completion_response=response)
+                            metrics.increment("llm.cost_usd", cost, role=role)
+                        except Exception:
+                            pass  # Cost calculation not available for all models
+
+                log_event(
+                    "llm_call",
+                    model=self.model,
+                    role=role,
+                    attempt=attempt,
+                    latency_ms=round(latency_ms, 1),
+                    prompt_tokens=getattr(getattr(response, "usage", None), "prompt_tokens", None),
+                    completion_tokens=getattr(getattr(response, "usage", None), "completion_tokens", None),
+                )
+
                 logger.debug(f"LLM response ({len(content)} chars): {content[:100]}...")
                 return content
             except litellm.exceptions.RateLimitError as e:
@@ -124,6 +160,7 @@ class LLMClient:
         self,
         messages: list[dict],
         json_mode: bool = False,
+        role: str = "unknown",
     ) -> str:
         """
         Send a chat completion request.
@@ -131,6 +168,7 @@ class LLMClient:
         Args:
             messages: List of message dicts (role + content)
             json_mode: Request JSON output format
+            role: Agent role for metrics tracking (planner/executor/critic/recovery)
 
         Returns:
             The assistant's response text
@@ -145,7 +183,54 @@ class LLMClient:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        return await self._call_with_retry(kwargs)
+        return await self._call_with_retry(kwargs, role=role)
+
+    async def complete_with_vision_multi(
+        self,
+        prompt: str,
+        images_b64: list[str],
+        system: Optional[str] = None,
+        json_mode: bool = False,
+        role: str = "annotator",
+    ) -> str:
+        """
+        Send a vision request with multiple base64 images.
+
+        Args:
+            prompt: Text prompt describing what to analyze
+            images_b64: List of base64-encoded images (PNG/JPEG)
+            system: Optional system prompt
+            json_mode: Request JSON output format
+
+        Returns:
+            The assistant's response text
+        """
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for img_b64 in images_b64:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                    "detail": "high",
+                },
+            })
+        messages.append({"role": "user", "content": content})
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        return await self._call_with_retry(kwargs, role=role)
 
     async def complete_with_vision(
         self,
@@ -153,6 +238,7 @@ class LLMClient:
         image_b64: str,
         system: Optional[str] = None,
         json_mode: bool = False,
+        role: str = "annotator",
     ) -> str:
         """
         Send a vision request with a base64 image.
@@ -194,4 +280,4 @@ class LLMClient:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        return await self._call_with_retry(kwargs)
+        return await self._call_with_retry(kwargs, role=role)

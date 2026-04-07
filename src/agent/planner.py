@@ -45,7 +45,7 @@ async def plan(
         {"role": "user", "content": user_prompt},
     ]
 
-    response = await llm.complete(messages)
+    response = await llm.complete(messages, role="planner")
     steps = _parse_steps(response)
 
     logger.info(f"Planner generated {len(steps)} steps")

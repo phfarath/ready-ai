@@ -13,6 +13,7 @@ import logging
 import re
 import websockets
 from dataclasses import dataclass
+from typing import Optional
 
 from ..cdp.input import InputDomain
 from ..cdp.page import PageDomain
@@ -44,6 +45,7 @@ class StepResult:
     retry_needed: bool
     attempts: int = 1
     failure_reason: str = ""
+    status: str = ""
 
 
 async def execute_step(
@@ -83,7 +85,7 @@ async def execute_step(
 
     for attempt in range(1, MAX_RETRIES + 1):
         # Capture DOM state BEFORE action
-        text_before = await runtime.get_visible_text()
+        text_before = await runtime.get_state_fingerprint()
         url_before = await runtime.evaluate("window.location.href")
 
         # Build prompt — include failure context on retries
@@ -108,17 +110,53 @@ async def execute_step(
                 success=True,
                 retry_needed=False,
                 attempts=attempt,
+                status="completed",
             )
 
-        # Wait for UI to settle
+        # Wait for UI to settle. Explicit navigation barrier handles hard
+        # navigations (process swap / app router transition) so the post-action
+        # fingerprint runs against a live execution context, not a dead one.
         try:
-            await page.wait_for_network_idle(timeout=5.0, idle_time=0.2)
+            await page.wait_for_navigation_settled(timeout=10.0)
         except Exception:
             await asyncio.sleep(0.5)  # generic fallback
 
-        # Capture DOM state AFTER action
-        text_after = await runtime.get_visible_text()
-        url_after = await runtime.evaluate("window.location.href")
+        # Capture DOM state AFTER action — bounded so a dead/dying execution
+        # context can never hang the whole pipeline. On timeout we treat the
+        # action as having navigated (forcing url_changed=True), which is the
+        # only way Runtime.evaluate could legitimately hang here anyway.
+        try:
+            text_after = await asyncio.wait_for(
+                runtime.get_state_fingerprint(), timeout=5.0
+            )
+            url_after = await asyncio.wait_for(
+                runtime.evaluate("window.location.href"), timeout=3.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "  Post-action state capture timed out — treating as navigation"
+            )
+            text_after = "<post-action-capture-timeout>"
+            url_after = url_before + "#__nav__"
+        except Exception as e:
+            msg = str(e).lower()
+            # Execution context destroyed mid-call is a navigation symptom —
+            # treat like a timeout. Anything else is a real failure and must
+            # stay retryable so the step isn't falsely reported as success.
+            if (
+                "execution context" in msg
+                or "context was destroyed" in msg
+                or "target closed" in msg
+                or "no such execution context" in msg
+            ):
+                logger.warning(
+                    f"  Post-action capture hit destroyed context ({e}) "
+                    f"— treating as navigation"
+                )
+                text_after = "<post-action-capture-context-destroyed>"
+                url_after = url_before + "#__nav__"
+            else:
+                raise
 
         # Check if something changed
         url_changed = url_before != url_after
@@ -135,6 +173,7 @@ async def execute_step(
                 success=True,
                 retry_needed=False,
                 attempts=attempt,
+                status="completed",
             )
 
         # Action didn't change anything — might have failed silently
@@ -168,6 +207,7 @@ async def execute_step(
         retry_needed=False,
         attempts=MAX_RETRIES,
         failure_reason="; ".join(failures),
+        status="failed",
     )
 
 
@@ -213,8 +253,33 @@ async def _get_action(
         {"role": "user", "content": user_prompt},
     ]
 
-    response = await llm.complete(messages, json_mode=True)
+    response = await llm.complete(messages, json_mode=True, role="executor")
     return _parse_action(response)
+
+
+_TEXT_PSEUDO_RE = re.compile(
+    r"""(?ix)
+    (?:
+      \[\s*text\s*=\s*['"]([^'"]+)['"]\s*\]   # [text='X']
+      | :contains\(\s*['"]([^'"]+)['"]\s*\)   # :contains('X')
+      | :has-text\(\s*['"]([^'"]+)['"]\s*\)   # :has-text('X')
+    )
+    """
+)
+
+
+def _extract_text_pseudo(selector: str) -> Optional[str]:
+    """
+    Detect non-CSS text pseudo-selectors that LLMs love to emit
+    (`[text='X']`, `:contains('X')`, `:has-text('X')`) and return the
+    inner text. Returns None if the selector is valid CSS.
+    """
+    if not selector:
+        return None
+    match = _TEXT_PSEUDO_RE.search(selector)
+    if not match:
+        return None
+    return next((g for g in match.groups() if g), None)
 
 
 async def _try_scroll_into_view(selector: str, runtime: RuntimeDomain) -> None:
@@ -276,6 +341,23 @@ async def _dispatch_action(
     try:
         if action_type == "click":
             selector = action["selector"]
+            # LLMs frequently emit non-CSS pseudo-selectors like
+            # `button[type='submit'][text='Entrar']`, `:contains("X")`, or
+            # `:has-text("X")`. These never match. Detect them, extract the
+            # text, and re-dispatch as click_text.
+            text_match = _extract_text_pseudo(selector)
+            if text_match is not None:
+                logger.info(
+                    "  Rewriting invalid selector %r → click_text(%r)",
+                    selector,
+                    text_match,
+                )
+                return await _dispatch_action(
+                    {"action": "click_text", "text": text_match},
+                    page,
+                    input_domain,
+                    runtime,
+                )
             success = await input_domain.click(selector)
             if success:
                 return f"Clicked element: {selector}"

@@ -93,6 +93,50 @@ class RuntimeDomain:
         result = await self.evaluate("document.body?.innerText || ''")
         return str(result) if result else ""
 
+    async def get_state_fingerprint(self) -> str:
+        """
+        Return a fingerprint of page state that includes both visible text
+        and the values of form fields. Used by the executor to detect whether
+        an action mutated the page — `body.innerText` alone misses input
+        value changes (typing into a controlled React input does not alter
+        innerText).
+        """
+        js = """
+        (() => {
+            const text = document.body?.innerText || '';
+            // Only visible, user-editable fields; password/file/hidden are
+            // redacted so sensitive values never enter the fingerprint, and
+            // invisible/disabled fields don't create false state churn.
+            const fields = Array.from(
+                document.querySelectorAll(
+                    'input:not([type="hidden"]):not([type="file"]), textarea, select'
+                )
+            ).filter(e => {
+                if (e.disabled || e.readOnly) return false;
+                const rect = e.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return false;
+                const style = window.getComputedStyle(e);
+                if (style.visibility === 'hidden' || style.display === 'none') return false;
+                return true;
+            }).map(e => {
+                const key = e.name || e.id || e.type || e.tagName;
+                let val;
+                if (e.type === 'password') {
+                    // length only — signals change without leaking chars
+                    val = '[REDACTED:' + (e.value || '').length + ']';
+                } else if (e.type === 'checkbox' || e.type === 'radio') {
+                    val = e.checked ? '1' : '0';
+                } else {
+                    val = e.value || '';
+                }
+                return key + '=' + val;
+            }).join('|');
+            return text + '\\n__fields__:' + fields;
+        })()
+        """
+        result = await self.evaluate(js)
+        return str(result) if result else ""
+
     async def get_element_attributes(self, selector: str) -> dict:
         """Get all attributes of an element as a dict."""
         safe_sel = json.dumps(selector)

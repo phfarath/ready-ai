@@ -8,7 +8,7 @@ method names, and session IDs — without needing a real browser connection.
 import asyncio
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import sys
 from pathlib import Path
@@ -44,7 +44,6 @@ class TestCDPConnection:
         conn._ws = mock_ws
 
         # Create a future that resolves with a mock response
-        loop = asyncio.get_event_loop()
         sent_messages = []
 
         async def capture_send(data):
@@ -67,7 +66,7 @@ class TestCDPConnection:
 
             return await task
 
-        result = await send_and_resolve()
+        await send_and_resolve()
 
         # Verify sent message
         assert len(sent_messages) == 1
@@ -326,30 +325,30 @@ class TestDOMChangeDetection:
 
 
 class TestSelectorExtraction:
-    """Test the _extract_selector helper for visual highlighting (Gap C)."""
+    """Test the extract_selector helper for visual highlighting (Gap C)."""
 
     def test_extract_click_selector(self):
-        from src.agent.loop import AgenticLoop
-        assert AgenticLoop._extract_selector("Clicked element: #login-btn") == "#login-btn"
+        from src.agent.cursor import extract_selector
+        assert extract_selector("Clicked element: #login-btn") == "#login-btn"
 
     def test_extract_js_fallback_selector(self):
-        from src.agent.loop import AgenticLoop
-        assert AgenticLoop._extract_selector(
+        from src.agent.cursor import extract_selector
+        assert extract_selector(
             "Clicked element via JS fallback: [data-testid=\"submit\"]"
         ) == "[data-testid=\"submit\"]"
 
     def test_extract_scroll_to_selector(self):
-        from src.agent.loop import AgenticLoop
-        assert AgenticLoop._extract_selector("Scrolled to element: .footer-link") == ".footer-link"
+        from src.agent.cursor import extract_selector
+        assert extract_selector("Scrolled to element: .footer-link") == ".footer-link"
 
     def test_returns_none_for_non_element_actions(self):
-        from src.agent.loop import AgenticLoop
-        assert AgenticLoop._extract_selector("Observing current page state") is None
-        assert AgenticLoop._extract_selector("Navigated to: https://example.com") is None
+        from src.agent.cursor import extract_selector
+        assert extract_selector("Observing current page state") is None
+        assert extract_selector("Navigated to: https://example.com") is None
 
     def test_returns_none_for_failed_actions(self):
-        from src.agent.loop import AgenticLoop
-        assert AgenticLoop._extract_selector("[Failed] Element not found: #btn") is None
+        from src.agent.cursor import extract_selector
+        assert extract_selector("[Failed] Element not found: #btn") is None
 
 
 class TestCredentialEscaping:
