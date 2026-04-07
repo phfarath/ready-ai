@@ -93,6 +93,35 @@ class RuntimeDomain:
         result = await self.evaluate("document.body?.innerText || ''")
         return str(result) if result else ""
 
+    async def get_state_fingerprint(self) -> str:
+        """
+        Return a fingerprint of page state that includes both visible text
+        and the values of form fields. Used by the executor to detect whether
+        an action mutated the page — `body.innerText` alone misses input
+        value changes (typing into a controlled React input does not alter
+        innerText).
+        """
+        js = """
+        (() => {
+            const text = document.body?.innerText || '';
+            const fields = Array.from(
+                document.querySelectorAll('input, textarea, select')
+            ).map(e => {
+                const key = e.name || e.id || e.type || e.tagName;
+                let val;
+                if (e.type === 'checkbox' || e.type === 'radio') {
+                    val = e.checked ? '1' : '0';
+                } else {
+                    val = e.value || '';
+                }
+                return key + '=' + val;
+            }).join('|');
+            return text + '\\n__fields__:' + fields;
+        })()
+        """
+        result = await self.evaluate(js)
+        return str(result) if result else ""
+
     async def get_element_attributes(self, selector: str) -> dict:
         """Get all attributes of an element as a dict."""
         safe_sel = json.dumps(selector)

@@ -202,6 +202,8 @@ async def recover_failed_step(
         return (
             executor.StepResult(
                 action_desc=working_result.action_desc,
+                success=False,
+                retry_needed=False,
                 attempts=working_result.attempts,
                 failure_reason=decision.get("reason") or working_result.failure_reason,
                 status="skipped",
@@ -213,6 +215,8 @@ async def recover_failed_step(
     return (
         executor.StepResult(
             action_desc=working_result.action_desc,
+            success=False,
+            retry_needed=False,
             attempts=working_result.attempts,
             failure_reason=decision.get("reason") or working_result.failure_reason,
             status="manual_required",

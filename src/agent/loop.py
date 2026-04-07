@@ -210,7 +210,10 @@ class AgenticLoop:
             metrics_path = Path(self.output_dir) / f"{self.run_id}_metrics.json"
             metrics_path.parent.mkdir(parents=True, exist_ok=True)
             metrics_path.write_text(json.dumps(summary, indent=2, default=str))
-            log_event("run_complete", **summary)
+            # `summary` may already contain an 'event' key from run_ctx —
+            # strip it so it doesn't collide with log_event's first arg.
+            summary_payload = {k: v for k, v in summary.items() if k != "event"}
+            log_event("run_complete", **summary_payload)
             logger.info(f"═══ Metrics saved to: {metrics_path}")
         except Exception as exc:
             logger.warning(f"Failed to save metrics: {exc}")

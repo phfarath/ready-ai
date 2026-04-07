@@ -162,6 +162,103 @@ class PageDomain:
             
         logger.info("Navigation complete")
 
+    async def wait_for_navigation_settled(self, timeout: float = 10.0) -> bool:
+        """
+        Detect whether a navigation is in flight after an action and, if so,
+        wait until the new document has loaded and the network has settled.
+
+        Strategy:
+          1. Peek the event queue for ~200ms looking for navigation signals
+             (Page.frameStartedLoading / frameRequestedNavigation /
+             frameNavigated, Inspector.targetCrashed, Target.attachedToTarget).
+          2. If nothing seen → fast path, return False (no navigation).
+          3. Otherwise wait for Page.loadEventFired with the remaining budget,
+             falling back to Page.domContentEventFired, then to a readyState
+             poll, then to a fixed sleep.
+          4. Drain network with wait_for_network_idle so SPA hydration / data
+             fetches finish before the caller observes the page.
+          5. Re-queue any unrelated events that were stashed during the peek.
+
+        Returns:
+            True if a navigation was observed, False otherwise.
+        """
+        nav_methods = {
+            "Page.frameStartedLoading",
+            "Page.frameRequestedNavigation",
+            "Page.frameNavigated",
+            "Inspector.targetCrashed",
+            "Target.attachedToTarget",
+        }
+        deadline = asyncio.get_event_loop().time() + timeout
+        peek_deadline = asyncio.get_event_loop().time() + 0.2
+        stashed: list[dict] = []
+        navigated = False
+
+        try:
+            # Phase 1: peek for navigation signals
+            while True:
+                remaining = peek_deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    event = await asyncio.wait_for(
+                        self._conn._events.get(), timeout=remaining
+                    )
+                except asyncio.TimeoutError:
+                    break
+                if event.get("method") in nav_methods:
+                    navigated = True
+                    stashed.append(event)
+                    break
+                stashed.append(event)
+
+            if not navigated:
+                return False
+
+            # Phase 2: wait for new document load (multi-stage fallback)
+            half = max((deadline - asyncio.get_event_loop().time()) / 2, 1.0)
+            try:
+                await self._conn.wait_for_event(
+                    "Page.loadEventFired", timeout=half
+                )
+            except TimeoutError:
+                logger.debug("loadEventFired missed; trying domContentEventFired")
+                try:
+                    await self._conn.wait_for_event(
+                        "Page.domContentEventFired", timeout=half
+                    )
+                except TimeoutError:
+                    logger.debug("domContentEventFired missed; polling readyState")
+                    poll_deadline = asyncio.get_event_loop().time() + 2.0
+                    while asyncio.get_event_loop().time() < poll_deadline:
+                        try:
+                            res = await self._conn.send(
+                                "Runtime.evaluate",
+                                {"expression": "document.readyState"},
+                                timeout=2.0,
+                            )
+                            if res.get("result", {}).get("value") in (
+                                "interactive",
+                                "complete",
+                            ):
+                                break
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.2)
+                    else:
+                        await asyncio.sleep(0.5)
+
+            # Phase 3: settle network
+            try:
+                await self.wait_for_network_idle(timeout=5.0, idle_time=0.3)
+            except Exception:
+                pass
+
+            return True
+        finally:
+            for ev in stashed:
+                await self._conn._events.put(ev)
+
     async def wait_for_network_idle(self, timeout: float = 30.0, idle_time: float = 0.5) -> None:
         """
         Wait until there are no pending network requests for at least `idle_time` seconds.
