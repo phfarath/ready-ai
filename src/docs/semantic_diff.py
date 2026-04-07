@@ -49,18 +49,22 @@ async def describe_visual_change(
     Returns:
         Human-readable description of the visual changes.
     """
-    baseline_b64 = base64.b64encode(Path(baseline_path).read_bytes()).decode()
-    current_b64 = base64.b64encode(Path(current_path).read_bytes()).decode()
-
-    prompt = _SEMANTIC_DIFF_PROMPT.format(step_title=step_title)
-
     try:
+        # Screenshot reads are inside the try so a missing/truncated baseline
+        # or current image degrades gracefully to an empty diff rather than
+        # hard-failing the whole test run.
+        baseline_b64 = base64.b64encode(Path(baseline_path).read_bytes()).decode()
+        current_b64 = base64.b64encode(Path(current_path).read_bytes()).decode()
+        prompt = _SEMANTIC_DIFF_PROMPT.format(step_title=step_title)
         description = await llm.complete_with_vision_multi(
             prompt=prompt,
             images_b64=[baseline_b64, current_b64],
             role="semantic_diff",
         )
-        logger.info(f"Semantic diff: {description[:100]}")
+        # Don't log the description itself at INFO — the prompt asks the
+        # model to describe text/content changes, which can capture names,
+        # emails, or other user-visible PII. Log only safe metadata.
+        logger.debug(f"Semantic diff generated ({len(description)} chars)")
         return description.strip()
     except Exception as e:
         logger.warning(f"Semantic diff failed: {e}")

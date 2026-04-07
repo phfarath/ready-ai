@@ -20,6 +20,57 @@ from ..llm.client import LLMClient
 logger = logging.getLogger(__name__)
 
 
+def _normalize_cookie(cookie: dict) -> dict | None:
+    """
+    Normalize a single cookie dict from a browser-export JSON into the CDP
+    Network.setCookie param shape. Returns None if the cookie lacks the
+    required name/value fields.
+    """
+    if "name" not in cookie or "value" not in cookie:
+        return None
+    cdp_cookie = {
+        "name": cookie["name"],
+        "value": cookie["value"],
+        "domain": cookie.get("domain", ""),
+        "path": cookie.get("path", "/"),
+        "secure": cookie.get("secure", False),
+        "httpOnly": cookie.get("httpOnly", False),
+    }
+    if "sameSite" in cookie:
+        cdp_cookie["sameSite"] = cookie["sameSite"]
+    # Browser exports commonly use `expirationDate` — translate to CDP `expires`.
+    if "expirationDate" in cookie:
+        cdp_cookie["expires"] = cookie["expirationDate"]
+    elif "expires" in cookie:
+        cdp_cookie["expires"] = cookie["expires"]
+    return cdp_cookie
+
+
+async def inject_cookies_from_file(conn, cookies_file: str) -> int:
+    """
+    Read a cookies JSON file, normalize each entry, and send it via
+    Network.setCookie on the given connection. Returns the count of cookies
+    successfully injected. Raises FileNotFoundError / ValueError on IO or
+    shape problems so callers can log uniformly.
+    """
+    cookie_path = Path(cookies_file)
+    if not cookie_path.exists():
+        raise FileNotFoundError(cookies_file)
+    cookies = json.loads(cookie_path.read_text())
+    if not isinstance(cookies, list):
+        raise ValueError(
+            "Cookies file must contain a JSON array of cookie objects"
+        )
+    count = 0
+    for cookie in cookies:
+        cdp_cookie = _normalize_cookie(cookie)
+        if cdp_cookie is None:
+            continue
+        await conn.send("Network.setCookie", cdp_cookie)
+        count += 1
+    return count
+
+
 class BrowserSession:
     """Owns the full Chrome browser lifecycle."""
 
@@ -62,15 +113,19 @@ class BrowserSession:
     async def setup(self) -> None:
         """Launch Chrome and establish CDP connection."""
         logger.info("Launching Chrome...")
-        self._chrome_proc = launch_chrome(
-            port=self.port,
-            headless=self.headless,
-        )
-        ws_url = await get_ws_url(port=self.port)
-        self._conn = CDPConnection()
-        await self._conn.connect(ws_url)
-        await self._conn.attach_to_page()
-        self._init_domains()
+        try:
+            self._chrome_proc = launch_chrome(
+                port=self.port,
+                headless=self.headless,
+            )
+            ws_url = await get_ws_url(port=self.port)
+            self._conn = CDPConnection()
+            await self._conn.connect(ws_url)
+            await self._conn.attach_to_page()
+            self._init_domains()
+        except Exception:
+            await self.teardown()
+            raise
 
     def _init_domains(self) -> None:
         """Create CDP domain helpers from current connection."""
@@ -93,6 +148,7 @@ class BrowserSession:
             except Exception:
                 try:
                     self._chrome_proc.kill()
+                    self._chrome_proc.wait(timeout=5)
                 except Exception:
                     pass
             logger.info("Chrome process terminated")
@@ -101,39 +157,14 @@ class BrowserSession:
         """Inject cookies from a JSON file for session authentication."""
         if not self.cookies_file:
             return
-
-        cookie_path = Path(self.cookies_file)
-        if not cookie_path.exists():
-            logger.error(f"Cookies file not found: {self.cookies_file}")
-            return
-
         try:
-            cookies = json.loads(cookie_path.read_text())
-            if not isinstance(cookies, list):
-                logger.error("Cookies file must contain a JSON array of cookie objects")
-                return
-
-            for cookie in cookies:
-                if "name" not in cookie or "value" not in cookie:
-                    continue
-
-                cdp_cookie = {
-                    "name": cookie["name"],
-                    "value": cookie["value"],
-                    "domain": cookie.get("domain", ""),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                }
-                if "sameSite" in cookie:
-                    cdp_cookie["sameSite"] = cookie["sameSite"]
-                if "expirationDate" in cookie:
-                    cdp_cookie["expires"] = cookie["expirationDate"]
-
-                await self._conn.send("Network.setCookie", cdp_cookie)
-
-            logger.info(f"Injected {len(cookies)} cookies from {self.cookies_file}")
-
+            count = await inject_cookies_from_file(self._conn, self.cookies_file)
+            if count:
+                logger.info(f"Injected {count} cookies from {self.cookies_file}")
+        except FileNotFoundError:
+            logger.error(f"Cookies file not found: {self.cookies_file}")
+        except ValueError as e:
+            logger.error(str(e))
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"Failed to parse cookies file: {e}")
 
@@ -275,18 +306,28 @@ class BrowserSession:
         """)
 
         if email_filled and pass_filled:
+            # Scope the submit button lookup to the form that owns the password
+            # field so we don't accidentally click an unrelated button.
             submitted = await self._runtime.evaluate("""
                 (() => {
-                    const btn = document.querySelector(
+                    const pw = document.querySelector('input[type="password"]');
+                    const form = pw && (pw.form || pw.closest('form'));
+                    const scope = form || document;
+                    const btn = scope.querySelector(
                         'button[type="submit"], input[type="submit"], ' +
                         'button:not([type]), [role="button"]'
                     );
                     if (btn) { btn.click(); return 'button'; }
-                    const form = document.querySelector('form');
                     if (form) { form.submit(); return 'form'; }
                     return false;
                 })()
             """)
+            if not submitted:
+                logger.warning(
+                    "    Could not find a submit control for the login form; "
+                    "skipping auth wait"
+                )
+                return
             logger.info(f"    Login submitted via: {submitted}")
             try:
                 await self._conn.wait_for_event("Page.loadEventFired", timeout=10.0)

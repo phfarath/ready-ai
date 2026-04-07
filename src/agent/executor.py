@@ -131,13 +131,31 @@ async def execute_step(
             url_after = await asyncio.wait_for(
                 runtime.evaluate("window.location.href"), timeout=3.0
             )
-        except (asyncio.TimeoutError, Exception) as e:
+        except asyncio.TimeoutError:
             logger.warning(
-                f"  Post-action state capture failed ({type(e).__name__}: {e}) "
-                f"— treating as navigation"
+                "  Post-action state capture timed out — treating as navigation"
             )
             text_after = "<post-action-capture-timeout>"
             url_after = url_before + "#__nav__"
+        except Exception as e:
+            msg = str(e).lower()
+            # Execution context destroyed mid-call is a navigation symptom —
+            # treat like a timeout. Anything else is a real failure and must
+            # stay retryable so the step isn't falsely reported as success.
+            if (
+                "execution context" in msg
+                or "context was destroyed" in msg
+                or "target closed" in msg
+                or "no such execution context" in msg
+            ):
+                logger.warning(
+                    f"  Post-action capture hit destroyed context ({e}) "
+                    f"— treating as navigation"
+                )
+                text_after = "<post-action-capture-context-destroyed>"
+                url_after = url_before + "#__nav__"
+            else:
+                raise
 
         # Check if something changed
         url_changed = url_before != url_after

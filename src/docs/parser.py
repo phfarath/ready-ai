@@ -38,6 +38,37 @@ _ACTION_RE = re.compile(
     re.DOTALL,
 )
 
+# Callouts emitted by DocRenderer for non-executable steps. The label comes
+# from localized labels in src/docs/renderer.py; we match any of them so
+# round-tripping across languages preserves step status.
+_CALLOUT_RE = re.compile(
+    r"^>\s+\*\*(?P<label>[^*]+):\*\*\s*(?P<reason>.+)$",
+    re.MULTILINE,
+)
+
+# Map every localized label back to an internal status key. Mirrors the
+# `step_skipped` / `manual_required` entries in renderer._labels.
+_STATUS_LABELS = {
+    # English
+    "Manual action required": "manual_required",
+    "Step skipped": "step_skipped",
+    # Portuguese
+    "Ação manual necessária": "manual_required",
+    "Passo ignorado": "step_skipped",
+    # Spanish
+    "Acción manual requerida": "manual_required",
+    "Paso omitido": "step_skipped",
+    # French
+    "Action manuelle requise": "manual_required",
+    "Étape ignorée": "step_skipped",
+    # German
+    "Manuelle Aktion erforderlich": "manual_required",
+    "Schritt übersprungen": "step_skipped",
+    # Italian
+    "Azione manuale richiesta": "manual_required",
+    "Passaggio saltato": "step_skipped",
+}
+
 
 def parse_doc(doc_path: str | Path) -> list[DocStepState]:
     """
@@ -80,8 +111,24 @@ def parse_doc(doc_path: str | Path) -> list[DocStepState]:
         action_match = _ACTION_RE.search(section)
         action_description = action_match.group(1).strip() if action_match else ""
 
+        # Detect localized manual_required/step_skipped callouts and map
+        # them back to internal status so the test runner doesn't replay
+        # them as executable steps.
+        status = "completed"
+        status_reason = ""
+        for m in _CALLOUT_RE.finditer(section):
+            label = m.group("label").strip()
+            mapped = _STATUS_LABELS.get(label)
+            if mapped:
+                status = mapped
+                status_reason = m.group("reason").strip()
+                break
+
         # Extract annotation: text between screenshot and <details> (or next ---)
         annotation = _extract_annotation(section, screenshot_match, action_match)
+        # Strip any callout line from the annotation so it doesn't leak
+        # into the replayed step title/context.
+        annotation = _CALLOUT_RE.sub("", annotation).strip()
 
         steps.append(DocStepState(
             number=step_number,
@@ -89,6 +136,8 @@ def parse_doc(doc_path: str | Path) -> list[DocStepState]:
             action_description=action_description,
             annotation=annotation,
             screenshot_path=screenshot_path,
+            status=status,
+            status_reason=status_reason,
         ))
 
     logger.info(f"Parsed {len(steps)} steps from {doc_path}")

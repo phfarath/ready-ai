@@ -14,6 +14,117 @@ from .connection import CDPConnection
 logger = logging.getLogger(__name__)
 
 
+# Universal active cursor + highlight border injected on every new document.
+# Registered via Page.addScriptToEvaluateOnNewDocument — must be re-registered
+# whenever the CDP session is swapped (e.g. cross-origin process swap).
+CURSOR_SCRIPT = """
+    (() => {
+        if (window.__browserAutoCursorMove) return;
+
+        let cursor = null;
+        let border = null;
+
+        const initAssets = () => {
+            if (document.getElementById('ready-ai-cursor-global')) return;
+
+            border = document.createElement('div');
+            border.id = 'ready-ai-border-global';
+            border.style.position = 'fixed';
+            border.style.inset = '0';
+            border.style.pointerEvents = 'none';
+            border.style.zIndex = '2147483646';
+            border.style.boxShadow = 'inset 0 0 0 2px rgba(255, 215, 0, 0.4), inset 0 0 0 4px rgba(0, 0, 0, 0.5)';
+            border.style.animation = 'ready-ai-pixel-smoke 1.2s steps(4, end) infinite alternate';
+
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes ready-ai-pixel-smoke {
+                    0%   { box-shadow: inset 0 0 0 2px rgba(255, 215, 0, 0.4), inset 0 0 0 6px rgba(0, 0, 0, 0.4),  inset 0 0 4px 6px rgba(255, 215, 0, 0.2); }
+                    33%  { box-shadow: inset 0 0 0 4px rgba(255, 215, 0, 0.6), inset 0 0 0 8px rgba(0, 0, 0, 0.6),  inset 0 0 6px 8px rgba(255, 215, 0, 0.3); }
+                    66%  { box-shadow: inset 0 0 0 6px rgba(255, 215, 0, 0.5), inset 0 0 0 10px rgba(0, 0, 0, 0.7), inset 0 0 8px 10px rgba(255, 215, 0, 0.4); }
+                    100% { box-shadow: inset 0 0 0 8px rgba(255, 215, 0, 0.8), inset 0 0 0 12px rgba(0, 0, 0, 0.9), inset 0 0 10px 14px rgba(255, 215, 0, 0.5); }
+                }
+                @keyframes ready-ai-ripple {
+                    0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
+                    100% { transform: translate(-50%, -50%) scale(3); opacity: 0; }
+                }
+            `;
+            document.head.appendChild(style);
+
+            cursor = document.createElement('div');
+            cursor.id = 'ready-ai-cursor-global';
+            cursor.style.position = 'fixed';
+            cursor.style.width = '24px';
+            cursor.style.height = '24px';
+            cursor.style.pointerEvents = 'none';
+            cursor.style.zIndex = '2147483647';
+            cursor.style.transform = 'translate(-2px, -2px)';
+            cursor.style.transition = 'left 0.3s ease-out, top 0.3s ease-out';
+            cursor.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" style="filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.5));">
+                    <path d="M4 2L20 10L13 13L10 20L4 2Z" fill="#000000" stroke="#FFD700" stroke-width="2" stroke-linejoin="round"/>
+                    <circle cx="11.5" cy="11.5" r="2" fill="#FFD700"/>
+                </svg>
+            `;
+            cursor.style.left = '50%';
+            cursor.style.top = '50%';
+
+            document.documentElement.appendChild(border);
+            document.documentElement.appendChild(cursor);
+        };
+
+        if (document.body || document.documentElement) {
+            initAssets();
+        } else {
+            document.addEventListener('DOMContentLoaded', initAssets);
+        }
+
+        window.__browserAutoCursorMove = (x, y) => {
+            if (!cursor && document.documentElement) initAssets();
+            if (cursor) {
+                cursor.style.left = x + 'px';
+                cursor.style.top = y + 'px';
+            }
+        };
+
+        window.__browserAutoCursorClickEffect = () => {
+            if (!cursor) return;
+            const ripple = document.createElement('div');
+            ripple.style.position = 'fixed';
+            ripple.style.left = cursor.style.left;
+            ripple.style.top = cursor.style.top;
+            ripple.style.width = '20px';
+            ripple.style.height = '20px';
+            ripple.style.borderRadius = '50%';
+            ripple.style.backgroundColor = 'rgba(255, 215, 0, 0.5)';
+            ripple.style.border = '2px solid rgba(255, 215, 0, 0.8)';
+            ripple.style.pointerEvents = 'none';
+            ripple.style.zIndex = '2147483646';
+            ripple.style.transform = 'translate(-50%, -50%)';
+            ripple.style.animation = 'ready-ai-ripple 0.4s ease-out forwards';
+            document.documentElement.appendChild(ripple);
+            setTimeout(() => ripple.remove(), 400);
+        };
+    })();
+"""
+
+
+async def register_cursor_script(conn, session_id=None) -> None:
+    """
+    (Re-)register the universal cursor/highlight script on a CDP session.
+    Called from PageDomain.enable() and from connection auto-attach healing.
+    """
+    try:
+        await conn.send(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": CURSOR_SCRIPT},
+            session_id=session_id,
+            timeout=5.0,
+        )
+    except Exception as exc:
+        logger.debug(f"Cursor script registration failed: {exc}")
+
+
 class PageDomain:
     """High-level Page domain operations over a CDPConnection."""
 
@@ -24,114 +135,7 @@ class PageDomain:
         """Enable Page domain events (required for loadEventFired etc.) and universal cursor."""
         await self._conn.send("Page.enable")
         await self._conn.send("DOM.enable")
-        
-        # Inject universal active cursor on every new document load
-        cursor_script = """
-            (() => {
-                if (window.__browserAutoCursorMove) return;
-                
-                let cursor = null;
-                let border = null;
-                
-                const initAssets = () => {
-                    if (document.getElementById('ready-ai-cursor-global')) return;
-                    
-                    // 1. Create the Animated Active Border
-                    border = document.createElement('div');
-                    border.id = 'ready-ai-border-global';
-                    border.style.position = 'fixed';
-                    border.style.inset = '0';
-                    border.style.pointerEvents = 'none';
-                    border.style.zIndex = '2147483646'; // Max z-index - 1
-                    
-                    // Black and yellow pixelated 'smoke' glowing border
-                    border.style.boxShadow = 'inset 0 0 0 2px rgba(255, 215, 0, 0.4), inset 0 0 0 4px rgba(0, 0, 0, 0.5)';
-                    border.style.animation = 'ready-ai-pixel-smoke 1.2s steps(4, end) infinite alternate';
-                    
-                    // Add keyframes for pixel-smoke pulse and ripple effect
-                    const style = document.createElement('style');
-                    style.textContent = `
-                        @keyframes ready-ai-pixel-smoke {
-                            0%   { box-shadow: inset 0 0 0 2px rgba(255, 215, 0, 0.4), inset 0 0 0 6px rgba(0, 0, 0, 0.4),  inset 0 0 4px 6px rgba(255, 215, 0, 0.2); }
-                            33%  { box-shadow: inset 0 0 0 4px rgba(255, 215, 0, 0.6), inset 0 0 0 8px rgba(0, 0, 0, 0.6),  inset 0 0 6px 8px rgba(255, 215, 0, 0.3); }
-                            66%  { box-shadow: inset 0 0 0 6px rgba(255, 215, 0, 0.5), inset 0 0 0 10px rgba(0, 0, 0, 0.7), inset 0 0 8px 10px rgba(255, 215, 0, 0.4); }
-                            100% { box-shadow: inset 0 0 0 8px rgba(255, 215, 0, 0.8), inset 0 0 0 12px rgba(0, 0, 0, 0.9), inset 0 0 10px 14px rgba(255, 215, 0, 0.5); }
-                        }
-                        @keyframes ready-ai-ripple {
-                            0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
-                            100% { transform: translate(-50%, -50%) scale(3); opacity: 0; }
-                        }
-                    `;
-                    document.head.appendChild(style);
-
-                    // 2. Create the Custom SVG Cursor
-                    cursor = document.createElement('div');
-                    cursor.id = 'ready-ai-cursor-global';
-                    cursor.style.position = 'fixed';
-                    cursor.style.width = '24px';
-                    cursor.style.height = '24px';
-                    cursor.style.pointerEvents = 'none';
-                    cursor.style.zIndex = '2147483647';
-                    cursor.style.transform = 'translate(-2px, -2px)';
-                    cursor.style.transition = 'left 0.3s ease-out, top 0.3s ease-out';
-                    
-                    // SVG embedded (Black body, yellow border/details)
-                    cursor.innerHTML = `
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" style="filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.5));">
-                            <path d="M4 2L20 10L13 13L10 20L4 2Z" fill="#000000" stroke="#FFD700" stroke-width="2" stroke-linejoin="round"/>
-                            <circle cx="11.5" cy="11.5" r="2" fill="#FFD700"/>
-                        </svg>
-                    `;
-                    
-                    // Default starting position
-                    cursor.style.left = '50%';
-                    cursor.style.top = '50%';
-                    
-                    document.documentElement.appendChild(border);
-                    document.documentElement.appendChild(cursor);
-                };
-                
-                // Initialize as soon as possible, or fallback to DOMContentLoaded
-                if (document.body || document.documentElement) {
-                    initAssets();
-                } else {
-                    document.addEventListener('DOMContentLoaded', initAssets);
-                }
-                
-                window.__browserAutoCursorMove = (x, y) => {
-                    if (!cursor && document.documentElement) initAssets();
-                    if (cursor) {
-                        cursor.style.left = x + 'px';
-                        cursor.style.top = y + 'px';
-                    }
-                };
-                
-                window.__browserAutoCursorClickEffect = () => {
-                    if (!cursor) return;
-                    
-                    // Create a ripple element at the current cursor position
-                    const ripple = document.createElement('div');
-                    ripple.style.position = 'fixed';
-                    ripple.style.left = cursor.style.left;
-                    ripple.style.top = cursor.style.top;
-                    ripple.style.width = '20px';
-                    ripple.style.height = '20px';
-                    ripple.style.borderRadius = '50%';
-                    ripple.style.backgroundColor = 'rgba(255, 215, 0, 0.5)';
-                    ripple.style.border = '2px solid rgba(255, 215, 0, 0.8)';
-                    ripple.style.pointerEvents = 'none';
-                    ripple.style.zIndex = '2147483646'; // Below the cursor
-                    ripple.style.transform = 'translate(-50%, -50%)';
-                    ripple.style.animation = 'ready-ai-ripple 0.4s ease-out forwards';
-                    
-                    document.documentElement.appendChild(ripple);
-                    
-                    // Remove after animation completes
-                    setTimeout(() => ripple.remove(), 400);
-                };
-            })();
-        """
-        await self._conn.send("Page.addScriptToEvaluateOnNewDocument", {"source": cursor_script})
+        await register_cursor_script(self._conn)
 
     async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
         """
@@ -167,20 +171,14 @@ class PageDomain:
         Detect whether a navigation is in flight after an action and, if so,
         wait until the new document has loaded and the network has settled.
 
-        Strategy:
-          1. Peek the event queue for ~200ms looking for navigation signals
-             (Page.frameStartedLoading / frameRequestedNavigation /
-             frameNavigated, Inspector.targetCrashed, Target.attachedToTarget).
-          2. If nothing seen → fast path, return False (no navigation).
-          3. Otherwise wait for Page.loadEventFired with the remaining budget,
-             falling back to Page.domContentEventFired, then to a readyState
-             poll, then to a fixed sleep.
-          4. Drain network with wait_for_network_idle so SPA hydration / data
-             fetches finish before the caller observes the page.
-          5. Re-queue any unrelated events that were stashed during the peek.
-
-        Returns:
-            True if a navigation was observed, False otherwise.
+        Key properties:
+          * Navigation marker events (frameStartedLoading/frameNavigated/
+            targetCrashed/attachedToTarget) that trigger this barrier are
+            CONSUMED — they are not re-queued, so a subsequent call cannot
+            observe a stale navigation from a previous action.
+          * Every blocking phase (load wait, domContent fallback, readyState
+            poll, network idle) re-computes the remaining budget and bails
+            out if time has expired, so the method never exceeds `timeout`.
         """
         nav_methods = {
             "Page.frameStartedLoading",
@@ -189,74 +187,93 @@ class PageDomain:
             "Inspector.targetCrashed",
             "Target.attachedToTarget",
         }
-        deadline = asyncio.get_event_loop().time() + timeout
-        peek_deadline = asyncio.get_event_loop().time() + 0.2
-        stashed: list[dict] = []
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        peek_deadline = loop.time() + 0.2
+        stashed_non_nav: list[dict] = []  # non-nav events to re-queue
         navigated = False
 
+        def remaining() -> float:
+            return max(deadline - loop.time(), 0.0)
+
         try:
-            # Phase 1: peek for navigation signals
+            # Phase 1: peek for navigation signals. Non-nav events get
+            # re-queued. Nav events are CONSUMED (dropped) — finding one
+            # flips `navigated` and we continue draining additional nav
+            # markers so the queue is clean before phase 2.
             while True:
-                remaining = peek_deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
+                peek_remaining = peek_deadline - loop.time()
+                if peek_remaining <= 0:
                     break
                 try:
                     event = await asyncio.wait_for(
-                        self._conn._events.get(), timeout=remaining
+                        self._conn._events.get(), timeout=peek_remaining
                     )
                 except asyncio.TimeoutError:
                     break
                 if event.get("method") in nav_methods:
                     navigated = True
-                    stashed.append(event)
-                    break
-                stashed.append(event)
+                    # extend peek window briefly so we drain clustered markers
+                    peek_deadline = max(peek_deadline, loop.time() + 0.05)
+                    continue
+                stashed_non_nav.append(event)
 
             if not navigated:
                 return False
 
-            # Phase 2: wait for new document load (multi-stage fallback)
-            half = max((deadline - asyncio.get_event_loop().time()) / 2, 1.0)
-            try:
-                await self._conn.wait_for_event(
-                    "Page.loadEventFired", timeout=half
-                )
-            except TimeoutError:
-                logger.debug("loadEventFired missed; trying domContentEventFired")
+            # Phase 2a: Page.loadEventFired — half the remaining budget
+            load_budget = remaining() / 2
+            if load_budget > 0:
                 try:
                     await self._conn.wait_for_event(
-                        "Page.domContentEventFired", timeout=half
+                        "Page.loadEventFired", timeout=load_budget
                     )
                 except TimeoutError:
-                    logger.debug("domContentEventFired missed; polling readyState")
-                    poll_deadline = asyncio.get_event_loop().time() + 2.0
-                    while asyncio.get_event_loop().time() < poll_deadline:
+                    logger.debug("loadEventFired missed; trying domContentEventFired")
+                    # Phase 2b: domContentEventFired — up to half of what's left
+                    dc_budget = remaining() / 2
+                    if dc_budget > 0:
                         try:
-                            res = await self._conn.send(
-                                "Runtime.evaluate",
-                                {"expression": "document.readyState"},
-                                timeout=2.0,
+                            await self._conn.wait_for_event(
+                                "Page.domContentEventFired", timeout=dc_budget
                             )
-                            if res.get("result", {}).get("value") in (
-                                "interactive",
-                                "complete",
-                            ):
-                                break
-                        except Exception:
-                            pass
-                        await asyncio.sleep(0.2)
-                    else:
-                        await asyncio.sleep(0.5)
+                        except TimeoutError:
+                            logger.debug(
+                                "domContentEventFired missed; polling readyState"
+                            )
+                            # Phase 2c: readyState poll — capped at remaining budget
+                            poll_budget = min(2.0, remaining())
+                            poll_deadline = loop.time() + poll_budget
+                            while loop.time() < poll_deadline:
+                                try:
+                                    res = await self._conn.send(
+                                        "Runtime.evaluate",
+                                        {"expression": "document.readyState"},
+                                        timeout=min(2.0, max(remaining(), 0.1)),
+                                    )
+                                    if res.get("result", {}).get("value") in (
+                                        "interactive",
+                                        "complete",
+                                    ):
+                                        break
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(min(0.2, remaining()))
 
-            # Phase 3: settle network
-            try:
-                await self.wait_for_network_idle(timeout=5.0, idle_time=0.3)
-            except Exception:
-                pass
+            # Phase 3: settle network within whatever's left
+            net_budget = min(5.0, remaining())
+            if net_budget > 0:
+                try:
+                    await self.wait_for_network_idle(
+                        timeout=net_budget, idle_time=min(0.3, net_budget / 2)
+                    )
+                except Exception:
+                    pass
 
             return True
         finally:
-            for ev in stashed:
+            # Only re-queue non-nav events; consumed nav events stay dropped.
+            for ev in stashed_non_nav:
                 await self._conn._events.put(ev)
 
     async def wait_for_network_idle(self, timeout: float = 30.0, idle_time: float = 0.5) -> None:

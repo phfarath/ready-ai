@@ -220,7 +220,12 @@ class InputDomain:
                 bubbles: true, cancelable: true,
                 inputType: 'insertText', data: value
             }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            // NOTE: we intentionally do NOT dispatch 'change' here. In real
+            // user input, change fires on commit (blur), not during typing.
+            // Emitting it inline triggers premature validation/autosave and
+            // can double-fire listeners that already react to 'input'. The
+            // change event will fire naturally on the next blur (e.g. when
+            // focus moves to the next field or the submit button is clicked).
             return {{ok: true}};
         }})()
         """

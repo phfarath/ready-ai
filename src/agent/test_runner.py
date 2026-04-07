@@ -351,6 +351,36 @@ class DocTestRunner:
                             if retry_result.success:
                                 status = "HEALED"
                                 logger.info(f"  Step {step_num}: selector recovery verified ✓")
+                                # Re-capture artifacts against the healed page
+                                # so the report reflects the successful state,
+                                # not the earlier failed attempt.
+                                try:
+                                    post_fingerprint = await _dom_fingerprint(runtime)
+                                    screenshot_b64 = await page.screenshot()
+                                    new_screenshot_path.write_bytes(
+                                        base64.b64decode(screenshot_b64)
+                                    )
+                                    if baseline_screenshot.exists():
+                                        diff_result = compare_screenshots(
+                                            baseline_path=str(baseline_screenshot),
+                                            current_path=str(new_screenshot_path),
+                                            output_diff_path=str(
+                                                diffs_dir / f"diff_step_{step_num:02d}.png"
+                                            ),
+                                            threshold=self.threshold,
+                                        )
+                                        visual_sim = diff_result.similarity_score
+                                        diff_image_path = diff_result.diff_image_path
+                                    if step_state.baseline_dom_hash:
+                                        dom_changed = (
+                                            post_fingerprint
+                                            != step_state.baseline_dom_hash
+                                        )
+                                except Exception as refresh_err:
+                                    logger.warning(
+                                        f"  Step {step_num}: post-heal artifact "
+                                        f"refresh failed — {refresh_err}"
+                                    )
                             else:
                                 logger.warning(f"  Step {step_num}: recovered selector failed verification")
                     except Exception as heal_err:
@@ -405,8 +435,15 @@ class DocTestRunner:
     def _enrich_from_checkpoint(self, steps: list[DocStepState]) -> None:
         """Enrich parsed steps with baseline data from checkpoint JSON if available."""
         doc_dir = Path(self.doc_path).parent
-        # Look for any checkpoint state file in the doc output directory
-        state_files = list(doc_dir.glob("*_state.json"))
+        # Look for any checkpoint state file in the doc output directory.
+        # Sort by mtime (newest first) so multiple runs in the same dir
+        # deterministically use the most recent checkpoint instead of an
+        # arbitrary glob() ordering.
+        state_files = sorted(
+            doc_dir.glob("*_state.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
         if not state_files:
             logger.debug("No checkpoint state file found; DOM baselines unavailable")
             return
@@ -430,16 +467,19 @@ class DocTestRunner:
             logger.info(f"Enriched {enriched} steps with baseline data from checkpoint")
 
     async def _inject_cookies(self, page: PageDomain) -> None:
-        """Inject cookies from file for authentication."""
-        cookies_path = Path(self.cookies_file)
-        if not cookies_path.exists():
+        """Inject cookies from file using the shared normalization helper so
+        the same browser-export JSON works for both `run` and `test`."""
+        from .browser_session import inject_cookies_from_file
+        try:
+            count = await inject_cookies_from_file(self._conn, self.cookies_file)
+            if count:
+                logger.info(f"Injected {count} cookies from {self.cookies_file}")
+        except FileNotFoundError:
             logger.warning(f"Cookies file not found: {self.cookies_file}")
-            return
-
-        cookies = json.loads(cookies_path.read_text(encoding="utf-8"))
-        for cookie in cookies:
-            await self._conn.send("Network.setCookie", cookie)
-        logger.info(f"Injected {len(cookies)} cookies")
+        except ValueError as e:
+            logger.error(str(e))
+        except Exception as e:
+            logger.error(f"Failed to inject cookies: {e}")
 
     async def _cleanup(self) -> None:
         """Clean up browser resources."""

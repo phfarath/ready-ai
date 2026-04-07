@@ -54,14 +54,13 @@ class CDPConnection:
                             if new_session:
                                 logger.debug(f"Auto-attached to new page target: {target_info.get('targetId')}, session: {new_session}")
                                 self._session_id = new_session
-                                # Re-enable required CDP domains on the new
-                                # session — without this, Page.loadEventFired
-                                # never fires and Runtime.evaluate can hang
-                                # against an unprepared context. Must be a
-                                # background task: we can't await responses
-                                # from inside the recv loop or we deadlock.
-                                # TODO: re-inject Page.addScriptToEvaluateOnNewDocument
-                                # cursor script — currently lost on session swap.
+                                # Re-enable required CDP domains and re-inject
+                                # the cursor overlay on the new session —
+                                # without this, Page.loadEventFired never fires
+                                # and Runtime.evaluate can hang against an
+                                # unprepared context. Must be a background
+                                # task: we can't await responses from inside
+                                # the recv loop or we deadlock.
                                 asyncio.create_task(
                                     self._post_attach_enable(new_session)
                                 )
@@ -77,7 +76,9 @@ class CDPConnection:
             logger.error(f"CDP recv loop error: {e}")
 
     async def _post_attach_enable(self, session_id: str) -> None:
-        """Re-enable Page/DOM/Runtime on a freshly auto-attached session."""
+        """Re-enable Page/DOM/Runtime and re-inject the cursor script on a
+        freshly auto-attached session so events fire and the visual overlay
+        survives cross-origin process swaps."""
         for method in ("Page.enable", "DOM.enable", "Runtime.enable"):
             try:
                 await self.send(method, session_id=session_id, timeout=5.0)
@@ -85,6 +86,13 @@ class CDPConnection:
                 logger.debug(
                     f"post-attach {method} on {session_id} failed: {e}"
                 )
+        # Re-register the cursor/highlight overlay on the new session.
+        # Imported lazily to avoid a circular import between page <-> connection.
+        try:
+            from .page import register_cursor_script
+            await register_cursor_script(self, session_id=session_id)
+        except Exception as e:
+            logger.debug(f"post-attach cursor re-injection failed: {e}")
 
     def _next_id(self) -> int:
         self._msg_id += 1

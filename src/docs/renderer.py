@@ -218,10 +218,14 @@ class DocRenderer:
             lines.append(f"## {lb['step']} {step.step_number}: {step.title}")
             lines.append("")
 
-            # Screenshot reference (file-based, not inline base64)
-            screenshot_file = f"screenshots/step_{step.step_number:02d}.png"
-            lines.append(f"![{lb['step']} {step.step_number}]({screenshot_file})")
-            lines.append("")
+            # Screenshot reference (file-based, not inline base64).
+            # Only emit the image link when we actually captured a screenshot
+            # for this step; manual_required/skipped steps have no screenshot
+            # and would produce broken image links otherwise.
+            if step.screenshot_b64:
+                screenshot_file = f"screenshots/step_{step.step_number:02d}.png"
+                lines.append(f"![{lb['step']} {step.step_number}]({screenshot_file})")
+                lines.append("")
 
             # Annotation
             lines.append(step.annotation)

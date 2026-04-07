@@ -104,12 +104,27 @@ class RuntimeDomain:
         js = """
         (() => {
             const text = document.body?.innerText || '';
+            // Only visible, user-editable fields; password/file/hidden are
+            // redacted so sensitive values never enter the fingerprint, and
+            // invisible/disabled fields don't create false state churn.
             const fields = Array.from(
-                document.querySelectorAll('input, textarea, select')
-            ).map(e => {
+                document.querySelectorAll(
+                    'input:not([type="hidden"]):not([type="file"]), textarea, select'
+                )
+            ).filter(e => {
+                if (e.disabled || e.readOnly) return false;
+                const rect = e.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return false;
+                const style = window.getComputedStyle(e);
+                if (style.visibility === 'hidden' || style.display === 'none') return false;
+                return true;
+            }).map(e => {
                 const key = e.name || e.id || e.type || e.tagName;
                 let val;
-                if (e.type === 'checkbox' || e.type === 'radio') {
+                if (e.type === 'password') {
+                    // length only — signals change without leaking chars
+                    val = '[REDACTED:' + (e.value || '').length + ']';
+                } else if (e.type === 'checkbox' || e.type === 'radio') {
                     val = e.checked ? '1' : '0';
                 } else {
                     val = e.value || '';

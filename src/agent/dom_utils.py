@@ -6,8 +6,12 @@ the DocTestRunner for detecting page state changes.
 """
 
 import hashlib
+import logging
+import uuid
 
 from ..cdp.runtime import RuntimeDomain
+
+logger = logging.getLogger(__name__)
 
 
 _DOM_FINGERPRINT_JS = """
@@ -49,10 +53,19 @@ _DOM_FINGERPRINT_JS = """
 
 
 async def dom_fingerprint(runtime: RuntimeDomain) -> str:
-    """Compute a fast MD5 hash of SPA-relevant interactive DOM state."""
+    """
+    Compute a fast MD5 hash of SPA-relevant interactive DOM state.
+
+    On evaluation failure, returns a unique sentinel prefixed with
+    `__fp_error__:` so two consecutive failed captures never compare equal
+    — this prevents silent "DOM unchanged" verdicts from masking CDP or
+    runtime flakiness. Callers comparing fingerprints will therefore see a
+    mismatch on failure and can decide to retry.
+    """
     try:
         payload = await runtime.evaluate(_DOM_FINGERPRINT_JS)
         payload_str = str(payload) if payload is not None else ""
-    except Exception:
-        payload_str = ""
+    except Exception as exc:
+        logger.debug(f"dom_fingerprint evaluation failed: {exc}")
+        return f"__fp_error__:{uuid.uuid4().hex}"
     return hashlib.md5(payload_str.encode("utf-8")).hexdigest()
