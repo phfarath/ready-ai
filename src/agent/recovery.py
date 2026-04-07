@@ -206,7 +206,7 @@ async def recover_failed_step(
                 retry_needed=False,
                 attempts=working_result.attempts,
                 failure_reason=decision.get("reason") or working_result.failure_reason,
-                status="skipped",
+                status="step_skipped",
             ),
             working_step,
             replan_attempts,

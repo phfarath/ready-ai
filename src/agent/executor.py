@@ -110,6 +110,7 @@ async def execute_step(
                 success=True,
                 retry_needed=False,
                 attempts=attempt,
+                status="completed",
             )
 
         # Wait for UI to settle. Explicit navigation barrier handles hard
@@ -172,6 +173,7 @@ async def execute_step(
                 success=True,
                 retry_needed=False,
                 attempts=attempt,
+                status="completed",
             )
 
         # Action didn't change anything — might have failed silently
@@ -205,6 +207,7 @@ async def execute_step(
         retry_needed=False,
         attempts=MAX_RETRIES,
         failure_reason="; ".join(failures),
+        status="failed",
     )
 
 

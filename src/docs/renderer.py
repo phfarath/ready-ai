@@ -234,7 +234,11 @@ class DocRenderer:
             if step.status == "manual_required":
                 lines.append(f"> **{lb['manual_required']}:** {step.status_reason}")
                 lines.append("")
-            elif step.status == "skipped":
+            elif step.status in ("skipped", "step_skipped"):
+                # Accept both the legacy "skipped" string and the canonical
+                # "step_skipped" key used by parser._STATUS_LABELS, so a
+                # doc can round-trip through parser -> renderer without
+                # losing the skip callout.
                 lines.append(f"> **{lb['step_skipped']}:** {step.status_reason}")
                 lines.append("")
 
