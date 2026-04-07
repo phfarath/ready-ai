@@ -220,6 +220,10 @@ ready-ai test --help
 | `--watch` | | `false` | Re-run tests periodically until interrupted |
 | `--watch-interval` | | `5` | Minutes between watch runs |
 | `--auto-heal` | | `false` | Auto-update docs when drift is detected |
+| `--open-pr` | | `false` | After auto-heal, commit to a new branch and open a PR (implies `--auto-heal`) |
+| `--pr-base-branch` | | `dev` | Base branch for the auto-heal PR |
+| `--pr-remote` | | `origin` | Git remote used to push the auto-heal branch |
+| `--pr-dry-run` | | `false` | Run git steps locally but skip `push` and PR creation |
 | `--verbose` | `-v` | `false` | Debug logging |
 
 Exit codes:
@@ -295,6 +299,36 @@ ready-ai test \
   --auto-heal \
   --headless
 ```
+
+Auto-heal + auto-PR (dry-run — commits locally, no push/PR):
+
+```bash
+ready-ai test \
+  --doc "./output/login-guide/docs.md" \
+  --url "https://app.example.com" \
+  --open-pr \
+  --pr-dry-run \
+  --pr-base-branch dev \
+  --headless
+```
+
+Auto-heal + auto-PR (full flow — requires `gh` CLI authenticated):
+
+```bash
+ready-ai test \
+  --doc "./output/login-guide/docs.md" \
+  --url "https://app.example.com" \
+  --open-pr \
+  --pr-base-branch dev \
+  --headless
+```
+
+> **Safety:** `--open-pr` implies `--auto-heal`. The publisher aborts if the
+> working tree has changes outside the healed files, so it will never hijack
+> unrelated in-progress work. Use `--pr-dry-run` first to inspect the branch
+> locally before pushing. A ready-to-use GitHub Actions workflow ships at
+> `.github/workflows/self-heal.yml` — it runs the command above on demand,
+> uploads the HTML report as an artifact, and opens the PR against `dev`.
 
 ## Self-Healing Documentation
 
