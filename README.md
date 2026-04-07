@@ -344,8 +344,16 @@ The HTML report can be opened in any browser with no external dependencies.
 Start the API:
 
 ```bash
-ready-ai api --port 8000
+ready-ai api --port 8000 --host 127.0.0.1
 ```
+
+Flags:
+
+| Flag | Short | Default | Purpose |
+|------|-------|---------|---------|
+| `--port` | `-p` | `8000` | API server port |
+| `--host` | | `0.0.0.0` | API server host/interface to bind |
+| `--verbose` | `-v` | `false` | Debug logging |
 
 Main endpoints:
 

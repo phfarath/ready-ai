@@ -175,24 +175,67 @@ class InputDomain:
 
         logger.info(f"Typing {len(text)} chars")
 
-        for char in text:
-            # Use insertText for reliable character input
-            await self._conn.send(
-                "Input.dispatchKeyEvent",
-                {
-                    "type": "keyDown",
-                    "key": char,
-                    "text": char,
-                },
+        # React (and other reactive frameworks) bind their state to controlled
+        # inputs via the native value setter — bare CDP keyDown/keyUp events do
+        # NOT update React state, so the input appears to ignore the keystrokes.
+        # Instead, locate the target element (selector or activeElement), call
+        # the native value setter, and dispatch synthetic 'input' + 'change'
+        # events. Mirrors src/agent/browser_session.py:223-253.
+        safe_text = json.dumps(text)
+        safe_selector = json.dumps(selector) if selector else "null"
+        js = f"""
+        (() => {{
+            const sel = {safe_selector};
+            const el = sel
+                ? document.querySelector(sel)
+                : document.activeElement;
+            if (!el) return {{ok: false, reason: 'no element'}};
+
+            const value = {safe_text};
+
+            if (el.isContentEditable) {{
+                el.focus();
+                try {{
+                    document.execCommand('insertText', false, value);
+                }} catch (e) {{
+                    el.textContent = (el.textContent || '') + value;
+                }}
+                el.dispatchEvent(new InputEvent('input', {{
+                    bubbles: true, cancelable: true,
+                    inputType: 'insertText', data: value
+                }}));
+                return {{ok: true}};
+            }}
+
+            const proto = el instanceof HTMLTextAreaElement
+                ? HTMLTextAreaElement.prototype
+                : HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            if (!nativeSetter) return {{ok: false, reason: 'no setter'}};
+
+            el.focus();
+            try {{ el.select(); }} catch (e) {{}}
+            nativeSetter.call(el, value);
+            el.dispatchEvent(new InputEvent('input', {{
+                bubbles: true, cancelable: true,
+                inputType: 'insertText', data: value
+            }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return {{ok: true}};
+        }})()
+        """
+        result = await self._conn.send(
+            "Runtime.evaluate",
+            {"expression": js, "returnByValue": True},
+        )
+        value = result.get("result", {}).get("value") or {}
+        if not value.get("ok"):
+            raise RuntimeError(
+                f"type_text failed: {value.get('reason', 'unknown')}"
             )
-            await self._conn.send(
-                "Input.dispatchKeyEvent",
-                {
-                    "type": "keyUp",
-                    "key": char,
-                },
-            )
-            await asyncio.sleep(delay)
+
+        # Small settle delay so downstream wait_for_network_idle has a tick.
+        await asyncio.sleep(max(delay, 0.05))
 
     async def press_key(self, key: str) -> None:
         """
