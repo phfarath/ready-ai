@@ -15,15 +15,23 @@ It plans a flow from the current DOM, executes the actions, critiques the result
 - A planner -> executor -> critic loop
 - Markdown and screenshot generation
 - A documentation test runner with visual diff and self-healing
-- An early FastAPI service scaffold
+- A FastAPI service with batch processing and deploy webhooks
+- Versioned documentation tied to your app releases
 
 ## What This Repo Is Not
 
-- A hosted product
-- A team dashboard
-- A scheduling platform
-- A polished integration layer
+- A hosted product (yet)
+- A team dashboard (yet)
 - Commercial support or SLAs
+
+## Documentation
+
+- [API Reference](docs/API.md) — complete REST API documentation
+- [Batch Runner](docs/BATCH.md) — YAML/TOML batch configuration
+- [Webhook Integration](docs/WEBHOOK.md) — CI/CD deploy webhooks
+- [CI/CD Guide](docs/CI-CD.md) — GitHub Actions, Docker, regression tests
+- [Versioning](docs/VERSIONING.md) — how docs are versioned with releases
+- [Notifications](docs/NOTIFICATIONS.md) — webhook events and alerting
 
 ## Quickstart
 
