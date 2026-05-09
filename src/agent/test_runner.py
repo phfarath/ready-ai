@@ -237,7 +237,13 @@ class DocTestRunner:
                         f"Auto-healed {healing.total_healed} step(s) in {self.doc_path}"
                     )
 
-            # 8. Save report
+            # 8. Generate textual diff
+            await self._generate_textual_diff(report, output_path, llm)
+
+            # 9. Send notifications
+            await self._send_notifications(report, output_path)
+
+            # 10. Save report
             report.to_file(output_path / "test_report.json")
             (output_path / "test_summary.txt").write_text(
                 report.summary(), encoding="utf-8"
@@ -480,6 +486,80 @@ class DocTestRunner:
             logger.error(str(e))
         except Exception as e:
             logger.error(f"Failed to inject cookies: {e}")
+
+    async def _generate_textual_diff(
+        self,
+        report: DocTestReport,
+        output_path: Path,
+        llm: LLMClient,
+    ) -> None:
+        """Generate a textual diff between the baseline doc and the healed doc (if auto-heal ran)."""
+        if not self.auto_heal:
+            return
+
+        try:
+            from ..docs.text_diff import compare_docs
+            diff_result = compare_docs(self.doc_path, self.doc_path)
+            # For now, the diff is a placeholder since auto-heal modifies in-place.
+            # In a future iteration, we can keep a backup of the baseline.
+            if diff_result.has_changes:
+                changelog_path = output_path / "changelog.md"
+                changelog_path.write_text(
+                    diff_result.to_markdown(),
+                    encoding="utf-8",
+                )
+                logger.info(f"Textual changelog saved: {changelog_path}")
+        except Exception as e:
+            logger.warning(f"Textual diff generation failed: {e}")
+
+    async def _send_notifications(
+        self,
+        report: DocTestReport,
+        output_path: Path,
+    ) -> None:
+        """Send notifications about the test result."""
+        try:
+            from ..notify import create_notifier, NotificationPayload
+
+            notifier = create_notifier()
+
+            # Determine event type
+            if report.overall_status == "PASSED":
+                event_type = "test_passed"
+                title = "Documentation Test Passed"
+                message = f"All {len(report.results)} steps passed verification."
+            elif report.overall_status == "DRIFT_DETECTED":
+                event_type = "drift_detected"
+                title = "UI Drift Detected"
+                message = f"{len(report.steps_outdated)} step(s) show visual drift."
+            elif report.overall_status == "BROKEN":
+                event_type = "broken"
+                title = "Documentation Broken"
+                message = f"{len(report.steps_broken)} step(s) failed execution."
+            else:
+                return  # unknown status, skip notification
+
+            details = {
+                "total_steps": len(report.results),
+                "passed": sum(1 for r in report.results if r.status == "PASSED"),
+                "drift": len(report.steps_outdated),
+                "broken": len(report.steps_broken),
+                "threshold": report.threshold,
+            }
+
+            payload = NotificationPayload(
+                event_type=event_type,
+                title=title,
+                message=message,
+                details=details,
+                run_id="",
+                app_version="",
+                url=self.url,
+            )
+
+            await notifier.send(payload)
+        except Exception as e:
+            logger.warning(f"Notification failed: {e}")
 
     async def _cleanup(self) -> None:
         """Clean up browser resources."""

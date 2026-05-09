@@ -105,6 +105,9 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--run-id", default=argparse.SUPPRESS, help="Run identifier for checkpoints")
     run_parser.add_argument("--resume", action="store_true", default=argparse.SUPPRESS, help="Resume from an existing checkpoint")
     run_parser.add_argument("--plan-only", action="store_true", default=argparse.SUPPRESS, help="Generate a plan without executing steps")
+    run_parser.add_argument("--app-version", default=argparse.SUPPRESS, help="Application version (e.g., 2.3.1)")
+    run_parser.add_argument("--git-commit", default=argparse.SUPPRESS, help="Git commit hash")
+    run_parser.add_argument("--deployed-at", default=argparse.SUPPRESS, help="Deployment ISO timestamp")
 
     # --- TEST Command ---
     test_parser = subparsers.add_parser("test", help="Test documentation against live UI (self-healing)")
@@ -211,6 +214,9 @@ async def async_main_run(args: argparse.Namespace) -> None:
         run_id=args.run_id,
         resume_from=args.resume_from,
         plan_only=args.plan_only,
+        app_version=getattr(args, "app_version", None),
+        git_commit=getattr(args, "git_commit", None),
+        deployed_at=getattr(args, "deployed_at", None),
     )
 
     try:
