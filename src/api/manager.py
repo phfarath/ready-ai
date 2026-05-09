@@ -1,14 +1,14 @@
 """
 Manager to run AgenticLoop inside an asyncio background task.
-Handles status tracking and lifecycle.
+Handles status tracking, batch processing, and lifecycle.
 """
 import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
-from src.api.models import RunRequest, RunStatusResponse
+from src.api.models import RunRequest, RunStatusResponse, BatchConfig, BatchConfigFlow
 from src.agent.loop import AgenticLoop
 from src.agent.state import RunState
 
@@ -21,6 +21,9 @@ class RunManager:
     _states: Dict[str, RunState] = {}
     _run_ports: Dict[str, int] = {}
     _port_pool: Optional[asyncio.Queue[int]] = None
+    
+    # Batch tracking
+    _batches: Dict[str, dict] = {}  # batch_id -> {flow_ids: list, status: dict}
 
     _PORT_START = 9300
     _PORT_END = 9399
@@ -83,6 +86,9 @@ class RunManager:
                 output_dir=str(output_dir),
                 resume_from=resume_from,
                 port=port,
+                app_version=req.app_version,
+                git_commit=req.git_commit,
+                deployed_at=req.deployed_at,
             )
         except Exception:
             await cls._release_port(port)
@@ -111,6 +117,90 @@ class RunManager:
             port = cls._run_ports.pop(run_id, None)
             if port is not None:
                 await cls._release_port(port)
+    
+    @classmethod
+    async def start_batch(cls, config: BatchConfig, batch_id: str) -> dict:
+        """Start a batch of documentation runs."""
+        run_ids: List[str] = []
+        accepted = 0
+        rejected = 0
+
+        base_url = config.base_url or ""
+
+        for flow in config.flows:
+            run_id = flow.run_id or f"batch-{batch_id}-{flow.goal[:20].replace(' ', '_')}"
+            
+            # Build full URL
+            url = flow.path if flow.path.startswith("http") else f"{base_url}{flow.path}"
+            
+            req = RunRequest(
+                run_id=run_id,
+                goal=flow.goal,
+                url=url,
+                model=config.model,
+                language=flow.language,
+                title=flow.title,
+                headless=config.headless,
+                cookies_file=config.cookies_file,
+                app_version=config.app_version,
+                git_commit=config.git_commit,
+                deployed_at=config.deployed_at,
+            )
+
+            try:
+                run_id = await cls.start_run(req)
+                run_ids.append(run_id)
+                accepted += 1
+            except Exception as e:
+                logger.error(f"Batch flow rejected: {flow.goal} — {e}")
+                rejected += 1
+
+        batch_info = {
+            "batch_id": batch_id,
+            "total_flows": len(config.flows),
+            "accepted": accepted,
+            "rejected": rejected,
+            "run_ids": run_ids,
+            "status": "ACCEPTED" if accepted > 0 else "REJECTED",
+        }
+        cls._batches[batch_id] = batch_info
+        return batch_info
+
+    @classmethod
+    def get_batch_status(cls, batch_id: str) -> Optional[dict]:
+        """Get the current status of a batch."""
+        batch = cls._batches.get(batch_id)
+        if not batch:
+            return None
+
+        statuses = []
+        completed = 0
+        failed = 0
+        running = 0
+        pending = 0
+
+        for run_id in batch["run_ids"]:
+            status = cls.get_status(run_id)
+            if status:
+                statuses.append(status)
+                if status.status in ("FINISHED",):
+                    completed += 1
+                elif status.status in ("FAILED",):
+                    failed += 1
+                elif status.status in ("EXECUTING", "PLANNING", "CRITIQUE"):
+                    running += 1
+                else:
+                    pending += 1
+
+        return {
+            "batch_id": batch_id,
+            "total_flows": batch["total_flows"],
+            "completed": completed,
+            "failed": failed,
+            "running": running,
+            "pending": pending,
+            "statuses": [s.model_dump() for s in statuses],
+        }
                 
     @classmethod
     def get_status(cls, run_id: str) -> Optional[RunStatusResponse]:
