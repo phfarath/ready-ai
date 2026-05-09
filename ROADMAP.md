@@ -46,53 +46,34 @@
 
 ---
 
-## Phase 2: Deploy Automation (Week 3–4)
+## Phase 2: Deploy Automation ✅ (Implemented)
 > **Branch:** `feat/self-healing-releases-phase-2`
 
-### 2.1 Deploy Webhook Endpoint
-- Expand FastAPI API with `POST /webhooks/deploy`
-- Payload schema:
-  ```json
-  {
-    "app_version": "2.3.1",
-    "git_commit": "abc123",
-    "deployed_at": "2026-05-09T14:00:00Z",
-    "base_url": "https://app.example.com",
-    "flows": [
-      {"goal": "Document login", "path": "/login", "run_id": "login"},
-      {"goal": "Document onboarding", "path": "/welcome", "run_id": "onboarding"}
-    ]
-  }
-  ```
-- On receive: queue and execute `ready-ai run` for each flow
-- Return `202 Accepted` with `batch_id` for polling status
+### 2.1 Deploy Webhook Endpoint ✅
+- `POST /webhooks/deploy` accepts deploy payloads
+- Payload schema: `app_version`, `git_commit`, `deployed_at`, `base_url`, `flows[]`
+- On receive: queues and executes documentation runs for each flow
+- Returns `202 Accepted` with `batch_id` for polling
 
-### 2.2 Batch / Multi-Flow Configuration
-- Extend config file format to support multiple flows:
-  ```yaml
-  # ready-ai.yaml
-  app_version: "2.3.1"
-  base_url: "https://app.example.com"
-  
-  flows:
-    - goal: "Document login flow"
-      path: "/login"
-      run_id: "login-v2.3.1"
-      output: "./output/v2.3.1/login"
-    - goal: "Document onboarding"
-      path: "/welcome"
-      run_id: "onboarding-v2.3.1"
-      output: "./output/v2.3.1/onboarding"
-  ```
-- New CLI flag: `ready-ai run --config ready-ai.yaml --batch`
-- Sequential execution (parallel in Phase 3)
+### 2.2 Batch / Multi-Flow Configuration ✅
+- Batch config models: `BatchConfig`, `BatchConfigFlow`
+- CLI command: `ready-ai batch --config flows.yaml`
+- Concurrent execution (respecting browser port pool)
+- `POST /batches` and `GET /batches/{batch_id}` API endpoints
+- `BatchLoader` supports YAML and TOML config files
+- Example: `example-batch.yaml`
 
-### 2.3 GitHub Action Reusable Workflow
-- New directory: `.github/actions/ready-ai/`
-- `action.yml` accepting inputs:
-  - `goal`, `url`, `config-file`, `api-key`
-- Runs `ready-ai run` or `ready-ai test` with headless Chrome
-- Publishes docs as artifact or commits to `docs/` branch
+### 2.3 GitHub Action Reusable Workflow ✅
+- `.github/actions/ready-ai/action.yml` — composite action
+- Supports commands: `run`, `test`, `batch`
+- Inputs: `goal`, `url`, `config`, `model`, `api-key`, `app-version`, `git-commit`
+- Publishes docs as artifact via `actions/upload-artifact`
+
+### 2.4 CI/CD Workflow ✅
+- `.github/workflows/docs-generation.yml`
+- Trigger: on release/tag push (`v*`) or manual dispatch
+- Runs batch documentation and commits to `docs/{version}/` branch
+- Artifact upload with 30-day retention
 
 ---
 

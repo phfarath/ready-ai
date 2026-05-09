@@ -1,0 +1,152 @@
+name: ready-ai
+
+branding:
+  icon: book
+  color: blue
+
+inputs:
+  command:
+    description: "Command to run: run, test, or batch"
+    required: true
+    default: "run"
+  goal:
+    description: "Documentation goal (for run command)"
+    required: false
+    default: ""
+  url:
+    description: "Target URL (for run/test commands)"
+    required: false
+    default: ""
+  config:
+    description: "Path to batch config file (for batch command)"
+    required: false
+    default: ""
+  doc:
+    description: "Path to docs.md (for test command)"
+    required: false
+    default: ""
+  output:
+    description: "Output directory"
+    required: false
+    default: "./output"
+  app-version:
+    description: "Application version"
+    required: false
+    default: ""
+  git-commit:
+    description: "Git commit hash"
+    required: false
+    default: "${{ github.sha }}"
+  model:
+    description: "LLM model"
+    required: false
+    default: "gpt-4o-mini"
+  api-key:
+    description: "OpenAI API key (or set OPENAI_API_KEY env var)"
+    required: false
+    default: ""
+  headless:
+    description: "Run Chrome headless"
+    required: false
+    default: "true"
+  auto-heal:
+    description: "Auto-heal docs on drift (test only)"
+    required: false
+    default: "false"
+  threshold:
+    description: "Visual similarity threshold (test only)"
+    required: false
+    default: "0.85"
+  notify-webhook:
+    description: "Webhook URL for notifications"
+    required: false
+    default: ""
+
+outputs:
+  output-path:
+    description: "Path to generated documentation or test report"
+    value: ${{ steps.run.outputs.output-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install ready-ai
+      shell: bash
+      run: |
+        # If using local checkout, install from current repo
+        if [ -f "pyproject.toml" ]; then
+          pip install -e ".[dev]"
+        else
+          # Otherwise install from PyPI (once published)
+          pip install ready-ai
+        fi
+
+    - name: Configure API key
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.api-key }}" ]; then
+          echo "OPENAI_API_KEY=${{ inputs.api-key }}" >> $GITHUB_ENV
+        fi
+        if [ -n "${{ inputs.notify-webhook }}" ]; then
+          echo "NOTIFY_WEBHOOK_URL=${{ inputs.notify-webhook }}" >> $GITHUB_ENV
+        fi
+
+    - name: Run ready-ai
+      id: run
+      shell: bash
+      run: |
+        HEADLESS_FLAG=""
+        if [ "${{ inputs.headless }}" = "true" ]; then
+          HEADLESS_FLAG="--headless"
+        fi
+
+        if [ "${{ inputs.command }}" = "run" ]; then
+          ready-ai run \
+            --goal "${{ inputs.goal }}" \
+            --url "${{ inputs.url }}" \
+            --model "${{ inputs.model }}" \
+            --output "${{ inputs.output }}" \
+            --app-version "${{ inputs.app-version }}" \
+            --git-commit "${{ inputs.git-commit }}" \
+            $HEADLESS_FLAG
+          echo "output-path=${{ inputs.output }}" >> $GITHUB_OUTPUT
+
+        elif [ "${{ inputs.command }}" = "test" ]; then
+          HEAL_FLAG=""
+          if [ "${{ inputs.auto-heal }}" = "true" ]; then
+            HEAL_FLAG="--auto-heal"
+          fi
+          ready-ai test \
+            --doc "${{ inputs.doc }}" \
+            --url "${{ inputs.url }}" \
+            --threshold "${{ inputs.threshold }}" \
+            --output "${{ inputs.output }}" \
+            $HEADLESS_FLAG $HEAL_FLAG
+          echo "output-path=${{ inputs.output }}" >> $GITHUB_OUTPUT
+
+        elif [ "${{ inputs.command }}" = "batch" ]; then
+          ready-ai batch \
+            --config "${{ inputs.config }}" \
+            --output "${{ inputs.output }}" \
+            $HEADLESS_FLAG
+          echo "output-path=${{ inputs.output }}" >> $GITHUB_OUTPUT
+
+        else
+          echo "Unknown command: ${{ inputs.command }}"
+          exit 1
+        fi
+
+    - name: Upload output artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ready-ai-output
+        path: ${{ inputs.output }}

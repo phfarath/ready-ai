@@ -131,6 +131,11 @@ def _build_parser() -> argparse.ArgumentParser:
     api_parser.add_argument("--host", default="0.0.0.0", help="API server host")
     api_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
+    # --- BATCH Command ---
+    batch_parser = subparsers.add_parser("batch", help="Run multiple documentation flows from a config file")
+    batch_parser.add_argument("--config", "-c", required=True, help="YAML or TOML batch config file")
+    batch_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
+
     return parser
 
 
@@ -306,15 +311,62 @@ def _handle_report_exit(report, logger) -> None:
             f"⚠️  UI drift detected in steps: {report.steps_outdated}"
         )
         sys.exit(2)  # exit code 2 = drift detected
-    else:
-        logger.error(
-            f"❌ Broken steps: {report.steps_broken}"
-        )
+
+
+async def async_main_batch(args: argparse.Namespace) -> None:
+    """Run multiple documentation flows from a batch config file."""
+    from src.api.batch_loader import load_batch_config
+    from src.api.manager import RunManager
+
+    logger = logging.getLogger("main")
+    logger.info("📦 ready-ai — Batch Runner")
+    logger.info(f"Config: {args.config}")
+
+    try:
+        config = load_batch_config(args.config)
+        logger.info(f"Loaded {len(config.flows)} flow(s) from config")
+
+        batch_id = f"batch-{uuid.uuid4().hex[:8]}"
+        result = await RunManager.start_batch(config, batch_id)
+
+        logger.info(f"Batch {batch_id} started: {result['accepted']} accepted, {result['rejected']} rejected")
+        logger.info(f"Run IDs: {result['run_ids']}")
+
+        # Poll until complete (optional — can skip for fire-and-forget)
+        # For CLI, we wait for all to complete
+        logger.info("Waiting for batch to complete...")
+        while True:
+            status = RunManager.get_batch_status(batch_id)
+            if not status:
+                break
+
+            completed = status["completed"]
+            failed = status["failed"]
+            running = status["running"]
+            total = status["total_flows"]
+
+            logger.info(f"Progress: {completed}/{total} completed, {failed} failed, {running} running")
+
+            if completed + failed == total:
+                break
+
+            await asyncio.sleep(5)
+
+        status = RunManager.get_batch_status(batch_id)
+        if status:
+            logger.info(
+                f"✅ Batch complete: {status['completed']}/{total} succeeded, "
+                f"{status['failed']} failed"
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Batch failed: {e}", exc_info=True)
         sys.exit(1)
 
 
 def cli() -> None:
     """Entry point for pyproject.toml scripts."""
+    import uuid  # needed for batch
     raw_args = parse_args()
 
     if raw_args.command == "run":
@@ -337,6 +389,8 @@ def cli() -> None:
 
         logging.getLogger("main").info("🚀 Starting FastAPI Server on port %s", args.port)
         uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
+    elif args.command == "batch":
+        asyncio.run(async_main_batch(args))
 
 
 if __name__ == "__main__":
