@@ -135,6 +135,7 @@
 
 - **Parallel Flow Execution** — run multiple flows simultaneously
 - **Confluence/Notion Integration** — push docs directly to wiki
+- **Notifications (Telegram)** — notify team about drift/regeneration
 - **Screenshot Archive** — S3/R2 bucket for long-term screenshot storage
 - **Team Dashboard** — simple web UI showing all docs status
 - **Selector Health Score** — track which selectors break most often
