@@ -125,6 +125,10 @@ def _build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("--watch", action="store_true", help="Re-run tests periodically (use with --watch-interval)")
     test_parser.add_argument("--watch-interval", type=int, default=5, help="Watch interval in minutes (default: 5)")
     test_parser.add_argument("--auto-heal", action="store_true", help="Auto-update docs when drift is detected but steps still pass")
+    test_parser.add_argument("--open-pr", action="store_true", help="After auto-heal, commit changes and open a PR (implies --auto-heal)")
+    test_parser.add_argument("--pr-base-branch", default="dev", help="Base branch for the auto-heal PR (default: dev)")
+    test_parser.add_argument("--pr-remote", default="origin", help="Git remote used to push the auto-heal branch (default: origin)")
+    test_parser.add_argument("--pr-dry-run", action="store_true", help="Run git steps locally but skip push and PR creation")
 
     api_parser = subparsers.add_parser("api", help="Start the FastAPI server")
     api_parser.add_argument("--port", "-p", type=int, default=8000, help="API server port")
@@ -244,6 +248,9 @@ async def async_main_test(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("🧪 ready-ai — Documentation Test Runner")
 
+    open_pr = getattr(args, "open_pr", False)
+    auto_heal = getattr(args, "auto_heal", False) or open_pr
+
     runner = DocTestRunner(
         doc_path=args.doc,
         url=args.url,
@@ -255,14 +262,16 @@ async def async_main_test(args: argparse.Namespace) -> None:
         cookies_file=args.cookies_file,
         username=args.username,
         password=args.password,
-        auto_heal=getattr(args, "auto_heal", False),
+        auto_heal=auto_heal,
     )
 
     try:
         if getattr(args, "watch", False):
-            await _watch_loop(runner, args.watch_interval, logger)
+            await _watch_loop(runner, args.watch_interval, logger, args)
         else:
             report = await runner.run()
+            if open_pr:
+                _maybe_publish_healing(report, args, logger)
             _handle_report_exit(report, logger)
     except KeyboardInterrupt:
         logger.info("⚠️  Interrupted by user")
@@ -272,7 +281,7 @@ async def async_main_test(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def _watch_loop(runner, interval_minutes: int, logger) -> None:
+async def _watch_loop(runner, interval_minutes: int, logger, args: argparse.Namespace = None) -> None:
     """Re-run tests periodically until interrupted."""
     from datetime import datetime
 
@@ -311,6 +320,36 @@ def _handle_report_exit(report, logger) -> None:
             f"⚠️  UI drift detected in steps: {report.steps_outdated}"
         )
         sys.exit(2)  # exit code 2 = drift detected
+
+
+def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
+    """If auto-heal produced changes, commit and open a PR."""
+    from src.docs.healing_publisher import publish_healing, PublishConfig
+
+    doc_path = Path(args.doc).resolve()
+    # Walk up from doc directory to find .git
+    repo_root = doc_path
+    while repo_root.parent != repo_root:
+        if (repo_root / ".git").exists():
+            break
+        repo_root = repo_root.parent
+    cfg = PublishConfig(
+        repo_root=repo_root,
+        doc_path=doc_path,
+        base_branch=getattr(args, "pr_base_branch", "dev"),
+        remote=getattr(args, "pr_remote", "origin"),
+        dry_run=getattr(args, "pr_dry_run", False),
+    )
+    try:
+        result = publish_healing(report.healing_report, cfg)
+        if result.pr_url:
+            logger.info(f"✅ PR created: {result.pr_url}")
+        elif result.skipped_reason:
+            logger.info(f"⏭️  Skipped: {result.skipped_reason}")
+        else:
+            logger.info("✅ Healing committed locally (dry run).")
+    except Exception as exc:
+        logger.error(f"❌ PR creation failed: {exc}")
 
 
 async def async_main_batch(args: argparse.Namespace) -> None:
