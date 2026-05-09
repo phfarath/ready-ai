@@ -49,6 +49,9 @@ RUN_DEFAULTS = {
     "run_id": "local_run",
     "resume": False,
     "plan_only": False,
+    "app_version": None,
+    "git_commit": None,
+    "deployed_at": None,
 }
 
 CONFIG_KEYS = set(RUN_DEFAULTS) - {"config"}

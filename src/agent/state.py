@@ -33,6 +33,10 @@ class RunState:
     run_id: str
     goal: str
     url: str
+    app_version: str = ""           # Application version (e.g., "2.3.1")
+    deployed_at: str = ""           # ISO timestamp when version was deployed
+    git_commit: str = ""              # Git commit hash from source repo
+    app_url: str = ""               # Base URL of the app being documented
     status: str = "PLANNING"  # PLANNING, PLANNED, EXECUTING, CRITIQUE, FINISHED, FAILED
     
     # Execution state
