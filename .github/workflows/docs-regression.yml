@@ -1,0 +1,127 @@
+name: Documentation Regression Test
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "src/**"
+      - "app/**"
+      - "components/**"
+      - "pages/**"
+  workflow_dispatch:
+    inputs:
+      doc_path:
+        description: "Path to docs.md baseline"
+        required: true
+        default: "./docs/latest/docs.md"
+      staging_url:
+        description: "Staging URL to test against"
+        required: true
+        default: "https://staging.example.com"
+      threshold:
+        description: "Visual similarity threshold"
+        required: true
+        default: "0.85"
+
+jobs:
+  regression-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser
+
+      - name: Download latest docs baseline
+        run: |
+          mkdir -p ./docs/latest
+          # Try to get docs from the docs branch or previous artifact
+          git fetch origin docs/latest:docs/latest || true
+          git checkout docs/latest -- docs/ 2>/dev/null || true
+          
+          # If no docs branch, use provided path
+          if [ ! -f "${{ github.event.inputs.doc_path || './docs/latest/docs.md' }}" ]; then
+            echo "⚠️  No baseline docs found. Skipping regression test."
+            echo "baseline_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "baseline_found=true" >> $GITHUB_OUTPUT
+        id: baseline
+
+      - name: Run documentation regression test
+        if: steps.baseline.outputs.baseline_found == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CHROME_PATH: /usr/bin/chromium-browser
+        run: |
+          ready-ai test \
+            --doc "${{ github.event.inputs.doc_path || './docs/latest/docs.md' }}" \
+            --url "${{ github.event.inputs.staging_url || 'https://staging.example.com' }}" \
+            --threshold "${{ github.event.inputs.threshold || '0.85' }}" \
+            --headless \
+            --output "./output/regression-report"
+        continue-on-error: true
+
+      - name: Upload regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-regression-report-${{ github.run_id }}
+          path: ./output/regression-report/
+          retention-days: 14
+
+      - name: Comment PR with results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = './output/regression-report/report.json';
+            
+            let body = '## 📋 Documentation Regression Test\n\n';
+            
+            if (!fs.existsSync(path)) {
+              body += '⚠️  No baseline documentation found. Test skipped.\n';
+            } else {
+              const report = JSON.parse(fs.readFileSync(path, 'utf8'));
+              const status = report.overall_status;
+              
+              if (status === 'PASSED') {
+                body += '✅ **All documentation steps are up to date!**\n\n';
+                body += `- Steps tested: ${report.total_steps}\n`;
+                body += `- Execution time: ${report.execution_time}s\n`;
+              } else if (status === 'DRIFT_DETECTED') {
+                body += '⚠️  **UI drift detected** — documentation may need updates\n\n';
+                body += `- Drifted steps: ${report.steps_outdated.join(', ')}\n`;
+                body += `- Similarity scores below threshold:\n`;
+                report.details.forEach(d => {
+                  if (d.status === 'drift') {
+                    body += `  - Step ${d.step}: ${d.similarity_score} (threshold: ${d.threshold})\n`;
+                  }
+                });
+              } else {
+                body += '❌ **Broken steps detected** — manual intervention needed\n\n';
+                body += `- Broken steps: ${report.steps_broken.join(', ')}\n`;
+              }
+            }
+            
+            body += '\n[View full report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

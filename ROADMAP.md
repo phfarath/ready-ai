@@ -96,37 +96,44 @@
 
 ---
 
-## Phase 3: CI/CD & Monitoring (Week 5–6)
+## Phase 3: CI/CD & Monitoring (In Progress)
 > **Branch:** `feat/self-healing-releases-phase-3`
 
-### 3.1 CI Pipeline Integration
-- New workflow: `.github/workflows/docs-generation.yml`
-  - Trigger: on release/tag push or manual dispatch
-  - Runs `ready-ai run` for all configured flows
-  - Commits generated docs to `docs/{version}/` branch
-- New workflow: `.github/workflows/docs-regression.yml`
-  - Trigger: on PRs touching frontend code
-  - Runs `ready-ai test` against staging URL
-  - Fails PR if docs drift beyond threshold
+### 3.1 CI Pipeline Integration ✅
+- `.github/workflows/docs-generation.yml` — triggers on tag push, generates docs
+- `.github/workflows/docs-regression.yml` — triggers on frontend PRs, fails on drift
+- Composite action `.github/actions/ready-ai/action.yml` for reuse
 
-### 3.2 Docker Support for CI
-- `Dockerfile` with Chrome headless + Python
-- Multi-stage build for small image size
-- Published to GHCR for CI consumption
+### 3.2 Docker Support ✅
+- `Dockerfile` with Chrome headless + Python 3.12
+- Multi-stage ready, published to GHCR (once public)
+- `docker-compose.yml` example in docs
 
-### 3.3 API Expansion (Dashboard Data)
+### 3.3 Documentation Hub ✅
+- `docs/API.md` — complete API reference with schemas
+- `docs/BATCH.md` — batch configuration guide
+- `docs/WEBHOOK.md` — deploy webhook integration
+- `docs/CI-CD.md` — GitHub Actions, Docker, best practices
+- `docs/VERSIONING.md` — manifest, diff, tagging strategy
+- `docs/NOTIFICATIONS.md` — webhook events, Slack/Discord examples
+
+### 3.4 API Expansion (Planned)
 - `GET /runs` — list all documentation runs
 - `GET /runs/{run_id}` — detailed run status + results
 - `GET /runs/{run_id}/diff` — textual diff from previous version
 - `GET /docs` — list all generated documentation sets
 - `GET /docs/{version}/status` — health of docs for a version
 
-### 3.4 Historical Tracking
+### 3.5 Historical Tracking (Planned)
 - SQLite or JSON file-based history store
 - Track per-version metrics:
   - Steps count, pass rate, drift count
   - LLM tokens consumed, execution time
   - Auto-heal success rate
+
+### 3.6 Telegram Notifications (Planned)
+- Bot API integration for deploy/drift notifications
+- Inline screenshots and doc links
 
 ---
 
