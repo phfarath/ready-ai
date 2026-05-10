@@ -36,7 +36,6 @@ def _restore_pil_module():
     # format plugins (PNG, JPEG, …) are registered before any test
     # that relies on Image.open / Image.save runs.
     import PIL.Image as _real_image
-    import PIL.ImageChops as _real_chops
     _real_image.init()  # full init — registers PNG/JPEG/WebP/etc.
 
     yield

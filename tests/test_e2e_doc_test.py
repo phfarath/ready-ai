@@ -3,8 +3,8 @@ End-to-end integration tests for the DocTestRunner.
 
 Tests the full flow: parse docs → execute steps → compare screenshots → generate report.
 Uses mocked CDP/browser so no real Chrome instance is needed.
-# ruff: noqa: E402
 """
+# ruff: noqa: E402
 
 import base64
 import json

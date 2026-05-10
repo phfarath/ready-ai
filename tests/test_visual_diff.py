@@ -1,4 +1,5 @@
 """Tests for the visual diff engine (src/docs/visual_diff.py)."""
+# ruff: noqa: E402
 
 import sys
 
