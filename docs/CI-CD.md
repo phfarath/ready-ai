@@ -1,5 +1,10 @@
 # CI/CD Guide
 
+> ⚠️ **Prerequisite:** `ready-ai` requires Google Chrome, Chromium, or Brave to be installed on the machine where it runs. Without a Chrome binary available, the tool will fail with `FileNotFoundError: Chrome not found`.
+>
+> - **GitHub Actions:** The workflows below use `ubuntu-latest` runners and install Chromium automatically via `apt-get`.
+> - **Windows / macOS runners:** You must install Chrome first (e.g., `choco install googlechrome` on Windows or `brew install --cask google-chrome` on macOS) or set the `CHROME_PATH` environment variable.
+
 Integrate ready-ai into your continuous integration and deployment pipelines.
 
 ## GitHub Actions
