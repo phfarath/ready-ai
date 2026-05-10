@@ -2,6 +2,11 @@
 
 Este guia explica como usar o `ready-ai` para documentar automaticamente a sua aplicação, **sem precisar do código do ready-ai no seu repo**.
 
+> ⚠️ **Pré-requisito:** `ready-ai` depende do **Google Chrome, Chromium ou Brave** instalado na máquina. Sem isso o comando falhará com `FileNotFoundError: Chrome not found`.
+>
+> - **GitHub Actions (`ubuntu-latest`):** Chromium é instalado automaticamente via `apt-get` nos workflows abaixo.
+> - **Windows / macOS (local ou CI):** Instale o Chrome antes (ex: `choco install googlechrome` ou `brew install --cask google-chrome`) ou use a variável de ambiente `CHROME_PATH`.
+
 ---
 
 ## 🏗️ Arquitetura
