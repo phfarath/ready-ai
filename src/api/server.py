@@ -54,22 +54,120 @@ _READY_AI_API_KEYS = _load_api_keys()
 
 # ─── Simple in-memory rate limiter ──────────────────────────────────────────
 
-_rate_limit_store: dict[str, list[float]] = {}
-RATE_LIMIT_WINDOW = 60.0   # seconds
-RATE_LIMIT_MAX = 30         # requests per window per IP
+# ─── Simple in-memory rate limiter ──────────────────────────────────────────
+
+class TokenBucketRateLimiter:
+    """Token bucket rate limiter with per-tier limits and automatic cleanup.
+
+    Supports:
+    - Per-IP limiting (default)
+    - Per-API-key limiting when AUTH is enabled
+    - Tiered limits: health/ready (unlimited), batch runs (strict), standard API (moderate)
+    - Automatic stale entry cleanup every 5 minutes
+    """
+
+    def __init__(self):
+        self._buckets: dict[str, dict] = {}
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 300  # 5 minutes
+
+        # Tiered limits: (window_seconds, max_requests)
+        self.tiers: dict[str, tuple[float, int]] = {
+            "health": (1.0, 1000),       # health checks — very permissive
+            "standard": (60.0, 30),        # read-only API
+            "run": (60.0, 5),              # create runs — expensive (Chrome + LLM)
+            "batch": (60.0, 2),            # batch — very expensive
+            "export": (60.0, 10),          # export results
+        }
+
+        # Map URL prefix to tier
+        self.path_tiers: dict[str, str] = {
+            "/health": "health",
+            "/ready": "health",
+            "/runs": "run",
+            "/batch": "batch",
+            "/export": "export",
+        }
+
+    def _get_tier(self, path: str) -> str:
+        """Determine rate limit tier from URL path."""
+        for prefix, tier in self.path_tiers.items():
+            if path.startswith(prefix):
+                return tier
+        return "standard"
+
+    def _cleanup_if_needed(self) -> None:
+        """Remove stale entries to prevent memory growth."""
+        now = time.time()
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        stale_threshold = 3600  # 1 hour without activity
+        keys_to_remove = [
+            key for key, bucket in self._buckets.items()
+            if now - bucket.get("last_request", 0) > stale_threshold
+        ]
+        for key in keys_to_remove:
+            del self._buckets[key]
+        self._last_cleanup = now
+        if keys_to_remove:
+            logger.debug(f"Rate limiter cleaned up {len(keys_to_remove)} stale entries")
+
+    def check(self, key: str, tier: str) -> tuple[bool, dict]:
+        """Check if a request is allowed. Returns (allowed, headers_for_response)."""
+        self._cleanup_if_needed()
+        window, max_requests = self.tiers.get(tier, self.tiers["standard"])
+        now = time.time()
+
+        bucket = self._buckets.get(key)
+        if bucket is None or now - bucket.get("window_start", 0) > window:
+            bucket = {"window_start": now, "tokens": max_requests - 1, "last_request": now}
+            self._buckets[key] = bucket
+            return True, {
+                "X-RateLimit-Limit": str(max_requests),
+                "X-RateLimit-Remaining": str(max_requests - 1),
+                "X-RateLimit-Window": str(int(window)),
+            }
+
+        if bucket["tokens"] > 0:
+            bucket["tokens"] -= 1
+            bucket["last_request"] = now
+            remaining = bucket["tokens"]
+            return True, {
+                "X-RateLimit-Limit": str(max_requests),
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Window": str(int(window)),
+            }
+
+        # Rate limited
+        reset_in = int(window - (now - bucket["window_start"])) + 1
+        return False, {
+            "X-RateLimit-Limit": str(max_requests),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Window": str(int(window)),
+            "Retry-After": str(reset_in),
+        }
 
 
+_rate_limiter = TokenBucketRateLimiter()
+
+
+def _get_rate_limit_key(request: Request) -> str:
+    """Build rate limit key from IP + API key (if available)."""
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key and not _AUTH_DISABLED:
+        return f"key:{api_key[:8]}:{client_ip}"
+    return f"ip:{client_ip}"
+
+
+# Backward compat: simple function for tests/internal use
 def _check_rate_limit(client_ip: str) -> bool:
-    """Return True if request is allowed, False if rate limited."""
-    now = time.time()
-    window = _rate_limit_store.get(client_ip, [])
-    # Prune old entries
-    window = [t for t in window if now - t < RATE_LIMIT_WINDOW]
-    _rate_limit_store[client_ip] = window
-    if len(window) >= RATE_LIMIT_MAX:
-        return False
-    window.append(now)
-    return True
+    """Legacy simple rate limit check (used by tests)."""
+    allowed, _ = _rate_limiter.check(f"ip:{client_ip}", "standard")
+    return allowed
 
 
 # ─── Graceful Shutdown Lifecycle ────────────────────────────────────────────
@@ -153,21 +251,27 @@ async def api_key_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    """Apply rate limiting to all routes except health checks."""
-    if request.url.path in ("/health", "/ready", "/docs", "/openapi.json", "/"):
+    """Apply tiered token-bucket rate limiting to all routes with headers in response."""
+    if request.url.path in ("/docs", "/openapi.json", "/"):
         return await call_next(request)
 
-    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
-    # Take first IP if x-forwarded-for is a list
-    if "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()
+    tier = _rate_limiter._get_tier(request.url.path)
+    key = _get_rate_limit_key(request)
+    allowed, headers = _rate_limiter.check(key, tier)
 
-    if not _check_rate_limit(client_ip):
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={"detail": "Rate limit exceeded. Try again later."},
-        )
-    return await call_next(request)
+    response = await call_next(request) if allowed else JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "detail": f"Rate limit exceeded for tier '{tier}'. Please try again later.",
+            "tier": tier,
+        },
+    )
+
+    # Attach rate limit headers to all responses (success or rate limited)
+    for header_name, header_value in headers.items():
+        response.headers[header_name] = header_value
+
+    return response
 
 
 # ─── Health endpoints ────────────────────────────────────────────────────

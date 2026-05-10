@@ -3,14 +3,14 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.manager import RunManager
 from src.api.models import RunStatusResponse
-from src.api.server import app, _rate_limit_store, RATE_LIMIT_MAX
+from src.api.server import app, _rate_limiter
 
 
 @pytest.fixture(autouse=True)
 def clear_rate_limit_store():
-    """Clear rate limit store before each test."""
-    _rate_limit_store.clear()
+    """Reset rate limiter before each test."""
     yield
+    _rate_limiter._buckets.clear()
 
 
 @pytest.mark.asyncio
@@ -99,7 +99,7 @@ async def test_cors_preflight():
 
 @pytest.mark.asyncio
 async def test_rate_limit_exceeded(monkeypatch):
-    """After RATE_LIMIT_MAX requests, should return 429."""
+    """After run tier limit (5), should return 429 with Retry-After header."""
     run_id = "rate-limit-test"
     status = RunStatusResponse(
         run_id=run_id,
@@ -122,15 +122,21 @@ async def test_rate_limit_exceeded(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # Make RATE_LIMIT_MAX requests (health checks don't count)
-        for _ in range(RATE_LIMIT_MAX):
+        # Make run tier limit requests (5 for /runs)
+        for _ in range(5):
             response = await client.post("/runs", json={"goal": "test", "url": "http://example.com"})
             assert response.status_code == 200
+            # Check rate limit headers are present
+            assert "X-RateLimit-Limit" in response.headers
+            assert "X-RateLimit-Remaining" in response.headers
 
         # Next request should be rate limited
         response = await client.post("/runs", json={"goal": "test", "url": "http://example.com"})
         assert response.status_code == 429
-        assert response.json()["detail"] == "Rate limit exceeded. Try again later."
+        assert "rate limit exceeded" in response.json()["detail"].lower()
+        assert "Retry-After" in response.headers
+        assert "X-RateLimit-Remaining" in response.headers
+        assert response.headers["X-RateLimit-Remaining"] == "0"
 
 
 @pytest.mark.asyncio
