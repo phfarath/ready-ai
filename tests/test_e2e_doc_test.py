@@ -4,15 +4,27 @@ End-to-end integration tests for the DocTestRunner.
 Tests the full flow: parse docs → execute steps → compare screenshots → generate report.
 Uses mocked CDP/browser so no real Chrome instance is needed.
 """
+# ruff: noqa: E402
 
 import base64
 import json
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+# If PIL was mocked by another test module, restore the real module
+if "PIL" in sys.modules and hasattr(sys.modules["PIL"], "_mock_name"):
+    for k in list(sys.modules):
+        if k.startswith("PIL"):
+            del sys.modules[k]
+
 from PIL import Image
+
+# Ensure format plugins (PNG, JPEG, …) are registered on Windows
+Image.init()
 
 from src.agent.test_runner import DocTestRunner
 
@@ -54,6 +66,10 @@ def _setup_mocks():
     page.get_dom_html = AsyncMock(return_value="<html><body><button id='login-btn'>Login</button></body></html>")
     page.wait_for_network_idle = AsyncMock()
     page.wait_for_selector = AsyncMock(return_value=True)
+    # screenshot is set per-test; default to a dummy base64 PNG so the mock
+    # object has an explicit return_value attribute instead of auto-creating
+    # a nested AsyncMock when the test forgets to override it.
+    page.screenshot = AsyncMock(return_value=_make_screenshot_b64())
 
     input_domain = AsyncMock()
     runtime = AsyncMock()

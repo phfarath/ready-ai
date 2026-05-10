@@ -55,6 +55,9 @@ class AgenticLoop:
         run_id: str = "local_run",
         resume_from: Optional[str] = None,
         plan_only: bool = False,
+        app_version: Optional[str] = None,
+        git_commit: Optional[str] = None,
+        deployed_at: Optional[str] = None,
     ):
         self.run_id = run_id
         self.resume_from = resume_from
@@ -68,6 +71,9 @@ class AgenticLoop:
         self.output_dir = output_dir
         self.headless = headless
         self.max_critic_rounds = max_critic_rounds
+        self.app_version = app_version or ""
+        self.git_commit = git_commit or ""
+        self.deployed_at = deployed_at or ""
 
         self._session = BrowserSession(
             port=port,
@@ -88,9 +94,15 @@ class AgenticLoop:
             if self._state:
                 logger.info(f"Resuming run '{self._state.run_id}' from state file {self.resume_from}")
             else:
-                self._state = RunState(run_id=self.run_id, goal=self.goal, url=self.url)
+                self._state = RunState(
+                    run_id=self.run_id, goal=self.goal, url=self.url,
+                    app_version=self.app_version, git_commit=self.git_commit, deployed_at=self.deployed_at,
+                )
         else:
-            self._state = RunState(run_id=self.run_id, goal=self.goal, url=self.url)
+            self._state = RunState(
+                run_id=self.run_id, goal=self.goal, url=self.url,
+                app_version=self.app_version, git_commit=self.git_commit, deployed_at=self.deployed_at,
+            )
 
     def _save_checkpoint(self, status: Optional[str] = None) -> None:
         """Write current execution state to disk."""
@@ -137,7 +149,11 @@ class AgenticLoop:
                 # 2. Create domain helpers
                 llm = LLMClient(model=self.model)
                 annotation_llm = LLMClient(model=self.annotation_model)
-                doc = DocRenderer(goal=self.goal, title=self.title, language=self.language)
+                doc = DocRenderer(
+                    goal=self.goal, title=self.title, language=self.language,
+                    app_version=self.app_version, git_commit=self.git_commit,
+                    deployed_at=self.deployed_at,
+                )
                 self.llm = llm
                 self.annotation_llm = annotation_llm
                 self.doc = doc
@@ -187,7 +203,20 @@ class AgenticLoop:
                 # 8. Save output
                 self._save_checkpoint("FINISHED")
                 markdown = doc.render()
-                output_path = save_docs(markdown, doc.screenshots, self.output_dir)
+                output_path = save_docs(
+                    markdown,
+                    doc.screenshots,
+                    self.output_dir,
+                    run_id=self.run_id,
+                    goal=self.goal,
+                    url=self.url,
+                    model=self.model,
+                    language=self.language or "en",
+                    app_version=self.app_version,
+                    git_commit=self.git_commit,
+                    deployed_at=self.deployed_at,
+                    status="FINISHED",
+                )
                 logger.info(f"═══ Documentation saved to: {output_path}")
 
                 # Save metrics alongside output

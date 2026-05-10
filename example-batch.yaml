@@ -1,0 +1,38 @@
+# Example batch configuration for ready-ai
+# Usage: ready-ai batch --config example-batch.yaml
+#
+# This documents multiple user flows of an application in a single batch run.
+
+app_version: "2.3.1"
+git_commit: "abc1234"
+deployed_at: "2026-05-09T14:00:00Z"
+base_url: "https://app.example.com"
+
+model: "gpt-4o-mini"
+headless: true
+# cookies_file: "./cookies.json"  # optional session cookies
+
+flows:
+  - goal: "Document the login page"
+    path: "/login"
+    run_id: "v2.3.1-login"
+    title: "Login Guide"
+    language: "en"
+
+  - goal: "Document the user onboarding flow"
+    path: "/welcome"
+    run_id: "v2.3.1-onboarding"
+    title: "Getting Started"
+    language: "en"
+
+  - goal: "Document the settings page"
+    path: "/settings"
+    run_id: "v2.3.1-settings"
+    title: "Settings Reference"
+    language: "en"
+
+  - goal: "Document checkout flow"
+    path: "https://checkout.example.com/pay"  # absolute URL overrides base_url
+    run_id: "v2.3.1-checkout"
+    title: "Checkout Guide"
+    language: "en"

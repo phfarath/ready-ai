@@ -138,9 +138,15 @@ class DocRenderer:
         goal: str,
         title: Optional[str] = None,
         language: Optional[str] = None,
+        app_version: str = "",
+        git_commit: str = "",
+        deployed_at: str = "",
     ):
         self.goal = goal
         self.title = title
+        self.app_version = app_version
+        self.git_commit = git_commit
+        self.deployed_at = deployed_at
         self._labels = _resolve_labels(language)
         self.steps: list[DocStep] = []
         self.screenshots: dict[str, str] = {}  # filename → base64 data
@@ -192,6 +198,24 @@ class DocRenderer:
         # Header
         lines.append(f"# {self.title or self.goal}")
         lines.append("")
+        
+        # Version metadata block (if available)
+        if self.app_version or self.git_commit or self.deployed_at:
+            lines.append("---")
+            lines.append("")
+            lines.append("## Metadata")
+            lines.append("")
+            if self.app_version:
+                lines.append(f"- **Version:** {self.app_version}")
+            if self.git_commit:
+                lines.append(f"- **Git Commit:** {self.git_commit}")
+            if self.deployed_at:
+                lines.append(f"- **Deployed:** {self.deployed_at}")
+            lines.append(f"- **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
         lines.append(
             f"> {lb['generated_at']} "
             f"{datetime.now().strftime('%Y-%m-%d %H:%M')}"

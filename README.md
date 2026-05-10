@@ -15,15 +15,23 @@ It plans a flow from the current DOM, executes the actions, critiques the result
 - A planner -> executor -> critic loop
 - Markdown and screenshot generation
 - A documentation test runner with visual diff and self-healing
-- An early FastAPI service scaffold
+- A FastAPI service with batch processing and deploy webhooks
+- Versioned documentation tied to your app releases
 
 ## What This Repo Is Not
 
-- A hosted product
-- A team dashboard
-- A scheduling platform
-- A polished integration layer
+- A hosted product (yet)
+- A team dashboard (yet)
 - Commercial support or SLAs
+
+## Documentation
+
+- [API Reference](docs/API.md) — complete REST API documentation
+- [Batch Runner](docs/BATCH.md) — YAML/TOML batch configuration
+- [Webhook Integration](docs/WEBHOOK.md) — CI/CD deploy webhooks
+- [CI/CD Guide](docs/CI-CD.md) — GitHub Actions, Docker, regression tests
+- [Versioning](docs/VERSIONING.md) — how docs are versioned with releases
+- [Notifications](docs/NOTIFICATIONS.md) — webhook events and alerting
 
 ## Quickstart
 
@@ -228,6 +236,43 @@ Exit codes:
 - `1` — one or more steps are broken (execution failed)
 - `2` — UI drift detected (visual similarity below threshold)
 
+### `batch` command
+
+Run multiple documentation flows from a single YAML or TOML configuration file.
+
+```bash
+ready-ai batch --help
+```
+
+| Flag | Short | Default | Purpose |
+|------|-------|---------|---------|
+| `--config` | `-c` | required | Path to YAML/TOML batch config |
+| `--verbose` | `-v` | `false` | Debug logging |
+
+Example:
+
+```bash
+ready-ai batch --config example-batch.yaml
+```
+
+Example `example-batch.yaml`:
+
+```yaml
+app_version: "2.3.1"
+git_commit: "abc1234"
+base_url: "https://app.example.com"
+
+flows:
+  - goal: "Document login"
+    path: "/login"
+    run_id: "v2.3.1-login"
+  - goal: "Document onboarding"
+    path: "/welcome"
+```
+
+The batch command starts all flows concurrently (up to browser port pool limits),
+polls progress every 5 seconds, and reports completion.
+
 ### More examples
 
 Portuguese output:
@@ -357,9 +402,12 @@ Flags:
 
 Main endpoints:
 
-- `POST /runs`
-- `GET /runs/{run_id}`
-- `GET /runs/{run_id}/output`
+- `POST /runs` — start a single documentation run
+- `GET /runs/{run_id}` — poll run status
+- `GET /runs/{run_id}/output` — download output as ZIP
+- `POST /webhooks/deploy` — deploy webhook: receive a deploy event and auto-document all configured flows
+- `POST /batches` — start a batch from a YAML/TOML config
+- `GET /batches/{batch_id}` — poll batch status with per-flow breakdown
 
 Example flow:
 
@@ -372,12 +420,53 @@ curl http://localhost:8000/runs/<run_id>
 curl -OJ http://localhost:8000/runs/<run_id>/output
 ```
 
+Deploy webhook (for CI/CD integration):
+
+```bash
+curl -X POST http://localhost:8000/webhooks/deploy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_version": "2.3.1",
+    "git_commit": "abc1234",
+    "deployed_at": "2026-05-09T14:00:00Z",
+    "base_url": "https://app.example.com",
+    "flows": [
+      {"goal": "Document login", "path": "/login", "run_id": "login"},
+      {"goal": "Document onboarding", "path": "/welcome"}
+    ]
+  }'
+```
+
+Batch runner (from YAML config):
+
+```bash
+ready-ai batch --config flows.yaml
+```
+
+Example `flows.yaml`:
+
+```yaml
+app_version: "2.3.1"
+git_commit: "abc1234"
+base_url: "https://app.example.com"
+model: "gpt-4o-mini"
+
+flows:
+  - goal: "Document login"
+    path: "/login"
+    run_id: "v2.3.1-login"
+  - goal: "Document onboarding"
+    path: "/welcome"
+```
+
 Current API capabilities:
 
 - start a background run
 - poll run status
 - resume from an existing checkpoint when the same `run_id` is reused
 - download output as a ZIP archive
+- receive deploy webhooks and kick off multi-flow documentation
+- run batch jobs from YAML/TOML configuration files
 
 ## How It Works
 

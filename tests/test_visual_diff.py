@@ -1,8 +1,21 @@
 """Tests for the visual diff engine (src/docs/visual_diff.py)."""
+# ruff: noqa: E402
+
+import sys
+
+# If PIL was mocked by another test module (e.g. test_api_batch), restore the real module
+if "PIL" in sys.modules and hasattr(sys.modules["PIL"], "_mock_name"):
+    for k in list(sys.modules):
+        if k.startswith("PIL"):
+            del sys.modules[k]
 
 import pytest
 from pathlib import Path
 from PIL import Image
+
+# Ensure format plugins (PNG, JPEG, …) are registered on Windows
+Image.init()
+
 from src.docs.visual_diff import compare_screenshots
 
 

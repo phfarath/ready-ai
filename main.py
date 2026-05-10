@@ -49,6 +49,9 @@ RUN_DEFAULTS = {
     "run_id": "local_run",
     "resume": False,
     "plan_only": False,
+    "app_version": None,
+    "git_commit": None,
+    "deployed_at": None,
 }
 
 CONFIG_KEYS = set(RUN_DEFAULTS) - {"config"}
@@ -102,6 +105,9 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--run-id", default=argparse.SUPPRESS, help="Run identifier for checkpoints")
     run_parser.add_argument("--resume", action="store_true", default=argparse.SUPPRESS, help="Resume from an existing checkpoint")
     run_parser.add_argument("--plan-only", action="store_true", default=argparse.SUPPRESS, help="Generate a plan without executing steps")
+    run_parser.add_argument("--app-version", default=argparse.SUPPRESS, help="Application version (e.g., 2.3.1)")
+    run_parser.add_argument("--git-commit", default=argparse.SUPPRESS, help="Git commit hash")
+    run_parser.add_argument("--deployed-at", default=argparse.SUPPRESS, help="Deployment ISO timestamp")
 
     # --- TEST Command ---
     test_parser = subparsers.add_parser("test", help="Test documentation against live UI (self-healing)")
@@ -119,11 +125,27 @@ def _build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("--watch", action="store_true", help="Re-run tests periodically (use with --watch-interval)")
     test_parser.add_argument("--watch-interval", type=int, default=5, help="Watch interval in minutes (default: 5)")
     test_parser.add_argument("--auto-heal", action="store_true", help="Auto-update docs when drift is detected but steps still pass")
+    test_parser.add_argument("--open-pr", action="store_true", help="After auto-heal, commit changes and open a PR (implies --auto-heal)")
+    test_parser.add_argument("--pr-base-branch", default="dev", help="Base branch for the auto-heal PR (default: dev)")
+    test_parser.add_argument("--pr-remote", default="origin", help="Git remote used to push the auto-heal branch (default: origin)")
+    test_parser.add_argument("--pr-dry-run", action="store_true", help="Run git steps locally but skip push and PR creation")
 
     api_parser = subparsers.add_parser("api", help="Start the FastAPI server")
     api_parser.add_argument("--port", "-p", type=int, default=8000, help="API server port")
     api_parser.add_argument("--host", default="0.0.0.0", help="API server host")
     api_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
+
+    # --- BATCH Command ---
+    batch_parser = subparsers.add_parser("batch", help="Run multiple documentation flows from a config file")
+    batch_parser.add_argument("--config", "-c", required=True, help="YAML or TOML batch config file")
+    batch_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
+
+    # --- EXPORT Command ---
+    export_parser = subparsers.add_parser("export", help="Export generated docs to a static-site format")
+    export_parser.add_argument("--run-id", "-r", required=True, help="Run ID to export")
+    export_parser.add_argument("--format", "-f", required=True, choices=["markdown", "docusaurus", "nextra", "mintlify", "starlight"], help="Export format")
+    export_parser.add_argument("--output-dir", "-o", default=argparse.SUPPRESS, help="Custom output directory")
+    export_parser.add_argument("--verbose", "-v", action="store_true", default=argparse.SUPPRESS, help="Verbose debug logging")
 
     return parser
 
@@ -208,6 +230,9 @@ async def async_main_run(args: argparse.Namespace) -> None:
         run_id=args.run_id,
         resume_from=args.resume_from,
         plan_only=args.plan_only,
+        app_version=getattr(args, "app_version", None),
+        git_commit=getattr(args, "git_commit", None),
+        deployed_at=getattr(args, "deployed_at", None),
     )
 
     try:
@@ -230,6 +255,9 @@ async def async_main_test(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("🧪 ready-ai — Documentation Test Runner")
 
+    open_pr = getattr(args, "open_pr", False)
+    auto_heal = getattr(args, "auto_heal", False) or open_pr
+
     runner = DocTestRunner(
         doc_path=args.doc,
         url=args.url,
@@ -241,14 +269,16 @@ async def async_main_test(args: argparse.Namespace) -> None:
         cookies_file=args.cookies_file,
         username=args.username,
         password=args.password,
-        auto_heal=getattr(args, "auto_heal", False),
+        auto_heal=auto_heal,
     )
 
     try:
         if getattr(args, "watch", False):
-            await _watch_loop(runner, args.watch_interval, logger)
+            await _watch_loop(runner, args.watch_interval, logger, args)
         else:
             report = await runner.run()
+            if open_pr:
+                _maybe_publish_healing(report, args, logger)
             _handle_report_exit(report, logger)
     except KeyboardInterrupt:
         logger.info("⚠️  Interrupted by user")
@@ -258,7 +288,7 @@ async def async_main_test(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def _watch_loop(runner, interval_minutes: int, logger) -> None:
+async def _watch_loop(runner, interval_minutes: int, logger, args: argparse.Namespace = None) -> None:
     """Re-run tests periodically until interrupted."""
     from datetime import datetime
 
@@ -297,10 +327,126 @@ def _handle_report_exit(report, logger) -> None:
             f"⚠️  UI drift detected in steps: {report.steps_outdated}"
         )
         sys.exit(2)  # exit code 2 = drift detected
+
+
+def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
+    """If auto-heal produced changes, commit and open a PR."""
+    from src.docs.healing_publisher import publish_healing, PublishConfig
+
+    doc_path = Path(args.doc).resolve()
+    # Walk up from doc directory to find .git
+    repo_root = doc_path
+    while repo_root.parent != repo_root:
+        if (repo_root / ".git").exists():
+            break
+        repo_root = repo_root.parent
+    cfg = PublishConfig(
+        repo_root=repo_root,
+        doc_path=doc_path,
+        base_branch=getattr(args, "pr_base_branch", "dev"),
+        remote=getattr(args, "pr_remote", "origin"),
+        dry_run=getattr(args, "pr_dry_run", False),
+    )
+    try:
+        result = publish_healing(report.healing_report, cfg)
+        if result.pr_url:
+            logger.info(f"✅ PR created: {result.pr_url}")
+        elif result.skipped_reason:
+            logger.info(f"⏭️  Skipped: {result.skipped_reason}")
+        else:
+            logger.info("✅ Healing committed locally (dry run).")
+    except Exception as exc:
+        logger.error(f"❌ PR creation failed: {exc}")
+
+
+async def async_main_batch(args: argparse.Namespace) -> None:
+    """Run multiple documentation flows from a batch config file."""
+    import uuid
+    from src.api.batch_loader import load_batch_config
+    from src.api.manager import RunManager
+
+    logger = logging.getLogger("main")
+    logger.info("📦 ready-ai — Batch Runner")
+    logger.info(f"Config: {args.config}")
+
+    try:
+        config = load_batch_config(args.config)
+        logger.info(f"Loaded {len(config.flows)} flow(s) from config")
+
+        batch_id = f"batch-{uuid.uuid4().hex[:8]}"
+        result = await RunManager.start_batch(config, batch_id)
+
+        logger.info(f"Batch {batch_id} started: {result['accepted']} accepted, {result['rejected']} rejected")
+        logger.info(f"Run IDs: {result['run_ids']}")
+
+        # Poll until complete (optional — can skip for fire-and-forget)
+        # For CLI, we wait for all to complete
+        logger.info("Waiting for batch to complete...")
+        while True:
+            status = RunManager.get_batch_status(batch_id)
+            if not status:
+                break
+
+            completed = status["completed"]
+            failed = status["failed"]
+            running = status["running"]
+            total = status["total_flows"]
+
+            logger.info(f"Progress: {completed}/{total} completed, {failed} failed, {running} running")
+
+            if completed + failed == total:
+                break
+
+            await asyncio.sleep(5)
+
+        status = RunManager.get_batch_status(batch_id)
+        if status:
+            logger.info(
+                f"✅ Batch complete: {status['completed']}/{total} succeeded, "
+                f"{status['failed']} failed"
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Batch failed: {e}", exc_info=True)
+        sys.exit(1)
+
+
+async def async_main_export(args: argparse.Namespace) -> None:
+    """Export a completed run to a documentation format."""
+    from pathlib import Path
+    from src.docs.export import export_docs, SUPPORTED_FORMATS
+
+    logger = logging.getLogger("main")
+    run_output_dir = Path("./output") / args.run_id
+    doc_path = run_output_dir / "docs.md"
+
+    if not doc_path.exists():
+        logger.error("❌ docs.md not found for run %s", args.run_id)
+        sys.exit(1)
+
+    format_name = args.format.lower()
+    if format_name not in SUPPORTED_FORMATS:
+        logger.error("❌ Unknown format '%s'. Supported: %s", format_name, ", ".join(SUPPORTED_FORMATS))
+        sys.exit(2)
+
+    if hasattr(args, 'output_dir') and args.output_dir:
+        export_output_dir = Path(args.output_dir)
     else:
-        logger.error(
-            f"❌ Broken steps: {report.steps_broken}"
+        export_output_dir = Path("./output") / args.run_id / "export" / format_name
+
+    try:
+        result = export_docs(
+            doc_path=doc_path,
+            format=format_name,
+            output_dir=export_output_dir,
+            screenshots_dir=run_output_dir / "screenshots",
         )
+        logger.info("✅ Exported %s docs to %s", format_name, result.output_dir)
+        logger.info("   Files created: %d", len(result.files_created))
+        for f in result.files_created:
+            logger.info("   - %s", f)
+    except Exception as e:
+        logger.error("❌ Export failed: %s", e)
         sys.exit(1)
 
 
@@ -328,6 +474,10 @@ def cli() -> None:
 
         logging.getLogger("main").info("🚀 Starting FastAPI Server on port %s", args.port)
         uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
+    elif args.command == "batch":
+        asyncio.run(async_main_batch(args))
+    elif args.command == "export":
+        asyncio.run(async_main_export(args))
 
 
 if __name__ == "__main__":

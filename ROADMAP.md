@@ -46,87 +46,75 @@
 
 ---
 
-## Phase 2: Deploy Automation (Week 3–4)
+## Phase 2: Deploy Automation ✅ (Implemented)
 > **Branch:** `feat/self-healing-releases-phase-2`
 
-### 2.1 Deploy Webhook Endpoint
-- Expand FastAPI API with `POST /webhooks/deploy`
-- Payload schema:
-  ```json
-  {
-    "app_version": "2.3.1",
-    "git_commit": "abc123",
-    "deployed_at": "2026-05-09T14:00:00Z",
-    "base_url": "https://app.example.com",
-    "flows": [
-      {"goal": "Document login", "path": "/login", "run_id": "login"},
-      {"goal": "Document onboarding", "path": "/welcome", "run_id": "onboarding"}
-    ]
-  }
-  ```
-- On receive: queue and execute `ready-ai run` for each flow
-- Return `202 Accepted` with `batch_id` for polling status
+### 2.1 Deploy Webhook Endpoint ✅
+- `POST /webhooks/deploy` accepts deploy payloads
+- Payload schema: `app_version`, `git_commit`, `deployed_at`, `base_url`, `flows[]`
+- On receive: queues and executes documentation runs for each flow
+- Returns `202 Accepted` with `batch_id` for polling
 
-### 2.2 Batch / Multi-Flow Configuration
-- Extend config file format to support multiple flows:
-  ```yaml
-  # ready-ai.yaml
-  app_version: "2.3.1"
-  base_url: "https://app.example.com"
-  
-  flows:
-    - goal: "Document login flow"
-      path: "/login"
-      run_id: "login-v2.3.1"
-      output: "./output/v2.3.1/login"
-    - goal: "Document onboarding"
-      path: "/welcome"
-      run_id: "onboarding-v2.3.1"
-      output: "./output/v2.3.1/onboarding"
-  ```
-- New CLI flag: `ready-ai run --config ready-ai.yaml --batch`
-- Sequential execution (parallel in Phase 3)
+### 2.2 Batch / Multi-Flow Configuration ✅
+- Batch config models: `BatchConfig`, `BatchConfigFlow`
+- CLI command: `ready-ai batch --config flows.yaml`
+- Concurrent execution (respecting browser port pool)
+- `POST /batches` and `GET /batches/{batch_id}` API endpoints
+- `BatchLoader` supports YAML and TOML config files
+- Example: `example-batch.yaml`
 
-### 2.3 GitHub Action Reusable Workflow
-- New directory: `.github/actions/ready-ai/`
-- `action.yml` accepting inputs:
-  - `goal`, `url`, `config-file`, `api-key`
-- Runs `ready-ai run` or `ready-ai test` with headless Chrome
-- Publishes docs as artifact or commits to `docs/` branch
+### 2.3 GitHub Action Reusable Workflow ✅
+- `.github/actions/ready-ai/action.yml` — composite action
+- Supports commands: `run`, `test`, `batch`
+- Inputs: `goal`, `url`, `config`, `model`, `api-key`, `app-version`, `git-commit`
+- Publishes docs as artifact via `actions/upload-artifact`
+
+### 2.4 CI/CD Workflow ✅
+- `.github/workflows/docs-generation.yml`
+- Trigger: on release/tag push (`v*`) or manual dispatch
+- Runs batch documentation and commits to `docs/{version}/` branch
+- Artifact upload with 30-day retention
 
 ---
 
-## Phase 3: CI/CD & Monitoring (Week 5–6)
+## Phase 3: CI/CD & Monitoring (In Progress)
 > **Branch:** `feat/self-healing-releases-phase-3`
 
-### 3.1 CI Pipeline Integration
-- New workflow: `.github/workflows/docs-generation.yml`
-  - Trigger: on release/tag push or manual dispatch
-  - Runs `ready-ai run` for all configured flows
-  - Commits generated docs to `docs/{version}/` branch
-- New workflow: `.github/workflows/docs-regression.yml`
-  - Trigger: on PRs touching frontend code
-  - Runs `ready-ai test` against staging URL
-  - Fails PR if docs drift beyond threshold
+### 3.1 CI Pipeline Integration ✅
+- `.github/workflows/docs-generation.yml` — triggers on tag push, generates docs
+- `.github/workflows/docs-regression.yml` — triggers on frontend PRs, fails on drift
+- Composite action `.github/actions/ready-ai/action.yml` for reuse
 
-### 3.2 Docker Support for CI
-- `Dockerfile` with Chrome headless + Python
-- Multi-stage build for small image size
-- Published to GHCR for CI consumption
+### 3.2 Docker Support ✅
+- `Dockerfile` with Chrome headless + Python 3.12
+- Multi-stage ready, published to GHCR (once public)
+- `docker-compose.yml` example in docs
 
-### 3.3 API Expansion (Dashboard Data)
+### 3.3 Documentation Hub ✅
+- `docs/API.md` — complete API reference with schemas
+- `docs/BATCH.md` — batch configuration guide
+- `docs/WEBHOOK.md` — deploy webhook integration
+- `docs/CI-CD.md` — GitHub Actions, Docker, best practices
+- `docs/VERSIONING.md` — manifest, diff, tagging strategy
+- `docs/NOTIFICATIONS.md` — webhook events, Slack/Discord examples
+
+### 3.4 API Expansion (Planned)
 - `GET /runs` — list all documentation runs
 - `GET /runs/{run_id}` — detailed run status + results
 - `GET /runs/{run_id}/diff` — textual diff from previous version
 - `GET /docs` — list all generated documentation sets
 - `GET /docs/{version}/status` — health of docs for a version
 
-### 3.4 Historical Tracking
+### 3.5 Historical Tracking (Planned)
 - SQLite or JSON file-based history store
 - Track per-version metrics:
   - Steps count, pass rate, drift count
   - LLM tokens consumed, execution time
   - Auto-heal success rate
+
+### 3.6 Telegram Notifications (Planned)
+- Bot API integration for deploy/drift notifications
+- Inline screenshots and doc links
 
 ---
 
@@ -135,6 +123,7 @@
 
 - **Parallel Flow Execution** — run multiple flows simultaneously
 - **Confluence/Notion Integration** — push docs directly to wiki
+- **Notifications (Telegram)** — notify team about drift/regeneration
 - **Screenshot Archive** — S3/R2 bucket for long-term screenshot storage
 - **Team Dashboard** — simple web UI showing all docs status
 - **Selector Health Score** — track which selectors break most often

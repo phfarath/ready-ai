@@ -1,0 +1,160 @@
+name: Generate Documentation
+
+on:
+  # Run on every release/tag push
+  push:
+    tags:
+      - "v*"
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "Application version"
+        required: true
+        default: "0.0.0"
+      base_url:
+        description: "Base URL of the application"
+        required: true
+        default: "https://app.example.com"
+      config_file:
+        description: "Path to batch config file (optional)"
+        required: false
+        default: ""
+      format:
+        description: "Export format"
+        required: false
+        default: "markdown"
+        type: choice
+        options:
+          - markdown
+          - docusaurus
+          - nextra
+          - mintlify
+          - starlight
+
+env:
+  BASE_URL: ${{ github.event.inputs.base_url || vars.BASE_URL || 'https://app.example.com' }}
+  EXPORT_FORMAT: ${{ github.event.inputs.format || 'markdown' }}
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install ready-ai
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser
+
+      - name: Determine version info
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.app_version }}" >> $GITHUB_OUTPUT
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          fi
+          echo "commit=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+      - name: Run documentation batch
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CHROME_PATH: /usr/bin/chromium-browser
+        run: |
+          # Try to find config file
+          CONFIG="${{ github.event.inputs.config_file }}"
+          if [ -z "$CONFIG" ]; then
+            for f in .ready-ai.yaml .ready-ai.yml .ready-ai.toml; do
+              if [ -f "$f" ]; then
+                CONFIG="$f"
+                break
+              fi
+            done
+          fi
+          
+          if [ -n "$CONFIG" ] && [ -f "$CONFIG" ]; then
+            echo "Using batch config: $CONFIG"
+            ready-ai batch \
+              --config "$CONFIG" \
+              --output "./output" \
+              --headless
+          else
+            echo "No config file found. Running single-flow generation."
+            ready-ai run \
+              --goal "Document all primary user flows" \
+              --url "$BASE_URL" \
+              --output "./output" \
+              --app-version "${{ steps.version.outputs.version }}" \
+              --git-commit "${{ steps.version.outputs.commit }}" \
+              --deployed-at "${{ steps.version.outputs.deployed }}" \
+              --headless
+          fi
+
+      - name: Export documentation
+        if: always()
+        run: |
+          mkdir -p ./docs-export
+          
+          for run_dir in ./output/*/; do
+            [ -d "$run_dir" ] || continue
+            run_id=$(basename "$run_dir")
+            if [ -f "$run_dir/docs.md" ]; then
+              echo "Exporting $run_id in $EXPORT_FORMAT format..."
+              ready-ai export \
+                --run-id "$run_id" \
+                --format "$EXPORT_FORMAT" \
+                --output-dir "./docs-export/$run_id"
+            fi
+          done
+          
+          echo "Export complete. Files:" && find ./docs-export -type f | head -20
+
+      - name: Upload documentation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-v${{ steps.version.outputs.version }}
+          path: |
+            ./output/
+            ./docs-export/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Commit docs to docs branch
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          BRANCH="docs/${{ steps.version.outputs.version }}"
+          git checkout -b "$BRANCH" || git checkout "$BRANCH"
+          
+          mkdir -p "docs/${{ steps.version.outputs.version }}"
+          cp -r ./output/* "docs/${{ steps.version.outputs.version }}/" 2>/dev/null || true
+          cp -r ./docs-export/* "docs/${{ steps.version.outputs.version }}/" 2>/dev/null || true
+          
+          git add docs/
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: generate v${{ steps.version.outputs.version }}"
+            git push origin "$BRANCH" --force-with-lease
+          fi
+
+      - name: Update latest tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          git tag -f docs-latest "docs/${{ steps.version.outputs.version }}" 2>/dev/null || true
+          git push -f origin docs-latest 2>/dev/null || true
