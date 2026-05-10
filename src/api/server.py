@@ -1,11 +1,15 @@
 """
 FastAPI Server Endpoints for ready-ai.
-Production-ready with CORS, rate limiting, and health checks.
+Production-ready with CORS, rate limiting, API key auth, and health checks.
 """
 
+import asyncio
 import json
+import logging
 import os
+import signal
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +29,28 @@ from src.api.models import (
 from src.api.manager import RunManager
 from src.docs.export import export_docs, SUPPORTED_FORMATS
 from src.history import get_history, get_aggregates
+
+logger = logging.getLogger(__name__)
+
+_SHUTDOWN_EVENT = asyncio.Event()
+
+# ─── API Key Authentication ───────────────────────────────────────────────────
+
+_AUTH_DISABLED = os.getenv("AUTH_DISABLED", "").lower() in ("true", "1", "yes")
+
+
+def _load_api_keys() -> set[str]:
+    """Load authorized API keys from env vars."""
+    keys_env = os.getenv("READY_AI_API_KEYS", "")
+    if keys_env:
+        return {k.strip() for k in keys_env.split(",") if k.strip()}
+    single_key = os.getenv("READY_AI_API_KEY", "")
+    if single_key:
+        return {single_key}
+    return set()
+
+
+_READY_AI_API_KEYS = _load_api_keys()
 
 # ─── Simple in-memory rate limiter ──────────────────────────────────────────
 
@@ -46,12 +72,36 @@ def _check_rate_limit(client_ip: str) -> bool:
     return True
 
 
+# ─── Graceful Shutdown Lifecycle ────────────────────────────────────────────
+
+_SHUTDOWN_EVENT = asyncio.Event()
+
+
+def _graceful_shutdown_signal_handler(signum, frame) -> None:
+    """Handle SIGTERM/SIGINT by signalling all async loops to stop cleanly."""
+    logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+    _SHUTDOWN_EVENT.set()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan manager: setup signal handlers on startup, cleanup on shutdown."""
+    # Startup
+    signal.signal(signal.SIGTERM, _graceful_shutdown_signal_handler)
+    signal.signal(signal.SIGINT, _graceful_shutdown_signal_handler)
+    logger.info("API server started with graceful shutdown handlers")
+    yield
+    # Shutdown
+    logger.info("API server shutting down...")
+
+
 # ─── FastAPI app ──────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="ready-ai API",
     description="Agentic browser automation for seamless documentation generation.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS — configurable via env, defaults to localhost dev origins
@@ -74,10 +124,37 @@ app.add_middleware(
 )
 
 
+# ─── API Key Middleware ───────────────────────────────────────────────────
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    """Validate X-API-Key header on all routes except health/docs."""
+    if _AUTH_DISABLED:
+        return await call_next(request)
+
+    if request.method == "OPTIONS":  # CORS preflight
+        return await call_next(request)
+
+    path = request.url.path
+    if path in ("/health", "/ready", "/docs", "/openapi.json", "/"):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+    if not api_key or api_key not in _READY_AI_API_KEYS:
+        return JSONResponse(
+            {"detail": "Invalid or missing X-API-Key header"},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    return await call_next(request)
+
+
+# ─── Rate Limit Middleware ───────────────────────────────────────────────────
+
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     """Apply rate limiting to all routes except health checks."""
-    if request.url.path in ("/health", "/ready", "/docs", "/openapi.json"):
+    if request.url.path in ("/health", "/ready", "/docs", "/openapi.json", "/"):
         return await call_next(request)
 
     client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
