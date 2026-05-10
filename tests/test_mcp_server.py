@@ -2,9 +2,8 @@
 Tests for MCP Server.
 """
 
-import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.mcp_server import (
     TOOLS,

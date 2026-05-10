@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import sys
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)

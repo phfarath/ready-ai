@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """
 Tests for API models, batch loader, and batch processing.
 """
@@ -15,17 +16,13 @@ sys.modules["selenium"] = MagicMock()
 sys.modules["selenium.webdriver"] = MagicMock()
 sys.modules["selenium.webdriver.chrome.options"] = MagicMock()
 
-import json
-import pytest
-from pathlib import Path
+import pytest  # noqa: E402
 
-from src.api.models import (
-    RunRequest, RunStatusResponse,
-    FlowConfig, DeployWebhookPayload, BatchRunResponse, BatchStatusResponse,
-    BatchConfig, BatchConfigFlow,
+from src.api.models import (  # noqa: E402
+    RunRequest, FlowConfig, DeployWebhookPayload, BatchRunResponse, BatchConfig, BatchConfigFlow,
 )
-from src.api.batch_loader import _parse_dict
-from src.api.manager import RunManager
+from src.api.batch_loader import _parse_dict  # noqa: E402
+from src.api.manager import RunManager  # noqa: E402
 
 
 # ─── Model Validation Tests ───────────────────────────────────────────

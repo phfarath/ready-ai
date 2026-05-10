@@ -1,7 +1,5 @@
 """Tests for the manifest module (src/docs/manifest.py)."""
 
-import json
-import pytest
 from pathlib import Path
 from src.docs.manifest import DocManifest, create_manifest
 

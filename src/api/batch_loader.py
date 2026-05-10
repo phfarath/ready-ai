@@ -22,7 +22,6 @@ Expected format (YAML):
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from src.api.models import BatchConfig, BatchConfigFlow
 

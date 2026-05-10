@@ -8,30 +8,36 @@ on:
       - "app/**"
       - "components/**"
       - "pages/**"
+      - ".ready-ai.yaml"
+      - ".ready-ai.yml"
   workflow_dispatch:
     inputs:
-      doc_path:
-        description: "Path to docs.md baseline"
-        required: true
-        default: "./docs/latest/docs.md"
-      staging_url:
-        description: "Staging URL to test against"
-        required: true
-        default: "https://staging.example.com"
       threshold:
         description: "Visual similarity threshold"
         required: true
         default: "0.85"
+      staging_url:
+        description: "Staging URL to test against"
+        required: true
+        default: "https://staging.example.com"
+
+env:
+  STAGING_URL: ${{ vars.STAGING_URL || github.event.inputs.staging_url || 'https://staging.example.com' }}
+  THRESHOLD: ${{ github.event.inputs.threshold || '0.85' }}
 
 jobs:
   regression-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,84 +46,186 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev]"
+          # Try PyPI first (for external repos); fall back to local install
+          pip install ready-ai 2>/dev/null || pip install -e ".[dev]"
           sudo apt-get update
           sudo apt-get install -y chromium-browser
 
+      # ─── Download baseline docs ───────────────────────────────────────
       - name: Download latest docs baseline
-        run: |
-          mkdir -p ./docs/latest
-          # Try to get docs from the docs branch or previous artifact
-          git fetch origin docs/latest:docs/latest || true
-          git checkout docs/latest -- docs/ 2>/dev/null || true
-          
-          # If no docs branch, use provided path
-          if [ ! -f "${{ github.event.inputs.doc_path || './docs/latest/docs.md' }}" ]; then
-            echo "⚠️  No baseline docs found. Skipping regression test."
-            echo "baseline_found=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          echo "baseline_found=true" >> $GITHUB_OUTPUT
         id: baseline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ./docs-baseline
+          
+          # 1. Try artifact from latest docs-generation run
+          LATEST_RUN=$(gh run list --workflow=docs-generation.yml --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "$LATEST_RUN" ]; then
+            gh run download "$LATEST_RUN" --dir ./docs-artifact 2>/dev/null || true
+            if [ -d "./docs-artifact" ]; then
+              # Find docs.md inside artifact subdirectories
+              find ./docs-artifact -name "docs.md" -exec cp {} ./docs-baseline/docs.md \; 2>/dev/null || true
+              find ./docs-artifact -type d -name "screenshots" -exec cp -r {} ./docs-baseline/screenshots \; 2>/dev/null || true
+            fi
+          fi
+          
+          # 2. Fallback: try docs branch
+          if [ ! -f "./docs-baseline/docs.md" ]; then
+            git fetch origin docs/latest:docs/latest 2>/dev/null || true
+            git show docs/latest:output/latest/docs.md > ./docs-baseline/docs.md 2>/dev/null || true
+            # Screenshots from branch (best effort)
+            git checkout docs/latest -- output/latest/screenshots 2>/dev/null || true
+            if [ -d "output/latest/screenshots" ]; then
+              cp -r output/latest/screenshots ./docs-baseline/
+            fi
+          fi
+          
+          # 3. Last fallback: try any ./output/*/docs.md from this repo
+          if [ ! -f "./docs-baseline/docs.md" ]; then
+            BASE=$(find ./output -name "docs.md" -type f -print -quit 2>/dev/null || true)
+            if [ -n "$BASE" ]; then
+              cp "$BASE" ./docs-baseline/docs.md
+              BASEDIR=$(dirname "$BASE")
+              if [ -d "$BASEDIR/screenshots" ]; then
+                cp -r "$BASEDIR/screenshots" ./docs-baseline/
+              fi
+            fi
+          fi
+          
+          if [ -f "./docs-baseline/docs.md" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "path=./docs-baseline" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Run documentation regression test
-        if: steps.baseline.outputs.baseline_found == 'true'
+      # ─── Run regression test ──────────────────────────────────────────
+      - name: Run regression test
+        if: steps.baseline.outputs.found == 'true'
+        id: test
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CHROME_PATH: /usr/bin/chromium-browser
         run: |
           ready-ai test \
-            --doc "${{ github.event.inputs.doc_path || './docs/latest/docs.md' }}" \
-            --url "${{ github.event.inputs.staging_url || 'https://staging.example.com' }}" \
-            --threshold "${{ github.event.inputs.threshold || '0.85' }}" \
+            --doc "./docs-baseline/docs.md" \
+            --url "$STAGING_URL" \
+            --threshold "$THRESHOLD" \
             --headless \
-            --output "./output/regression-report"
-        continue-on-error: true
+            --output "./regression-report"
+          
+          # Parse result for downstream steps
+          if [ -f "./regression-report/report.json" ]; then
+            STATUS=$(jq -r '.overall_status' ./regression-report/report.json)
+            echo "status=$STATUS" >> $GITHUB_OUTPUT
+          fi
 
+      # ─── Auto-regenerate on drift ─────────────────────────────────────
+      - name: Regenerate documentation (drift detected)
+        if: steps.test.outputs.status == 'DRIFT_DETECTED'
+        id: regen
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CHROME_PATH: /usr/bin/chromium-browser
+        run: |
+          mkdir -p ./docs-new
+          
+          # Prefer batch config if available
+          if [ -f ".ready-ai.yaml" ] || [ -f ".ready-ai.yml" ]; then
+            CONFIG=$(ls .ready-ai.yaml .ready-ai.yml 2>/dev/null | head -1)
+            ready-ai batch \
+              --config "$CONFIG" \
+              --output "./output" \
+              --headless
+          else
+            ready-ai run \
+              --goal "Document main user flows" \
+              --url "$STAGING_URL" \
+              --output "./output" \
+              --headless
+          fi
+          
+          # Export all new runs
+          for run_dir in ./output/*/; do
+            [ -d "$run_dir" ] || continue
+            run_id=$(basename "$run_dir")
+            if [ -f "$run_dir/docs.md" ]; then
+              ready-ai export \
+                --run-id "$run_id" \
+                --format markdown \
+                --output-dir "./docs-new/$run_id"
+            fi
+          done
+          
+          echo "regenerated=true" >> $GITHUB_OUTPUT
+
+      - name: Commit regenerated docs to PR
+        if: steps.regen.outputs.regenerated == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          mkdir -p docs/latest
+          cp -r ./docs-new/* docs/latest/ 2>/dev/null || true
+          
+          git add docs/
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: auto-regenerate documentation due to UI drift [skip ci]"
+            git push
+          fi
+
+      # ─── Upload artifacts ─────────────────────────────────────────────
       - name: Upload regression report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: doc-regression-report-${{ github.run_id }}
-          path: ./output/regression-report/
+          name: regression-report-${{ github.run_id }}
+          path: |
+            ./regression-report/
+            ./output/
           retention-days: 14
+          if-no-files-found: ignore
 
+      # ─── PR comment ──────────────────────────────────────────────────
       - name: Comment PR with results
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const path = './output/regression-report/report.json';
+            const status = '${{ steps.test.outputs.status || 'SKIPPED' }}';
             
             let body = '## 📋 Documentation Regression Test\n\n';
             
-            if (!fs.existsSync(path)) {
-              body += '⚠️  No baseline documentation found. Test skipped.\n';
+            if (status === 'SKIPPED') {
+              body += '⚠️ **No baseline documentation found.** Test skipped.\n';
+              body += 'Generate initial docs on `main` branch first (tag push triggers `docs-generation.yml`).\n';
+            } else if (status === 'PASSED') {
+              body += '✅ **All documentation steps are up to date!**\n\n';
+              body += 'No UI drift detected. Screenshots match baseline within threshold.\n';
+            } else if (status === 'DRIFT_DETECTED') {
+              body += '⚠️ **UI drift detected — documentation auto-regenerated!**\n\n';
+              body += 'Docs were automatically updated and committed to this PR.\n';
+            } else if (status === 'BROKEN') {
+              body += '❌ **Broken steps detected!**\n\n';
+              body += 'Some documented steps no longer execute correctly. Manual review required.\n';
+              body += '\n**CI Status:** ❌ FAILED (blocking merge)\n';
             } else {
-              const report = JSON.parse(fs.readFileSync(path, 'utf8'));
-              const status = report.overall_status;
-              
-              if (status === 'PASSED') {
-                body += '✅ **All documentation steps are up to date!**\n\n';
-                body += `- Steps tested: ${report.total_steps}\n`;
-                body += `- Execution time: ${report.execution_time}s\n`;
-              } else if (status === 'DRIFT_DETECTED') {
-                body += '⚠️  **UI drift detected** — documentation may need updates\n\n';
-                body += `- Drifted steps: ${report.steps_outdated.join(', ')}\n`;
-                body += `- Similarity scores below threshold:\n`;
-                report.details.forEach(d => {
-                  if (d.status === 'drift') {
-                    body += `  - Step ${d.step}: ${d.similarity_score} (threshold: ${d.threshold})\n`;
-                  }
-                });
-              } else {
-                body += '❌ **Broken steps detected** — manual intervention needed\n\n';
-                body += `- Broken steps: ${report.steps_broken.join(', ')}\n`;
-              }
+              body += `ℹ️ **Status:** ${status}\n`;
             }
             
-            body += '\n[View full report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            // Add metrics if report exists
+            const reportPath = './regression-report/report.json';
+            if (fs.existsSync(reportPath)) {
+              const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+              body += `\n| Metric | Value |\n|---|---|\n`;
+              body += `| Steps tested | ${report.total_steps || 'N/A'} |\n`;
+              body += `| Duration | ${(report.execution_time || 0).toFixed(1)}s |\n`;
+              body += `| Status | ${report.overall_status} |\n`;
+            }
+            
+            body += `\n[View full report & artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
             
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -125,3 +233,11 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
+
+      # ─── Fail CI if broken ────────────────────────────────────────────
+      - name: Fail on broken steps
+        if: steps.test.outputs.status == 'BROKEN'
+        run: |
+          echo "❌ Documentation regression detected broken steps."
+          echo "Review the report and fix the UI or update selectors."
+          exit 1

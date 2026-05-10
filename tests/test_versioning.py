@@ -1,8 +1,5 @@
 """Tests for the versioning module (src/versioning.py)."""
 
-import os
-import pytest
-from unittest.mock import patch, MagicMock
 from src.versioning import (
     resolve_app_version,
     resolve_git_commit,

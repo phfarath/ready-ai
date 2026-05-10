@@ -8,13 +8,11 @@ Telegram is supported only when this code runs inside the Hermes Agent
 environment; otherwise configure a webhook that posts to Hermes/Telegram.
 """
 
-import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

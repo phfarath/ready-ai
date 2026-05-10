@@ -140,6 +140,13 @@ def _build_parser() -> argparse.ArgumentParser:
     batch_parser.add_argument("--config", "-c", required=True, help="YAML or TOML batch config file")
     batch_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
+    # --- EXPORT Command ---
+    export_parser = subparsers.add_parser("export", help="Export generated docs to a static-site format")
+    export_parser.add_argument("--run-id", "-r", required=True, help="Run ID to export")
+    export_parser.add_argument("--format", "-f", required=True, choices=["markdown", "docusaurus", "nextra", "mintlify", "starlight"], help="Export format")
+    export_parser.add_argument("--output-dir", "-o", default=argparse.SUPPRESS, help="Custom output directory")
+    export_parser.add_argument("--verbose", "-v", action="store_true", default=argparse.SUPPRESS, help="Verbose debug logging")
+
     return parser
 
 
@@ -354,6 +361,7 @@ def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
 
 async def async_main_batch(args: argparse.Namespace) -> None:
     """Run multiple documentation flows from a batch config file."""
+    import uuid
     from src.api.batch_loader import load_batch_config
     from src.api.manager import RunManager
 
@@ -403,9 +411,47 @@ async def async_main_batch(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def async_main_export(args: argparse.Namespace) -> None:
+    """Export a completed run to a documentation format."""
+    from pathlib import Path
+    from src.docs.export import export_docs, SUPPORTED_FORMATS
+
+    logger = logging.getLogger("main")
+    run_output_dir = Path("./output") / args.run_id
+    doc_path = run_output_dir / "docs.md"
+
+    if not doc_path.exists():
+        logger.error("❌ docs.md not found for run %s", args.run_id)
+        sys.exit(1)
+
+    format_name = args.format.lower()
+    if format_name not in SUPPORTED_FORMATS:
+        logger.error("❌ Unknown format '%s'. Supported: %s", format_name, ", ".join(SUPPORTED_FORMATS))
+        sys.exit(2)
+
+    if hasattr(args, 'output_dir') and args.output_dir:
+        export_output_dir = Path(args.output_dir)
+    else:
+        export_output_dir = Path("./output") / args.run_id / "export" / format_name
+
+    try:
+        result = export_docs(
+            doc_path=doc_path,
+            format=format_name,
+            output_dir=export_output_dir,
+            screenshots_dir=run_output_dir / "screenshots",
+        )
+        logger.info("✅ Exported %s docs to %s", format_name, result.output_dir)
+        logger.info("   Files created: %d", len(result.files_created))
+        for f in result.files_created:
+            logger.info("   - %s", f)
+    except Exception as e:
+        logger.error("❌ Export failed: %s", e)
+        sys.exit(1)
+
+
 def cli() -> None:
     """Entry point for pyproject.toml scripts."""
-    import uuid  # needed for batch
     raw_args = parse_args()
 
     if raw_args.command == "run":
@@ -430,6 +476,8 @@ def cli() -> None:
         uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
     elif args.command == "batch":
         asyncio.run(async_main_batch(args))
+    elif args.command == "export":
+        asyncio.run(async_main_export(args))
 
 
 if __name__ == "__main__":

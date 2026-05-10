@@ -83,7 +83,7 @@ runs:
       run: |
         # If using local checkout, install from current repo
         if [ -f "pyproject.toml" ]; then
-          pip install -e ".[dev]"
+          pip install ready-ai
         else
           # Otherwise install from PyPI (once published)
           pip install ready-ai

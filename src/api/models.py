@@ -86,3 +86,74 @@ class BatchConfig(BaseModel):
     headless: bool = True
     cookies_file: Optional[str] = None
     flows: List[BatchConfigFlow] = Field(default_factory=list)
+
+# ─── Export Models ─────────────────────────────────────────────────────────
+
+class ExportRequest(BaseModel):
+    """Request to export a completed run to a documentation format."""
+    format: str = Field(..., description="Export format: markdown, docusaurus, nextra, mintlify, starlight")
+    output_dir: Optional[str] = Field(None, description="Custom output directory. Defaults to ./output/{run_id}/export/{format}/")
+
+class ExportResponse(BaseModel):
+    """Result of an export operation."""
+    run_id: str
+    format: str
+    output_dir: str
+    files_created: list[str]
+    success: bool = True
+
+
+# ─── List Models ──────────────────────────────────────────────────────────
+
+class RunListItem(BaseModel):
+    """Summary item for listing runs."""
+    run_id: str
+    status: str
+    goal: str
+    url: str
+    executed_steps: int
+    total_planned_steps: int
+    app_version: Optional[str] = None
+    git_commit: Optional[str] = None
+    deployed_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+class RunListResponse(BaseModel):
+    """Response for GET /runs."""
+    total: int
+    runs: list[RunListItem]
+
+class DiffResponse(BaseModel):
+    """Response for GET /runs/{run_id}/diff."""
+    run_id: str
+    previous_version: Optional[str] = None
+    current_version: Optional[str] = None
+    changelog: str
+    diff_json: dict
+
+class DocsSetItem(BaseModel):
+    """Item in the documentation sets list."""
+    run_id: str
+    version: Optional[str] = None
+    goal: str
+    url: str
+    status: str
+    files: list[str]
+    generated_at: Optional[str] = None
+
+class DocsListResponse(BaseModel):
+    """Response for GET /docs."""
+    total: int
+    docs: list[DocsSetItem]
+
+class DocsVersionStatus(BaseModel):
+    """Health status for a specific documentation version."""
+    version: str
+    run_id: str
+    status: str
+    steps_count: int
+    screenshots_count: int
+    has_manifest: bool
+    has_metrics: bool
+    last_tested: Optional[str] = None
+    test_status: Optional[str] = None
