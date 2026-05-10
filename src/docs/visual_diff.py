@@ -12,6 +12,11 @@ from typing import Optional
 
 from PIL import Image, ImageChops
 
+# Pillow on Windows sometimes lazily-loads format plugins; force
+# registration of PNG, JPEG, WebP, etc. so Image.open() recognises
+# common screenshot formats immediately.
+Image.init()
+
 logger = logging.getLogger(__name__)
 
 

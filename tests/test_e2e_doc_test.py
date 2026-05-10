@@ -23,6 +23,9 @@ if "PIL" in sys.modules and hasattr(sys.modules["PIL"], "_mock_name"):
 
 from PIL import Image
 
+# Ensure format plugins (PNG, JPEG, …) are registered on Windows
+Image.init()
+
 from src.agent.test_runner import DocTestRunner
 
 
@@ -63,6 +66,10 @@ def _setup_mocks():
     page.get_dom_html = AsyncMock(return_value="<html><body><button id='login-btn'>Login</button></body></html>")
     page.wait_for_network_idle = AsyncMock()
     page.wait_for_selector = AsyncMock(return_value=True)
+    # screenshot is set per-test; default to a dummy base64 PNG so the mock
+    # object has an explicit return_value attribute instead of auto-creating
+    # a nested AsyncMock when the test forgets to override it.
+    page.screenshot = AsyncMock(return_value=_make_screenshot_b64())
 
     input_domain = AsyncMock()
     runtime = AsyncMock()

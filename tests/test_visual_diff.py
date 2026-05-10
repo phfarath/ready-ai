@@ -11,6 +11,10 @@ if "PIL" in sys.modules and hasattr(sys.modules["PIL"], "_mock_name"):
 import pytest
 from pathlib import Path
 from PIL import Image
+
+# Ensure format plugins (PNG, JPEG, …) are registered on Windows
+Image.init()
+
 from src.docs.visual_diff import compare_screenshots
 
 

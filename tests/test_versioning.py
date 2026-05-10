@@ -52,6 +52,9 @@ class TestResolveGitCommit:
         assert resolve_git_commit() == "1234567890abcdef1234567890abcdef12345678"
 
     def test_env_var_ci_commit_sha(self, monkeypatch):
+        # Only set CI_COMMIT_SHA, clearing GITHUB_SHA first so CI_COMMIT_SHA
+        # actually wins (GITHUB_SHA is defined in GitHub Actions CI)
+        monkeypatch.delenv("GITHUB_SHA", raising=False)
         monkeypatch.setenv("CI_COMMIT_SHA", "abc1234")
         assert resolve_git_commit() == "abc1234"
 

@@ -31,6 +31,11 @@ _CHROME_PATHS = {
         "chromium",
         "chromium-browser",
     ],
+    "Windows": [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files\Chromium\Application\chrome.exe",
+    ],
 }
 
 
