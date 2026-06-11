@@ -69,7 +69,11 @@ class RunState:
 
             # Convert dictionary steps back to DocStepState
             if 'doc_steps' in data:
-                data['doc_steps'] = [DocStepState(**s) for s in data['doc_steps']]
+                allowed_fields = DocStepState.__dataclass_fields__.keys()
+                data['doc_steps'] = [
+                    DocStepState(**{k: v for k, v in s.items() if k in allowed_fields})
+                    for s in data['doc_steps']
+                ]
 
             return cls(**data)
         except FileNotFoundError:

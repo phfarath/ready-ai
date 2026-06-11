@@ -158,7 +158,7 @@ def _get_rate_limit_key(request: Request) -> str:
         client_ip = client_ip.split(",")[0].strip()
 
     api_key = request.headers.get("X-API-Key", "")
-    if api_key and not _AUTH_DISABLED:
+    if api_key and not _AUTH_DISABLED and api_key in _READY_AI_API_KEYS:
         return f"key:{api_key[:8]}:{client_ip}"
     return f"ip:{client_ip}"
 

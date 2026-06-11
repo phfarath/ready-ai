@@ -45,10 +45,12 @@ def fake_browser_session():
 @pytest.fixture
 def sample_run_state() -> RunState:
     return RunState(
+        run_id="test-run-123",
         goal="Criar conta",
-        steps=[
-            DocStepState(step="1. Abrir página de cadastro", action="navigate", result="ok"),
-            DocStepState(step="2. Preencher formulário", action="type_text", result="ok"),
+        url="https://example.com/signup",
+        doc_steps=[
+            DocStepState(number=1, title="Abrir página de cadastro", action_description="navigate", annotation="ok"),
+            DocStepState(number=2, title="Preencher formulário", action_description="type_text", annotation="ok"),
         ],
     )
 
