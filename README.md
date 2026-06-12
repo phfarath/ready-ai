@@ -497,6 +497,29 @@ Core modules:
 | `src/docs/report_html.py` | Generates standalone HTML test reports with inline images |
 | `src/docs/terminal_output.py` | Colored terminal progress bar and summary table (respects `NO_COLOR`) |
 
+## Resilience flags (P0-1)
+
+The CDP layer is now resilient to transient WebSocket drops
+(Chrome restarted by OOM, CI sandbox hiccup, devbox GC pause).
+By default the legacy behaviour is preserved; opt in via:
+
+```bash
+export READY_AI_CDP_AUTORECONNECT=true
+```
+
+When the auto-reconnect exhausts its budget, the circuit
+breaker opens and `BrowserSession.is_disconnected` returns
+`True`. Tunables (thresholds, backoff, re-attach wait) are
+documented in [docs/CI-CD.md](docs/CI-CD.md#cdp-auto-reconnect-p0-1).
+
+The agent loop can guard its commands with:
+
+```python
+if session.is_disconnected:
+    await session.recover(url)
+    continue
+```
+
 ## Current Limitations
 
 High-priority gaps today:
