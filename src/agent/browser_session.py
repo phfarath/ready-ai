@@ -20,6 +20,7 @@ from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
+from ..observability import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,31 @@ class BrowserSession:
     def runtime(self) -> RuntimeDomain:
         return self._runtime
 
+    @property
+    def is_disconnected(self) -> bool:
+        """True when the underlying CDP connection is in a terminal state.
+
+        Combines two cases:
+          * DOWN — the circuit breaker opened after CB_THRESHOLD
+            consecutive reconnect failures. The orchestrator should
+            call `recover(url)` to respawn Chrome.
+          * CLOSED — `teardown()` was called explicitly. No recovery
+            is appropriate.
+
+        The agent loop should check this property before issuing
+        commands when P0-1 reconnect is enabled, so it can avoid
+        30s of waiting on a doomed `send` and instead trigger
+        `recover` right away.
+        """
+        return self._conn is not None and self._conn.is_disconnected
+
+    @property
+    def cdp_state(self) -> Optional[str]:
+        """Diagnostic: expose the underlying FSM state as a string."""
+        if self._conn is None:
+            return None
+        return self._conn.state.value
+
     async def setup(self) -> None:
         """Launch Chrome and establish CDP connection."""
         logger.info("Launching Chrome...")
@@ -169,10 +195,15 @@ class BrowserSession:
     async def teardown(self) -> None:
         """Close connections and kill Chrome process with orphan prevention."""
         if self._conn:
+            # P0-1: surface the FSM state in the teardown log so we
+            # can correlate "normal teardown" vs. "teardown after
+            # circuit open" in the run summary.
+            prior_state = self.cdp_state or "unknown"
             try:
                 await self._conn.close()
             except Exception:
                 pass
+            log_event("browser_teardown", cdp_state=prior_state)
 
         if self._chrome_proc:
             try:
@@ -387,7 +418,12 @@ class BrowserSession:
         Tears down stale state, respawns Chrome, re-authenticates, and navigates
         back to the URL where execution was interrupted.
         """
+        # P0-1: emit a structured log so the agent's run summary
+        # can show "we recovered because the CDP circuit opened"
+        # vs. "we recovered because Chrome crashed on its own".
+        prior_state = self.cdp_state or "unknown"
         logger.error("⟲ Browser session completely lost. Attempting state machine recovery...")
+        log_event("browser_recover_start", url=url, cdp_state=prior_state)
 
         # 1. Tear down stale processes
         await self.teardown()
@@ -408,3 +444,4 @@ class BrowserSession:
         logger.info(f"⟲ State recovery navigating back to: {url}")
         await self._page.navigate(url, wait_for_network=True)
         logger.info("⟲ State recovery complete. Re-attempting step.")
+        log_event("browser_recover_complete", url=url, prior_cdp_state=prior_state)
