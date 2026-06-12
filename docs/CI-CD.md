@@ -251,3 +251,89 @@ Tune in CI to match your flake profile.
   one increment per attempt.
 * `cdp.reconnect.exhausted` — counter, fires when the budget
   is spent without a successful reconnect.
+
+## DOM payload sanitization (P1-2)
+
+The HTML returned by `PageDomain.get_dom_html` and the JSON
+returned by `RuntimeDomain.get_interactive_elements` are sent
+to the LLM as part of the planner context. Without
+sanitization, sensitive values (credit-card numbers, passwords,
+session tokens, PII) leak into the prompt and from there into
+logs, traces, and the model provider's input.
+
+Sanitization is on by default. The policy has two layers:
+
+  1. SENSITIVE values are ALWAYS redacted, regardless of mode.
+     This covers:
+     * `<input type="password">`
+     * `autocomplete=cc-number|csc|exp|current-password|new-password|one-time-code`
+     * Field name/id/placeholder/ariaLabel containing any of:
+       `password`, `passwd`, `senha`, `ssn`, `cpf`, `cnpj`,
+       `secret`, `token`, `api_key`, `apikey`.
+     Redaction uses the literal sentinel `[REDACTED]`.
+  2. NON-SENSITIVE values are kept but truncated to
+     `READY_AI_DOM_VALUE_MAX` chars (default 200). `0` means
+     no cap. This applies to the `value` and `placeholder`
+     attributes of `<input>`/`<textarea>` in the HTML
+     snapshot, and to the `text`, `value`, `placeholder`,
+     and `ariaLabel` fields of each element in the
+     interactive-elements JSON.
+
+### Tunables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `READY_AI_RAW_DOM` | `false` | Master opt-out for sanitization. When `true`, the cosmetic passes (script/style/noscript removal, comment removal, data-* stripping, value truncation) are skipped. The sensitive layer still runs unless `raw=True` is passed explicitly at the call site. Dev/debug only. |
+| `READY_AI_DOM_VALUE_MAX` | `200` | Per-value cap in characters. `0` means no cap. |
+| `READY_AI_DOM_MAX_CHARS` | `8000` | Total HTML cap in characters (QW#7). Applied AFTER sanitization. |
+
+### What gets stripped from the HTML
+
+* `<script>...</script>` blocks (multiline-safe)
+* `<style>...</style>` blocks
+* `<noscript>...</noscript>` blocks
+* `<!-- ... -->` comments
+* All `data-*` attributes EXCEPT `data-testid` and `data-cy`
+  (preserved because the LLM uses them to build selectors)
+
+### Opting out (debug only)
+
+If you need to inspect the raw DOM for a specific session,
+set `READY_AI_RAW_DOM=true`. Note the security implications
+and the fact that the LLM prompt size will balloon — Linear
+and Notion pages routinely ship over 100 KB of HTML.
+
+### Observability
+
+* `cdp.sanitize.scripts_removed{source=dom|ax|interactive}` — counter
+* `cdp.sanitize.styles_removed{source=...}` — counter
+* `cdp.sanitize.noscripts_removed{source=...}` — counter
+* `cdp.sanitize.comments_removed{source=...}` — counter
+* `cdp.sanitize.data_attrs_removed{source=...}` — counter
+* `cdp.sanitize.values_truncated{source=...}` — counter
+* `cdp.sanitize.values_redacted{source=...}` — counter
+* `cdp.sanitize.interactive.<field>_truncated|redacted` — counter
+
+A spike in `values_redacted` is a healthy signal: the
+sanitizer is catching something. A spike in `values_truncated`
+without a corresponding `redacted` is a hint that a field is
+pushing a lot of non-sensitive text into the prompt and
+might deserve a higher cap for that site.
+
+### Compliance context
+
+The sanitization rules are designed to cover the most
+common regulatory patterns:
+
+  * **LGPD** (Brazil): credit-card numbers, SSN/CNPJ/CPF
+    equivalents, password fields, session tokens.
+  * **GDPR** (EU): personal data minimisation; we never
+    send more than we need.
+  * **PCI-DSS**: card numbers and CSCs are redacted via
+    the `autocomplete` hint check, which is the standard
+    compliance marker for primary account numbers (PANs).
+
+If your domain has additional sensitive patterns (e.g.
+Brazilian "PIX key" hints, government ID formats), add them
+to `is_sensitive_field()` in `src/cdp/sanitize.py` and ship
+the change as a new test in `tests/test_cdp_sanitize.py`.

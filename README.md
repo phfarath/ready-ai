@@ -520,6 +520,23 @@ if session.is_disconnected:
     continue
 ```
 
+## LGPD-safe DOM snapshots (P1-2)
+
+The HTML and interactive-element snapshots are sanitized
+by default before being served to the LLM. Sensitive values
+(passwords, credit-card numbers, PII keywords, autocomplete
+hints like `cc-number`) are always redacted. Non-sensitive
+long values are truncated.
+
+To opt out for a debug session only:
+
+```bash
+export READY_AI_RAW_DOM=true
+```
+
+Tunables and the compliance context are documented in
+[docs/CI-CD.md](docs/CI-CD.md#dom-payload-sanitization-p1-2).
+
 ## Current Limitations
 
 High-priority gaps today:
