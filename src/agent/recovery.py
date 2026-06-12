@@ -5,7 +5,6 @@ Module-level async functions following the same pattern as planner.py and critic
 All functions receive explicit dependencies as parameters for testability.
 """
 
-import hashlib
 import json
 import logging
 import re
@@ -22,54 +21,15 @@ from ..llm.prompts import (
 )
 from ..observability import get_metrics, log_event
 from . import planner, executor
+from .dom_utils import dom_fingerprint
+
+__all__ = [
+    "dom_fingerprint",
+    "is_spa_drift",
+    "parse_recovery_decision",
+]
 
 logger = logging.getLogger(__name__)
-
-
-async def dom_fingerprint(runtime: RuntimeDomain) -> str:
-    """Compute a fast hash for SPA-relevant interactive DOM state."""
-    js = """
-        (() => {
-            const selectors = [
-                'button', 'input', 'select', 'textarea',
-                '[role="tab"]', '[role="menuitem"]',
-                '[aria-expanded]', '[aria-selected]', '[data-state]'
-            ].join(',');
-
-            const normalize = (value) => (value || '')
-                .replace(/\\s+/g, ' ')
-                .trim()
-                .slice(0, 50);
-
-            const entries = Array.from(document.querySelectorAll(selectors))
-                .filter(el => {
-                    const rect = el.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0;
-                })
-                .map(el => {
-                    const text = normalize(el.innerText || el.textContent || el.value);
-                    const state = [
-                        el.tagName.toLowerCase(),
-                        el.getAttribute('role') || '',
-                        text,
-                        el.getAttribute('aria-expanded') || '',
-                        el.getAttribute('aria-selected') || '',
-                        el.getAttribute('data-state') || '',
-                        el.hasAttribute('disabled') ? 'disabled' : 'enabled',
-                    ];
-                    return state.join('|');
-                });
-
-            const uniqueSorted = Array.from(new Set(entries)).sort();
-            return uniqueSorted.slice(0, 250).join('\\n');
-        })()
-    """
-    try:
-        payload = await runtime.evaluate(js)
-        payload_str = str(payload) if payload is not None else ""
-    except Exception:
-        payload_str = ""
-    return hashlib.md5(payload_str.encode("utf-8")).hexdigest()
 
 
 def is_spa_drift(

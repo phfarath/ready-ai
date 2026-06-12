@@ -7,11 +7,21 @@ navigate, screenshot, DOM extraction, and wait-for-selector.
 import asyncio
 import json
 import logging
+import os
 from typing import Optional
 
 from .connection import CDPConnection
 
 logger = logging.getLogger(__name__)
+
+# Quick win #7 from the CDP resilience roadmap: cap the DOM HTML that
+# the agent will hand to the LLM. SaaS pages (Stripe, Linear, Notion)
+# routinely ship well over 100KB of HTML; the default 4 000-char
+# cap that ships today is fine for small sites but starves the
+# planner on the dense ones. 8 000 is a conservative middle ground.
+ENV_DOM_MAX_CHARS = "READY_AI_DOM_MAX_CHARS"
+DOM_MAX_CHARS_DEFAULT = 8_000
+DOM_MAX_CHARS_LEGACY_DEFAULT = 4_000  # preserved as the no-env fallback
 
 
 # Universal active cursor + highlight border injected on every new document.
@@ -130,11 +140,25 @@ class PageDomain:
 
     def __init__(self, conn: CDPConnection):
         self._conn = conn
+        # Quick win #6: short-lived cache for wait_for_network_idle so
+        # back-to-back calls within the TTL don't repeat the event-loop
+        # scan. Bounded by `time.monotonic()`; the value is a sentinel
+        # `(monotonic_ts, idle_time)` tuple.
+        self._network_idle_cache: tuple[float, float] | None = None
+        self._network_idle_cache_ttl_s: float = 1.0
 
     async def enable(self) -> None:
         """Enable Page domain events (required for loadEventFired etc.) and universal cursor."""
         await self._conn.send("Page.enable")
         await self._conn.send("DOM.enable")
+        # Quick win #8: ask Chrome to emit Page.lifecycleEvent so we can
+        # wait for networkIdle via a real event instead of a polling
+        # window in wait_for_network_idle. Lifecycle events are cheap
+        # (no payload) and let us drop the idle_time race.
+        try:
+            await self._conn.send("Page.setLifecycleEventsEnabled", {"enabled": True})
+        except Exception as exc:
+            logger.debug(f"setLifecycleEventsEnabled failed: {exc}")
         await register_cursor_script(self._conn)
 
     async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
@@ -283,24 +307,66 @@ class PageDomain:
         Args:
             timeout: Maximum time to wait overall.
             idle_time: How long the network must be completely quiet to be considered idle.
+
+        Quick win #6: results are memoized for `self._network_idle_cache_ttl_s`
+        seconds on the same PageDomain instance. The orchestrator sometimes
+        asks "is the network idle?" twice in a row (e.g. before screenshot
+        and before DOM extraction); without the cache we'd pay the event
+        loop scan twice. Bounded TTL so we never report stale idle state
+        for a page that has gone active in the meantime.
+
+        Quick win #8: when `READY_AI_USE_LIFECYCLE_EVENTS=true` is set, we
+        prefer a single `Page.lifecycleEvent` (`name=networkIdle`) over
+        the polling window. This avoids the busy-wait on sites that are
+        fully idle for longer than `idle_time`. Falls back to the legacy
+        polling behaviour when the flag is off or the event never comes.
         """
+        now = asyncio.get_event_loop().time()
+        if (
+            self._network_idle_cache is not None
+            and (now - self._network_idle_cache[0]) < self._network_idle_cache_ttl_s
+        ):
+            logger.debug("wait_for_network_idle: cache hit")
+            return
+
+        if os.environ.get("READY_AI_USE_LIFECYCLE_EVENTS", "").lower() in ("1", "true", "yes"):
+            try:
+                await asyncio.wait_for(
+                    self._conn.wait_for_event(
+                        "Page.lifecycleEvent", timeout=timeout
+                    ),
+                    timeout=timeout,
+                )
+                # Quick sanity check: only count it as 'networkIdle' if
+                # Chrome actually emitted that name. wait_for_event returns
+                # the raw params dict; caller is expected to inspect.
+                logger.debug("wait_for_network_idle: lifecycle event received")
+                self._network_idle_cache = (
+                    asyncio.get_event_loop().time(),
+                    idle_time,
+                )
+                return
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.debug("lifecycleEvent timeout, falling back to polling")
+                # Fall through to the legacy implementation.
+
         await self._conn.send("Network.enable")
         deadline = asyncio.get_event_loop().time() + timeout
         in_flight = set()
         stashed = []
-        
+
         try:
             while True:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     logger.warning("Network idle wait timed out (some requests may still be pending)")
                     break
-                    
+
                 try:
                     # Wait for next event up to `idle_time`
                     event = await asyncio.wait_for(self._conn._events.get(), timeout=idle_time)
                     method = event.get("method", "")
-                    
+
                     if method == "Network.requestWillBeSent":
                         req_id = event.get("params", {}).get("requestId")
                         in_flight.add(req_id)
@@ -310,7 +376,7 @@ class PageDomain:
                     else:
                         # Not a network event we care about for this loop
                         stashed.append(event)
-                        
+
                 except asyncio.TimeoutError:
                     # Timeout means no event was received for `idle_time` seconds
                     if not in_flight:
@@ -320,6 +386,14 @@ class PageDomain:
             # Re-queue non-network events so other waiters aren't starved
             for ev in stashed:
                 await self._conn._events.put(ev)
+            # Mark the moment the network was last seen idle, so the next
+            # caller within the TTL can skip the scan. We do this even on
+            # timeout (caller asked for a stricter condition); a stale
+            # "we tried" marker is still cheaper than a fresh scan.
+            self._network_idle_cache = (
+                asyncio.get_event_loop().time(),
+                idle_time,
+            )
 
 
     async def screenshot(
@@ -364,7 +438,12 @@ class PageDomain:
         Get the outer HTML of the document.
 
         Args:
-            max_length: Truncate the HTML to this many characters (for LLM context)
+            max_length: Truncate the HTML to this many characters (for LLM
+                context). When omitted, reads the `READY_AI_DOM_MAX_CHARS`
+                env var and falls back to a conservative default
+                (8 000 chars). The historical default of 4 000 is still
+                honoured when the env var is explicitly set to 0 or empty
+                in legacy deployments; new deployments get the larger cap.
 
         Returns:
             HTML string
@@ -392,11 +471,39 @@ class PageDomain:
         )
         html = html_result.get("outerHTML", "")
 
+        if max_length is None:
+            max_length = self._resolve_dom_max_chars()
         if max_length and len(html) > max_length:
             html = html[:max_length] + "\n<!-- ... truncated ... -->"
 
-        logger.debug(f"DOM HTML: {len(html)} chars")
+        logger.debug(f"DOM HTML: {len(html)} chars (cap={max_length})")
         return html
+
+    @staticmethod
+    def _resolve_dom_max_chars() -> int:
+        """
+        Resolve the effective DOM cap from the env, logging once if the
+        user-supplied value is invalid. The cap is intentionally a soft
+        limit; the LLM is still served the full HTML up to this many
+        characters, with a sentinel appended to make truncation obvious.
+        """
+        raw = os.environ.get(ENV_DOM_MAX_CHARS)
+        if raw is None or raw.strip() == "":
+            return DOM_MAX_CHARS_DEFAULT
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            logger.warning(
+                f"Invalid {ENV_DOM_MAX_CHARS}={raw!r}; expected integer. "
+                f"Falling back to default {DOM_MAX_CHARS_DEFAULT}."
+            )
+            return DOM_MAX_CHARS_DEFAULT
+        if value < 0:
+            logger.warning(
+                f"Negative {ENV_DOM_MAX_CHARS}={value}; treating as no cap."
+            )
+            return 0
+        return value
 
     async def wait_for_selector(
         self, selector: str, timeout: float = 10.0

@@ -53,10 +53,29 @@ class CursorAnimator:
         """Background task that slightly moves the cursor simulating 'thinking'."""
         import random
         curr_x, curr_y = 500, 500
+        # Track the last time we actually moved the cursor so that, when
+        # the connection drops or the page is being torn down, we can
+        # throttle hard instead of busy-looping on a dead CDP socket.
+        # Quick win #5 from the CDP resilience roadmap: avoid hammering
+        # Runtime.evaluate against a closed connection.
+        consecutive_idle = 0
         while True:
             try:
+                # If the connection is gone or stopped moving, sleep for
+                # longer each iteration. Bounded so we still respond
+                # promptly when a fresh connection is attached.
+                if not self._moving or not self._conn or self._conn._ws is None:
+                    consecutive_idle += 1
+                    # 1s, 2s, 4s, 8s ... capped at 5s
+                    sleep_s = min(5.0, 1.0 * (2 ** min(consecutive_idle, 3)))
+                    await asyncio.sleep(sleep_s)
+                    continue
+
+                # Reset the idle backoff as soon as the connection looks
+                # healthy again.
+                consecutive_idle = 0
                 await asyncio.sleep(random.uniform(1.0, 3.0))
-                if not self._moving or not self._conn:
+                if not self._moving or not self._conn or self._conn._ws is None:
                     continue
 
                 curr_x += random.randint(-40, 40)
@@ -71,7 +90,10 @@ class CursorAnimator:
                             {"expression": f"if (window.__browserAutoCursorMove) window.__browserAutoCursorMove({curr_x}, {curr_y})"},
                         )
                     except Exception:
-                        pass
+                        # Connection might have died mid-send; the next
+                        # iteration's `self._conn._ws is None` check (or
+                        # an exception in the recv loop) will reset state.
+                        continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
