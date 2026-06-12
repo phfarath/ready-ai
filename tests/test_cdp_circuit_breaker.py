@@ -8,7 +8,7 @@ is_disconnected / wait_disconnected to the orchestrator.
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
