@@ -15,7 +15,14 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from ..observability import Span, get_metrics
-from .connection_state import AUTORECONNECT_ENABLED, ConnectionState
+from .connection_state import (
+    AUTORECONNECT_ENABLED,
+    RECONNECT_BASE_S,
+    RECONNECT_CAP_S,
+    RECONNECT_MAX_ATTEMPTS,
+    REATTACH_AUTO_WAIT_S,
+    ConnectionState,
+)
 from .exceptions import WebSocketDisconnected
 
 logger = logging.getLogger(__name__)
@@ -193,20 +200,179 @@ class CDPConnection:
         self._pending.clear()
 
     async def _reconnect(self) -> None:
-        """Background reconnect loop. Stub — full implementation in Commit 3.
+        """Background reconnect loop with exponential backoff and jitter.
 
-        Lives here as a no-op so the schedule path in
-        `_handle_disconnect` has something to await. Commit 3 fills
-        in the backoff, the connect/reattach sequence, and the
-        state transition back to HEALTHY.
+        Runs as a task spawned by `_handle_disconnect`. We attempt up
+        to `RECONNECT_MAX_ATTEMPTS` reconnects with delays of
+        `min(RECONNECT_CAP_S, RECONNECT_BASE_S * 2**attempt) + jitter`.
+
+        On success we re-establish the WS, re-attach to the original
+        target (auto-attach with 3s timeout, manual attach as a
+        fallback), re-enable Page/DOM/Runtime, and re-inject the
+        cursor overlay. The FSM is then moved back to HEALTHY and
+        `_abort_wait` is cleared so any new `wait_for_event` calls
+        can run normally.
+
+        On exhaustion (all attempts failed) the FSM is moved to
+        DOWN, the disconnect event is signalled, and the circuit
+        breaker machinery in Commit 4 will see the consecutive
+        failures and decide whether to keep the circuit open.
         """
-        # If we got here without a cached URL, give up immediately.
+        import random
+
         if not self._ws_url:
             async with self._state_lock:
                 self._state = ConnectionState.DOWN
             self._disconnect_event.set()
+            logger.error("reconnect aborted: no cached ws_url")
             return
-        # The full reconnect implementation is added in Commit 3.
+
+        metrics = get_metrics()
+        last_error: Optional[Exception] = None
+        for attempt in range(RECONNECT_MAX_ATTEMPTS):
+            # Stop early if the orchestrator tore us down while we
+            # were sleeping in the backoff.
+            if self._state == ConnectionState.CLOSED:
+                logger.info("reconnect aborted: connection was closed")
+                return
+
+            delay = min(RECONNECT_CAP_S, RECONNECT_BASE_S * (2 ** attempt))
+            delay += random.uniform(0, delay * 0.1)  # ±10% jitter
+            logger.debug(
+                f"reconnect attempt {attempt + 1}/{RECONNECT_MAX_ATTEMPTS} "
+                f"after {delay:.2f}s"
+            )
+            await asyncio.sleep(delay)
+
+            try:
+                new_ws = await websockets.connect(
+                    self._ws_url,
+                    max_size=50 * 1024 * 1024,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    close_timeout=5,
+                )
+                # Replace the socket BEFORE re-attaching so subsequent
+                # sends (the reattach path uses them) hit the new
+                # connection.
+                self._ws = new_ws
+                self._recv_task = asyncio.create_task(self._recv_loop())
+                await self._post_reconnect_reattach()
+
+                async with self._state_lock:
+                    self._state = ConnectionState.HEALTHY
+                    self._consecutive_failures = 0
+                    self._first_failure_ts = None
+                # Clear the abort flag so future wait_for_event calls
+                # can run normally.
+                self._abort_wait.clear()
+                if metrics is not None:
+                    metrics.increment("cdp.reconnect.attempts", outcome="success")
+                logger.info(f"CDP reconnected after {attempt + 1} attempt(s)")
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning(f"reconnect attempt {attempt + 1} failed: {exc}")
+                if metrics is not None:
+                    metrics.increment("cdp.reconnect.attempts", outcome="failure")
+                continue
+
+        # Exhausted.
+        async with self._state_lock:
+            self._state = ConnectionState.DOWN
+        self._disconnect_event.set()
+        if metrics is not None:
+            metrics.increment("cdp.reconnect.exhausted")
+        logger.error(
+            f"CDP reconnect failed after {RECONNECT_MAX_ATTEMPTS} attempts; "
+            f"circuit OPEN. Last error: {last_error}"
+        )
+
+    async def _post_reconnect_reattach(self) -> None:
+        """Re-attach to the page target after a successful reconnect.
+
+        Two-step strategy (híbrido from the plan):
+          1. Wait up to REATTACH_AUTO_WAIT_S for Chrome to emit
+             `Target.attachedToTarget` via the auto-attach machinery
+             we re-enable in step 3. The recv loop picks this up and
+             updates `self._session_id`.
+          2. If no auto-attach arrives in time, fall back to a
+             manual `Target.attachToTarget` with the cached
+             `_target_id`.
+          3. In all cases, re-enable Page/DOM/Runtime and re-inject
+             the cursor script on the new session. Without this,
+             Page.loadEventFired never fires and Runtime.evaluate
+             can hang against an unprepared context.
+        """
+        # Step 1: clear session_id; the recv loop will set it if
+        # Chrome sends Target.attachedToTarget in the next few
+        # seconds.
+        self._session_id = None
+        deadline = asyncio.get_event_loop().time() + REATTACH_AUTO_WAIT_S
+        while asyncio.get_event_loop().time() < deadline and not self._session_id:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                evt = await asyncio.wait_for(
+                    self._events.get(), timeout=min(remaining, 0.2)
+                )
+                # Re-queue non-attach events so they can be consumed
+                # by the next waiter.
+                if evt.get("method") != "Target.attachedToTarget":
+                    await self._events.put(evt)
+                    # Avoid a tight loop yielding back-to-back.
+                    await asyncio.sleep(0)
+            except asyncio.TimeoutError:
+                break
+
+        # Step 2: fallback manual attach using the cached target_id.
+        if not self._session_id and self._target_id:
+            try:
+                result = await self.send(
+                    "Target.attachToTarget",
+                    {"targetId": self._target_id, "flatten": True},
+                    timeout=5.0,
+                )
+                self._session_id = result.get("sessionId")
+                # Re-enable auto-attach for future cross-origin swaps.
+                await self.send(
+                    "Target.setAutoAttach",
+                    {
+                        "autoAttach": True,
+                        "waitForDebuggerOnStart": False,
+                        "flatten": True,
+                    },
+                    timeout=5.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"re-attach fallback failed: {exc}")
+                raise
+
+        # Step 3: re-enable the essential domains and the cursor.
+        if self._session_id:
+            for method in ("Page.enable", "DOM.enable", "Runtime.enable"):
+                try:
+                    await self.send(
+                        method, session_id=self._session_id, timeout=5.0
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"re-enable {method} failed: {exc}")
+            # Re-register the cursor overlay. Imported lazily to avoid
+            # a circular import between page <-> connection.
+            try:
+                from .page import register_cursor_script
+
+                await register_cursor_script(self, session_id=self._session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"cursor re-injection failed: {exc}")
+        else:
+            # We reconnected but could not attach to a page target.
+            # Raise so the reconnect loop counts this attempt as a
+            # failure and tries again.
+            raise RuntimeError("re-attach did not yield a session_id")
 
     async def _post_attach_enable(self, session_id: str) -> None:
         """Re-enable Page/DOM/Runtime and re-inject the cursor script on a
