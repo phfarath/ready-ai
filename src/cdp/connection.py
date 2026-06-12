@@ -17,6 +17,8 @@ from websockets.asyncio.client import ClientConnection
 from ..observability import Span, get_metrics
 from .connection_state import (
     AUTORECONNECT_ENABLED,
+    CB_THRESHOLD,
+    CB_WINDOW_S,
     RECONNECT_BASE_S,
     RECONNECT_CAP_S,
     RECONNECT_MAX_ATTEMPTS,
@@ -134,19 +136,26 @@ class CDPConnection:
         Three responsibilities, in order:
           1. Mark the FSM (HEALTHY -> DEGRADED, or -> CLOSED if
              intentional). Locked so concurrent `send` calls see a
-             consistent state.
+             consistent state. Also bump the consecutive-failure
+             counter (when unintentional) and, if the sliding
+             window has accumulated >= CB_THRESHOLD failures,
+             open the circuit (DEGRADED -> DOWN).
           2. Drain in-flight `send`/`wait_for_event` waiters with a
              WebSocketDisconnected exception so they don't sit on a
              dead future for 30s.
           3. Schedule a background reconnect task — but only when
              auto-reconnect is enabled AND the close was not
-             intentional. The reconnect task itself is wired in
-             Commit 3; until then this is a no-op.
+             intentional AND the circuit is still closed. The
+             reconnect task itself is wired in Commit 3; once
+             RECONNECT_MAX_ATTEMPTS is exhausted there, the FSM
+             also moves to DOWN.
 
         This method is safe to call multiple times: subsequent
-        invocations see `_state in (DEGRADED, DOWN, CLOSED)` and
-        bail out after step 1.
+        invocations accumulate into the failure counter even when
+        the state is already DEGRADED (reconnects can fail repeatedly
+        and the counter must still climb).
         """
+        circuit_opened_here = False
         async with self._state_lock:
             if intentional:
                 # Orchestrator-driven shutdown. We do not reconnect.
@@ -154,33 +163,62 @@ class CDPConnection:
                     self._state = ConnectionState.CLOSED
                     logger.info("CDP connection closed intentionally")
             else:
-                # Genuine drop. Move HEALTHY -> DEGRADED so future
-                # `send` calls fail-fast; reconnect (if enabled) will
-                # either return us to HEALTHY or push us to DOWN.
+                # Genuine drop. Move HEALTHY -> DEGRADED on the first
+                # failure; stay in DEGRADED on subsequent failures
+                # (the counter still climbs so the circuit can open).
                 if self._state == ConnectionState.HEALTHY:
                     self._state = ConnectionState.DEGRADED
-                    self._consecutive_failures += 1
-                    if self._first_failure_ts is None:
-                        self._first_failure_ts = time.monotonic()
+                # Sliding-window counter. If the window from the
+                # first failure has elapsed, we reset the counter
+                # so a single old failure does not poison today's
+                # budget.
+                now = time.monotonic()
+                if (
+                    self._first_failure_ts is not None
+                    and (now - self._first_failure_ts) > CB_WINDOW_S
+                ):
+                    self._consecutive_failures = 0
+                    self._first_failure_ts = None
+                if self._first_failure_ts is None:
+                    self._first_failure_ts = now
+                self._consecutive_failures += 1
+                # Open the circuit if the budget is spent.
+                if (
+                    self._state != ConnectionState.DOWN
+                    and self._consecutive_failures >= CB_THRESHOLD
+                ):
+                    self._state = ConnectionState.DOWN
+                    circuit_opened_here = True
+                    logger.error(
+                        f"CDP circuit breaker OPEN after "
+                        f"{self._consecutive_failures} consecutive "
+                        f"failures in {CB_WINDOW_S}s window"
+                    )
 
         # Drain pending commands so callers don't sit on dead futures.
         self._drain_pending()
         # Signal any in-flight wait_for_event to bail out.
         self._abort_wait.set()
 
-        # Observability: one counter per disconnect (intentional or not).
+        # Observability.
         metrics = get_metrics()
         if metrics is not None:
             metrics.increment("cdp.disconnects", intentional=intentional)
+            if circuit_opened_here:
+                metrics.increment("cdp.circuit.opens")
 
         # Reconnect scheduling is wired in Commit 3. The flag check
         # lives here so that as soon as that commit lands, the
         # behaviour activates without further changes to this method.
+        # We do NOT schedule a reconnect when the circuit just opened
+        # — the user has decided to bail out, so we let the
+        # orchestrator decide whether to call BrowserSession.recover().
         if (
             not intentional
             and AUTORECONNECT_ENABLED
             and self._ws_url is not None
             and self._reconnect_task is None
+            and not circuit_opened_here
         ):
             self._reconnect_task = asyncio.create_task(self._reconnect())
             logger.debug("CDP reconnect task scheduled")
@@ -602,6 +640,40 @@ class CDPConnection:
     @property
     def session_id(self) -> Optional[str]:
         return self._session_id
+
+    @property
+    def is_disconnected(self) -> bool:
+        """True when the FSM is in a terminal-ish state.
+
+        DOWN means the circuit breaker is open (consecutive failures
+        exhausted). CLOSED means an explicit close() ran. Both are
+        recoverable, but neither will accept new `send` calls.
+        """
+        return self._state in (ConnectionState.DOWN, ConnectionState.CLOSED)
+
+    @property
+    def state(self) -> ConnectionState:
+        """Expose the current FSM state (mostly for diagnostics)."""
+        return self._state
+
+    async def wait_disconnected(self, timeout: Optional[float] = None) -> None:
+        """Block until the circuit opens, or the timeout elapses.
+
+        Returns immediately if the circuit is already open. Useful
+        for callers that want to give the auto-reconnect a chance
+        to finish before falling back to BrowserSession.recover().
+        """
+        if self.is_disconnected:
+            return
+        try:
+            if timeout is None:
+                await self._disconnect_event.wait()
+            else:
+                await asyncio.wait_for(
+                    self._disconnect_event.wait(), timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            return
 
     async def close(self) -> None:
         """Close the WebSocket connection and cancel background tasks.
