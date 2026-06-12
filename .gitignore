@@ -10,5 +10,6 @@ dist/
 build/
 .pytest_cache/
 .venv/
+.factory/
 tmp/PLAN_*.md
 ROADMAP-IMPROVEMENTS.md

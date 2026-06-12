@@ -10,7 +10,13 @@ import logging
 import os
 from typing import Optional
 
+from ..observability import get_metrics
 from .connection import CDPConnection
+from .sanitize import (
+    is_raw_mode,
+    resolve_value_max,
+    sanitize_html,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +477,18 @@ class PageDomain:
         )
         html = html_result.get("outerHTML", "")
 
+        # P1-2: sanitize the HTML before it goes to the LLM. Sensitive
+        # values (passwords, credit-card numbers, PII) are always
+        # redacted; non-sensitive long values are truncated. The
+        # READY_AI_RAW_DOM env opt-out is honoured for debug/dev.
+        sanitized = sanitize_html(
+            html,
+            raw=is_raw_mode(),
+            value_max=resolve_value_max(),
+        )
+        html = sanitized.html
+        self._record_sanitize_metrics(sanitized.counters, source="dom")
+
         if max_length is None:
             max_length = self._resolve_dom_max_chars()
         if max_length and len(html) > max_length:
@@ -478,6 +496,26 @@ class PageDomain:
 
         logger.debug(f"DOM HTML: {len(html)} chars (cap={max_length})")
         return html
+
+    @staticmethod
+    def _record_sanitize_metrics(counters, *, source: str) -> None:
+        """Emit per-pass counters from a sanitize_html() pass.
+
+        Each counter is a zero-or-positive integer keyed by `source=`
+        (dom, ax, interactive) so the metrics layer can split them
+        later in dashboards.
+        """
+        metrics = get_metrics()
+        if metrics is None:
+            return
+        for name, value in counters.to_dict().items():
+            if value <= 0:
+                continue
+            metrics.increment(
+                f"cdp.sanitize.{name}",
+                value=value,
+                source=source,
+            )
 
     @staticmethod
     def _resolve_dom_max_chars() -> int:

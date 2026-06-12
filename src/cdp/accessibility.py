@@ -14,10 +14,10 @@ bounded (max_nodes default 200) to keep prompt costs predictable.
 """
 
 import logging
-import os
 from typing import Any, Optional
 
 from .connection import CDPConnection
+from .sanitize import is_raw_mode as _is_raw_mode
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +68,6 @@ _SENSITIVE_AUTOCOMPLETE = frozenset({
 })
 
 _VALUE_REDACTION_SENTINEL = "[REDACTED]"
-
-
-def _is_raw_mode() -> bool:
-    """Dual-mode PII policy: default redacted, opt-in raw for dev only."""
-    return os.environ.get("READY_AI_RAW_DOM", "").lower() in ("1", "true", "yes")
 
 
 def _format_node(node: dict[str, Any], raw: bool) -> Optional[str]:
