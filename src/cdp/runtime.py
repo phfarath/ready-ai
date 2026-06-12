@@ -3,13 +3,28 @@ CDP Runtime Domain — JavaScript execution helpers.
 
 V2: Enhanced get_interactive_elements with aria-label, role, data-testid
 for robust LLM selector generation.
+
+P1-2: get_interactive_elements now sanitizes its output by default. The
+sanitization policy mirrors sanitize_html(): sensitive values (passwords,
+credit-card numbers, autocomplete hints, PII keywords) are always
+redacted; long non-sensitive values are truncated to
+READY_AI_DOM_VALUE_MAX chars (default 200). Raw mode
+(READY_AI_RAW_DOM=true) bypasses the cosmetic passes but NOT the
+sensitive layer — call with raw=True only after you've considered
+the LGPD/PCI/GDPR implications.
 """
 
 import json
 import logging
 from typing import Any, Optional
 
+from ..observability import get_metrics
 from .connection import CDPConnection
+from .sanitize import (
+    is_raw_mode,
+    resolve_value_max,
+    sanitize_interactive_element,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +169,23 @@ class RuntimeDomain:
         result = await self.evaluate(js)
         return result if isinstance(result, dict) else {}
 
-    async def get_interactive_elements(self) -> str:
+    async def get_interactive_elements(self, raw: Optional[bool] = None) -> str:
         """
         Get a detailed summary of interactive elements on the page.
         Exposes aria-label, role, data-testid, data-cy for robust selector generation.
 
+        Args:
+            raw: When True, skip ALL sanitization of the per-element
+                text/value/placeholder/ariaLabel fields. Sensitive
+                redaction still happens. When None (default), the
+                env var READY_AI_RAW_DOM is consulted. P1-2 default
+                behaviour (sanitized) is what the planner should see
+                in production.
+
         Returns:
-            JSON string listing buttons, links, inputs, selects with stable selector info
+            JSON string listing buttons, links, inputs, selects with
+            stable selector info. Sensitive values are redacted;
+            long non-sensitive values are truncated.
         """
         js = """
         (() => {
@@ -252,7 +277,53 @@ class RuntimeDomain:
         })()
         """
         result = await self.evaluate(js)
-        return str(result) if result else "[]"
+        return self._post_sanitize_interactive(
+            str(result) if result else "[]",
+            raw=raw,
+        )
+
+    @staticmethod
+    def _post_sanitize_interactive(
+        payload: str, *, raw: Optional[bool] = None
+    ) -> str:
+        """Sanitize a get_interactive_elements payload before returning.
+
+        Decodes the JSON array, runs each element dict through
+        sanitize_interactive_element(), strips the per-element
+        ``_redactions`` key, and re-serializes. On any decoding
+        error we return the input verbatim (the caller logged the
+        failure in this case is a degraded but visible mode).
+        """
+        if raw is None:
+            raw = is_raw_mode()
+
+        try:
+            elements = json.loads(payload) if payload else []
+        except (json.JSONDecodeError, TypeError):
+            return payload or "[]"
+        if not isinstance(elements, list):
+            return payload or "[]"
+
+        value_max = resolve_value_max()
+        metrics = get_metrics()
+        out: list[dict] = []
+        for el in elements:
+            if not isinstance(el, dict):
+                out.append(el)
+                continue
+            sanitized = sanitize_interactive_element(
+                el, raw=raw, value_max=value_max
+            )
+            redactions = sanitized.pop("_redactions", {})
+            if metrics is not None and redactions:
+                for k, v in redactions.items():
+                    metrics.increment(
+                        f"cdp.sanitize.interactive.{k}",
+                        value=v,
+                        source="interactive",
+                    )
+            out.append(sanitized)
+        return json.dumps(out)
 
     async def find_element_by_text(self, text: str, tag_filter: str = "*") -> Optional[str]:
         """
