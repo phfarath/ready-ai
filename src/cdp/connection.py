@@ -8,10 +8,13 @@ Auto-incrementing message IDs, session-aware messaging, and event listening.
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+
+from ..observability import Span, get_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -136,19 +139,48 @@ class CDPConnection:
         self._pending[msg_id] = future
 
         logger.debug(f"CDP send [{msg_id}]: {method}")
-        await self._ws.send(json.dumps(message))
 
-        try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            self._pending.pop(msg_id, None)
-            raise TimeoutError(f"CDP command {method} (id={msg_id}) timed out after {timeout}s")
+        # Observability: span over the full RTT so the latency histogram
+        # captures both the network send and the response wait. We use
+        # the synchronous Span context manager and time it with
+        # time.monotonic() for the histogram — get_metrics() can return
+        # None when no RunContext is active, so we degrade gracefully.
+        start = time.monotonic()
+        status = "ok"
+        metrics = get_metrics()
+        with Span(
+            f"cdp.{method}",
+            attributes={"method": method, "msg_id": msg_id},
+        ):
+            try:
+                await self._ws.send(json.dumps(message))
+                try:
+                    result = await asyncio.wait_for(future, timeout=timeout)
+                except asyncio.TimeoutError:
+                    status = "timeout"
+                    self._pending.pop(msg_id, None)
+                    raise TimeoutError(
+                        f"CDP command {method} (id={msg_id}) timed out after {timeout}s"
+                    )
 
-        if "error" in result:
-            err = result["error"]
-            raise RuntimeError(f"CDP error [{err.get('code')}]: {err.get('message')}")
-
-        return result.get("result", {})
+                if "error" in result:
+                    err = result["error"]
+                    status = "error"
+                    raise RuntimeError(
+                        f"CDP error [{err.get('code')}]: {err.get('message')}"
+                    )
+                return result.get("result", {})
+            except Exception:
+                if status == "ok":
+                    status = "error"
+                raise
+            finally:
+                elapsed_ms = (time.monotonic() - start) * 1000.0
+                if metrics is not None:
+                    metrics.record("cdp.latency_ms", elapsed_ms)
+                    metrics.increment(
+                        "cdp.commands", method=method, status=status
+                    )
 
     async def wait_for_event(
         self, event_name: str, timeout: float = 30.0

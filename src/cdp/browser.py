@@ -18,6 +18,13 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+# Env vars read by launch_chrome. We intentionally only allow these to be
+# opted into — Docker rootful and similar environments need --no-sandbox,
+# and screenshots are easier to compare across runs at a fixed viewport.
+ENV_NO_SANDBOX = "CHROME_NO_SANDBOX"
+ENV_WINDOW_SIZE = "CHROME_WINDOW_SIZE"
+ENV_CHROME_ARGS = "CHROME_ARGS"
+
 # Chrome binary paths by platform
 _CHROME_PATHS = {
     "Darwin": [
@@ -69,10 +76,28 @@ def _find_chrome_binary() -> str:
     )
 
 
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_window_size(value: str) -> Optional[tuple[int, int]]:
+    """Parse 'WxH' or 'W,H' into (width, height). Returns None on bad input."""
+    try:
+        cleaned = value.replace(",", "x").lower()
+        w, h = cleaned.split("x")
+        return int(w), int(h)
+    except (ValueError, AttributeError):
+        logger.warning(f"Invalid CHROME_WINDOW_SIZE={value!r}, expected WxH (e.g. 1920x1080)")
+        return None
+
+
 def launch_chrome(
     port: int = 9222,
     headless: bool = False,
     user_data_dir: Optional[str] = None,
+    no_sandbox: Optional[bool] = None,
+    window_size: Optional[tuple[int, int]] = None,
+    extra_args: Optional[list[str]] = None,
 ) -> subprocess.Popen:
     """
     Launch Chrome with remote debugging enabled.
@@ -81,6 +106,12 @@ def launch_chrome(
         port: CDP debugging port
         headless: Run in headless mode
         user_data_dir: Chrome user data directory (uses temp if None)
+        no_sandbox: Add --no-sandbox (required when running as root in
+            Docker). When None (default), reads CHROME_NO_SANDBOX env.
+        window_size: (width, height) passed as --window-size. When None,
+            reads CHROME_WINDOW_SIZE env (format: WxH or W,H).
+        extra_args: Additional CLI flags appended to the command. May
+            also be supplied via CHROME_ARGS (space-separated).
 
     Returns:
         subprocess.Popen handle for the Chrome process
@@ -88,6 +119,13 @@ def launch_chrome(
     chrome_bin = _find_chrome_binary()
     if user_data_dir is None:
         user_data_dir = tempfile.mkdtemp(prefix="ready-ai-chrome-")
+
+    # Resolve opt-in flags from env when not provided explicitly.
+    if no_sandbox is None:
+        no_sandbox = _truthy(os.environ.get(ENV_NO_SANDBOX, ""))
+    if window_size is None:
+        env_size = os.environ.get(ENV_WINDOW_SIZE, "")
+        window_size = _parse_window_size(env_size) if env_size else None
 
     args = [
         chrome_bin,
@@ -103,7 +141,26 @@ def launch_chrome(
     if headless:
         args.append("--headless=new")
 
-    logger.info(f"Launching Chrome: {chrome_bin} on port {port}")
+    if no_sandbox:
+        # Required in Docker rootful and some CI sandboxes. Opt-in
+        # because it weakens Chrome's process isolation; only enable
+        # when the host environment actually requires it.
+        args.append("--no-sandbox")
+        logger.debug("Chrome launched with --no-sandbox (env or explicit)")
+
+    if window_size is not None:
+        width, height = window_size
+        if width > 0 and height > 0:
+            args.append(f"--window-size={width},{height}")
+
+    if extra_args:
+        args.extend(extra_args)
+
+    env_args = os.environ.get(ENV_CHROME_ARGS, "").strip()
+    if env_args:
+        args.extend(env_args.split())
+
+    logger.info(f"Launching Chrome: {chrome_bin} on port {port} (headless={headless})")
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,

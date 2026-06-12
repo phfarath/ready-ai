@@ -10,8 +10,16 @@ import logging
 import uuid
 
 from ..cdp.runtime import RuntimeDomain
+from ..observability import get_metrics
 
 logger = logging.getLogger(__name__)
+
+# Public sentinel prefix returned by dom_fingerprint() when CDP evaluation
+# fails. Two consecutive failed captures will carry different UUIDs, so
+# fingerprint comparison is guaranteed to flag a mismatch and the
+# recovery loop can react (e.g. trigger BrowserSession.recover) instead
+# of silently treating the failure as "DOM unchanged".
+FP_ERROR_PREFIX = "__fp_error__:"
 
 
 _DOM_FINGERPRINT_JS = """
@@ -66,6 +74,12 @@ async def dom_fingerprint(runtime: RuntimeDomain) -> str:
         payload = await runtime.evaluate(_DOM_FINGERPRINT_JS)
         payload_str = str(payload) if payload is not None else ""
     except Exception as exc:
+        # Surface the failure as a metric so production alerts can spot
+        # CDP flakiness, but never swallow it silently into an empty
+        # fingerprint (which used to be the case in the duplicate
+        # implementation in recovery.py and caused false "no drift"
+        # verdicts).
+        get_metrics().increment("fingerprint.errors", source="cdp")
         logger.debug(f"dom_fingerprint evaluation failed: {exc}")
-        return f"__fp_error__:{uuid.uuid4().hex}"
+        return f"{FP_ERROR_PREFIX}{uuid.uuid4().hex}"
     return hashlib.md5(payload_str.encode("utf-8")).hexdigest()
