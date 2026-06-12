@@ -15,6 +15,8 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from ..observability import Span, get_metrics
+from .connection_state import AUTORECONNECT_ENABLED, ConnectionState
+from .exceptions import WebSocketDisconnected
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +32,49 @@ class CDPConnection:
         self._events: asyncio.Queue = asyncio.Queue()
         self._recv_task: Optional[asyncio.Task] = None
 
+        # P0-1 reconnect machinery. Fields are added here so the rest of
+        # the class can rely on them being present (and so tests can
+        # poke at them in isolation). Behaviour is gated by
+        # AUTORECONNECT_ENABLED — when that flag is off, all of these
+        # fields exist but stay at their initial values and the legacy
+        # code path runs unchanged.
+        self._state: ConnectionState = ConnectionState.HEALTHY
+        self._state_lock: asyncio.Lock = asyncio.Lock()
+        self._consecutive_failures: int = 0
+        self._first_failure_ts: Optional[float] = None
+        self._ws_url: Optional[str] = None
+        self._target_id: Optional[str] = None
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._disconnect_event: asyncio.Event = asyncio.Event()
+        # Set by `close()` so the recv loop can distinguish
+        # orchestrator-driven teardown (no reconnect) from a genuine
+        # socket drop (reconnect allowed).
+        self._intentional_close: bool = False
+        # Signalled when an in-flight wait_for_event should bail out
+        # because the socket is gone. The flag is sticky: callers that
+        # arrived after the disconnect will see it set immediately.
+        self._abort_wait: asyncio.Event = asyncio.Event()
+
     async def connect(self, ws_url: str) -> None:
         """Establish WebSocket connection to CDP endpoint."""
         logger.info(f"Connecting to {ws_url}")
-        self._ws = await websockets.connect(ws_url, max_size=50 * 1024 * 1024)
+        # Cache the URL for the reconnect loop in Commit 3.
+        self._ws_url = ws_url
+        # P0-1: enable native ping/heartbeat. The websockets library
+        # sends an unsolicited ping every `ping_interval` seconds and
+        # closes the socket if no pong arrives within `ping_timeout`.
+        # This gives us fast failure detection (≈30s in the worst
+        # case) without us having to maintain our own ping loop.
+        self._ws = await websockets.connect(
+            ws_url,
+            max_size=50 * 1024 * 1024,
+            ping_interval=20,
+            ping_timeout=10,
+            close_timeout=5,
+        )
+        # A fresh connection is healthy by definition.
+        self._state = ConnectionState.HEALTHY
+        self._abort_wait.clear()
         self._recv_task = asyncio.create_task(self._recv_loop())
         logger.info("CDP connection established")
 
@@ -67,7 +108,7 @@ class CDPConnection:
                                 asyncio.create_task(
                                     self._post_attach_enable(new_session)
                                 )
-                                
+
                     # CDP event (e.g., Page.loadEventFired)
                     await self._events.put(msg)
                 else:
@@ -75,8 +116,97 @@ class CDPConnection:
                     logger.debug(f"Unmatched CDP message: {json.dumps(msg)[:200]}")
         except websockets.exceptions.ConnectionClosed:
             logger.warning("CDP WebSocket connection closed")
+            await self._handle_disconnect(intentional=self._intentional_close)
         except Exception as e:
             logger.error(f"CDP recv loop error: {e}")
+            await self._handle_disconnect(intentional=self._intentional_close)
+
+    async def _handle_disconnect(self, intentional: bool) -> None:
+        """Common path for any socket-down condition.
+
+        Three responsibilities, in order:
+          1. Mark the FSM (HEALTHY -> DEGRADED, or -> CLOSED if
+             intentional). Locked so concurrent `send` calls see a
+             consistent state.
+          2. Drain in-flight `send`/`wait_for_event` waiters with a
+             WebSocketDisconnected exception so they don't sit on a
+             dead future for 30s.
+          3. Schedule a background reconnect task — but only when
+             auto-reconnect is enabled AND the close was not
+             intentional. The reconnect task itself is wired in
+             Commit 3; until then this is a no-op.
+
+        This method is safe to call multiple times: subsequent
+        invocations see `_state in (DEGRADED, DOWN, CLOSED)` and
+        bail out after step 1.
+        """
+        async with self._state_lock:
+            if intentional:
+                # Orchestrator-driven shutdown. We do not reconnect.
+                if self._state != ConnectionState.CLOSED:
+                    self._state = ConnectionState.CLOSED
+                    logger.info("CDP connection closed intentionally")
+            else:
+                # Genuine drop. Move HEALTHY -> DEGRADED so future
+                # `send` calls fail-fast; reconnect (if enabled) will
+                # either return us to HEALTHY or push us to DOWN.
+                if self._state == ConnectionState.HEALTHY:
+                    self._state = ConnectionState.DEGRADED
+                    self._consecutive_failures += 1
+                    if self._first_failure_ts is None:
+                        self._first_failure_ts = time.monotonic()
+
+        # Drain pending commands so callers don't sit on dead futures.
+        self._drain_pending()
+        # Signal any in-flight wait_for_event to bail out.
+        self._abort_wait.set()
+
+        # Observability: one counter per disconnect (intentional or not).
+        metrics = get_metrics()
+        if metrics is not None:
+            metrics.increment("cdp.disconnects", intentional=intentional)
+
+        # Reconnect scheduling is wired in Commit 3. The flag check
+        # lives here so that as soon as that commit lands, the
+        # behaviour activates without further changes to this method.
+        if (
+            not intentional
+            and AUTORECONNECT_ENABLED
+            and self._ws_url is not None
+            and self._reconnect_task is None
+        ):
+            self._reconnect_task = asyncio.create_task(self._reconnect())
+            logger.debug("CDP reconnect task scheduled")
+
+    def _drain_pending(self) -> None:
+        """Wake every in-flight `send` with WebSocketDisconnected.
+
+        Called from `_handle_disconnect` so that commands sent just
+        before the socket died don't have to wait for their own
+        30s timeout to learn about the failure.
+        """
+        for fut in list(self._pending.values()):
+            if not fut.done():
+                fut.set_exception(
+                    WebSocketDisconnected("CDP WebSocket closed")
+                )
+        self._pending.clear()
+
+    async def _reconnect(self) -> None:
+        """Background reconnect loop. Stub — full implementation in Commit 3.
+
+        Lives here as a no-op so the schedule path in
+        `_handle_disconnect` has something to await. Commit 3 fills
+        in the backoff, the connect/reattach sequence, and the
+        state transition back to HEALTHY.
+        """
+        # If we got here without a cached URL, give up immediately.
+        if not self._ws_url:
+            async with self._state_lock:
+                self._state = ConnectionState.DOWN
+            self._disconnect_event.set()
+            return
+        # The full reconnect implementation is added in Commit 3.
 
     async def _post_attach_enable(self, session_id: str) -> None:
         """Re-enable Page/DOM/Runtime and re-inject the cursor script on a
@@ -122,6 +252,16 @@ class CDPConnection:
         """
         if self._ws is None:
             raise RuntimeError("Not connected. Call connect() first.")
+
+        # P0-1: fail-fast on terminal states. DOWN means the circuit
+        # breaker is open; CLOSED means the orchestrator already
+        # tore us down. Either way, do not even enqueue a command —
+        # callers should treat the situation as 'go through
+        # BrowserSession.recover()' rather than retrying in a loop.
+        if self._state in (ConnectionState.DOWN, ConnectionState.CLOSED):
+            raise WebSocketDisconnected(
+                f"CDP connection is {self._state.value}; not sending {method}"
+            )
 
         msg_id = self._next_id()
         message: dict[str, Any] = {"id": msg_id, "method": method}
@@ -197,23 +337,55 @@ class CDPConnection:
 
         Returns:
             The event params dict
+
+        P0-1: aborts immediately on a WebSocket disconnect. Instead of
+        blocking the full `timeout` waiting for an event that can no
+        longer arrive, the loop wakes every 0.5s (or sooner) to check
+        the `_abort_wait` flag set by `_handle_disconnect`. When the
+        flag is set, we raise WebSocketDisconnected so the caller can
+        trigger recovery instead of timing out 30s later.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         stashed: list[dict[str, Any]] = []
+
+        # Fast path: if the connection is already dead, do not even
+        # enter the loop. This catches callers that arrive AFTER the
+        # socket was torn down (the `_abort_wait` flag is sticky).
+        if self._abort_wait.is_set() or self._state in (
+            ConnectionState.DOWN,
+            ConnectionState.CLOSED,
+        ):
+            raise WebSocketDisconnected(
+                f"CDP connection is {self._state.value} or aborted"
+            )
 
         try:
             while True:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     raise TimeoutError(f"Timed out waiting for event {event_name}")
+                # Wake periodically to re-check _abort_wait instead of
+                # blocking the full `remaining`. 0.5s strikes a balance
+                # between latency and CPU.
+                chunk = min(remaining, 0.5)
                 try:
-                    event = await asyncio.wait_for(self._events.get(), timeout=remaining)
+                    event = await asyncio.wait_for(
+                        self._events.get(), timeout=chunk
+                    )
                     if event.get("method") == event_name:
                         return event.get("params", {})
                     # Buffer non-matching events for re-queue
                     stashed.append(event)
                 except asyncio.TimeoutError:
-                    raise TimeoutError(f"Timed out waiting for event {event_name}")
+                    # No event in the chunk window; loop back to
+                    # re-check abort flag and deadline.
+                    if self._abort_wait.is_set() or self._state in (
+                        ConnectionState.DOWN,
+                        ConnectionState.CLOSED,
+                    ):
+                        raise WebSocketDisconnected(
+                            "CDP WebSocket closed during wait_for_event"
+                        ) from None
         finally:
             # Always re-queue stashed events so they are not lost
             for ev in stashed:
@@ -234,6 +406,10 @@ class CDPConnection:
             raise RuntimeError("No page target found. Is a tab open?")
 
         target_id = page_targets[0]["targetId"]
+        # P0-1: cache the target_id so the reconnect loop in
+        # Commit 3 can re-attach to the same tab if Chrome kept it
+        # alive across the WebSocket drop.
+        self._target_id = target_id
         logger.info(f"Attaching to page target: {target_id}")
 
         # Attach to the initial target
@@ -262,7 +438,28 @@ class CDPConnection:
         return self._session_id
 
     async def close(self) -> None:
-        """Close the WebSocket connection and cancel background tasks."""
+        """Close the WebSocket connection and cancel background tasks.
+
+        P0-1: marks the close as intentional so the recv loop does
+        NOT schedule a reconnect when it sees ConnectionClosed.
+        Cancels any in-flight reconnect task as well — important so
+        that a teardown during a long backoff doesn't leave us
+        trying to dial Chrome after the orchestrator already gave up.
+        """
+        # Mark the close as intentional BEFORE actually closing the
+        # socket — the recv loop reads this flag in its except clause.
+        self._intentional_close = True
+
+        # Cancel any pending reconnect so the backoff sleep doesn't
+        # outlive the close.
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._reconnect_task = None
+
         if self._recv_task:
             self._recv_task.cancel()
             try:
@@ -272,4 +469,10 @@ class CDPConnection:
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+        # Persist the final state for is_disconnected / wait_disconnected.
+        async with self._state_lock:
+            if self._state != ConnectionState.CLOSED:
+                self._state = ConnectionState.CLOSED
+
         logger.info("CDP connection closed")
