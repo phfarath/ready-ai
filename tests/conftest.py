@@ -1,7 +1,11 @@
 """Global test configuration."""
 # ruff: noqa: E402
 
+import os
 import sys
+
+# Disable API key authentication during tests (all endpoints are 200)
+os.environ["AUTH_DISABLED"] = "true"
 
 # Ensure PIL is never mocked at import time — some test files mock it via
 # sys.modules to avoid heavy imports, which leaks into later tests.

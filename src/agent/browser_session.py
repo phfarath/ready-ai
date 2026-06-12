@@ -5,8 +5,12 @@ Encapsulates launching Chrome, CDP connection management, cookie injection,
 login form handling, and browser crash recovery.
 """
 
+import atexit
 import json
 import logging
+import os
+import signal
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +22,33 @@ from ..cdp.runtime import RuntimeDomain
 from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+# ─── Global Chrome process registry ──────────────────────────────────────────
+# Tracks live Chrome PIDs so we can force-kill orphans on unexpected shutdowns.
+
+_CHROME_PIDS: set[int] = set()
+
+
+def _register_chrome_pid(pid: int) -> None:
+    _CHROME_PIDS.add(pid)
+
+
+def _unregister_chrome_pid(pid: int) -> None:
+    _CHROME_PIDS.discard(pid)
+
+
+def _kill_all_orphan_chrome() -> None:
+    """Emergency cleanup — called by atexit to prevent zombie Chrome."""
+    for pid in list(_CHROME_PIDS):
+        try:
+            os.kill(pid, signal.SIGKILL)  # force kill
+            time.sleep(0.1)
+        except (OSError, ProcessLookupError):
+            pass
+    _CHROME_PIDS.clear()
+
+
+atexit.register(_kill_all_orphan_chrome)
 
 
 def _normalize_cookie(cookie: dict) -> dict | None:
@@ -118,6 +149,8 @@ class BrowserSession:
                 port=self.port,
                 headless=self.headless,
             )
+            if self._chrome_proc and self._chrome_proc.pid:
+                _register_chrome_pid(self._chrome_proc.pid)
             ws_url = await get_ws_url(port=self.port)
             self._conn = CDPConnection()
             await self._conn.connect(ws_url)
@@ -134,7 +167,7 @@ class BrowserSession:
         self._runtime = RuntimeDomain(self._conn)
 
     async def teardown(self) -> None:
-        """Close connections and kill Chrome process."""
+        """Close connections and kill Chrome process with orphan prevention."""
         if self._conn:
             try:
                 await self._conn.close()
@@ -143,14 +176,24 @@ class BrowserSession:
 
         if self._chrome_proc:
             try:
+                # Graceful shutdown attempt
                 self._chrome_proc.terminate()
-                self._chrome_proc.wait(timeout=5)
+                self._chrome_proc.wait(timeout=2)
             except Exception:
                 try:
+                    # Force kill if graceful fails
                     self._chrome_proc.kill()
-                    self._chrome_proc.wait(timeout=5)
+                    self._chrome_proc.wait(timeout=2)
                 except Exception:
-                    pass
+                    # Last resort: os-level SIGKILL
+                    try:
+                        os.kill(self._chrome_proc.pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+            finally:
+                _unregister_chrome_pid(self._chrome_proc.pid)
+                self._chrome_proc = None
+                self._conn = None
             logger.info("Chrome process terminated")
 
     async def inject_cookies(self) -> None:
