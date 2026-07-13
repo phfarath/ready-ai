@@ -60,8 +60,8 @@ async def review(docs_markdown: str, goal: str, llm: LLMClient) -> CriticFeedbac
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Could not parse critic response: {e}")
         feedback = CriticFeedback(
-            is_complete=True,  # Don't block on parse failure
-            score=5,
+            is_complete=False,  # Don't treat parse failure as approved
+            score=0,
             feedback=response[:500],
             missing_steps=[],
             suggestions=[],

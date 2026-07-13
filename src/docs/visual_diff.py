@@ -56,8 +56,15 @@ def compare_screenshots(
     baseline = Image.open(baseline_path).convert("RGB")
     current = Image.open(current_path).convert("RGB")
 
-    # Resize current to match baseline dimensions if they differ
+    # Resize current to match baseline dimensions if they differ.
+    # Warn so that layout regressions hidden by the resize are visible.
     if baseline.size != current.size:
+        logger.warning(
+            "Resizing current screenshot from %s to %s to match baseline; "
+            "this may mask layout regressions.",
+            current.size,
+            baseline.size,
+        )
         current = current.resize(baseline.size, Image.Resampling.LANCZOS)
 
     # Compute pixel-level difference

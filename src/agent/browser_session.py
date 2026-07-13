@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -42,9 +43,14 @@ def _kill_all_orphan_chrome() -> None:
     """Emergency cleanup — called by atexit to prevent zombie Chrome."""
     for pid in list(_CHROME_PIDS):
         try:
-            os.kill(pid, signal.SIGKILL)  # force kill
+            if sys.platform == "win32":
+                # signal.SIGKILL does not exist on Windows; os.kill with
+                # any non-console signal calls TerminateProcess (hard kill).
+                os.kill(pid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGKILL)  # force kill
             time.sleep(0.1)
-        except (OSError, ProcessLookupError):
+        except (OSError, ProcessLookupError, AttributeError):
             pass
     _CHROME_PIDS.clear()
 
@@ -216,11 +222,14 @@ class BrowserSession:
                     self._chrome_proc.kill()
                     self._chrome_proc.wait(timeout=2)
                 except Exception:
-                    # Last resort: os-level SIGKILL
-                    try:
-                        os.kill(self._chrome_proc.pid, signal.SIGKILL)
-                    except (OSError, ProcessLookupError):
-                        pass
+                    # Last resort: os-level SIGKILL (POSIX only).
+                    # On Windows signal.SIGKILL does not exist and
+                    # proc.kill() above already calls TerminateProcess.
+                    if sys.platform != "win32":
+                        try:
+                            os.kill(self._chrome_proc.pid, signal.SIGKILL)
+                        except (OSError, ProcessLookupError):
+                            pass
             finally:
                 _unregister_chrome_pid(self._chrome_proc.pid)
                 self._chrome_proc = None
@@ -412,11 +421,16 @@ class BrowserSession:
         else:
             logger.warning("    Could not fill login form automatically")
 
-    async def recover(self, url: str) -> None:
+    async def recover(self, url: str, llm: Optional[LLMClient] = None) -> None:
         """
         Recover from a catastrophic mid-execution browser crash or disconnect.
         Tears down stale state, respawns Chrome, re-authenticates, and navigates
         back to the URL where execution was interrupted.
+
+        When ``llm`` is provided and credentials (``username``/``password``)
+        are set, ``handle_login`` is called after navigation so the recovered
+        session is fully authenticated rather than relying on possibly-expired
+        cookies.
         """
         # P0-1: emit a structured log so the agent's run summary
         # can show "we recovered because the CDP circuit opened"
@@ -434,14 +448,20 @@ class BrowserSession:
         # 3. Enable network and inputs
         await self._page.enable()
 
-        # 4. Re-inject auth
+        # 4. Re-inject auth cookies
         if self.cookies_file:
             await self.inject_cookies()
-        if self.username and self.password:
-            logger.warning("Recovery: Skipping full LLM-driven login; relying on surviving cached cookies.")
 
         # 5. Navigate back to where we crashed
         logger.info(f"⟲ State recovery navigating back to: {url}")
         await self._page.navigate(url, wait_for_network=True)
+
+        # 6. Attempt full LLM-driven login if credentials are present.
+        #    Surviving cookies may have expired during the crash, so we
+        #    re-authenticate explicitly when an LLM client is available.
+        if self.username and self.password and llm is not None:
+            logger.info("⟲ Recovery: attempting login with provided credentials")
+            await self.handle_login(llm)
+
         logger.info("⟲ State recovery complete. Re-attempting step.")
         log_event("browser_recover_complete", url=url, prior_cdp_state=prior_state)

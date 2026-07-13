@@ -220,8 +220,7 @@ jobs:
             if (fs.existsSync(reportPath)) {
               const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
               body += `\n| Metric | Value |\n|---|---|\n`;
-              body += `| Steps tested | ${report.total_steps || 'N/A'} |\n`;
-              body += `| Duration | ${(report.execution_time || 0).toFixed(1)}s |\n`;
+              body += `| Steps tested | ${(report.results ? report.results.length : 'N/A')} |\n`;
               body += `| Status | ${report.overall_status} |\n`;
             }
             

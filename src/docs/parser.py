@@ -32,7 +32,7 @@ _SCREENSHOT_RE = re.compile(
 # Action description inside <details> blocks
 _ACTION_RE = re.compile(
     r"<details>.*?"
-    r"\*\*(?:Action executed|Ação executada|Acción ejecutada|Action exécutée|Ausgeführte Aktion|Azione eseguita)\s*:\*\*\s*"
+    r"\*\*(?:Action executed|Ação executada|Acción ejecutada|Action exécutée|Ausgeführte Aktion|Azione eseguita)\s*(?::\s*\*\*|\*\*\s*:)\s*"
     r"(.+?)\s*"
     r"</details>",
     re.DOTALL,

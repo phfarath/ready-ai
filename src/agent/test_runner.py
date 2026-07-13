@@ -26,6 +26,7 @@ from ..docs.terminal_output import ProgressPrinter
 from ..docs.visual_diff import compare_screenshots
 from ..llm.client import LLMClient
 from . import executor
+from .browser_session import _register_chrome_pid, _unregister_chrome_pid
 from .dom_utils import dom_fingerprint as _dom_fingerprint
 from .state import DocStepState, RunState
 
@@ -60,6 +61,7 @@ class DocTestReport:
     overall_status: str = "PASSED"  # "PASSED" | "DRIFT_DETECTED" | "BROKEN"
     steps_outdated: list[int] = field(default_factory=list)
     steps_broken: list[int] = field(default_factory=list)
+    healing_report: Optional["object"] = None  # HealingReport after auto-heal
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -160,6 +162,8 @@ class DocTestRunner:
             self._chrome_proc = launch_chrome(
                 port=self.port, headless=self.headless
             )
+            if self._chrome_proc and self._chrome_proc.pid:
+                _register_chrome_pid(self._chrome_proc.pid)
             ws_url = await get_ws_url(self.port)
             self._conn = CDPConnection()
             await self._conn.connect(ws_url)
@@ -232,6 +236,7 @@ class DocTestRunner:
                 from ..docs.auto_healer import DocAutoHealer
                 healer = DocAutoHealer(self.doc_path, llm)
                 healing = await healer.heal_report(report)
+                report.healing_report = healing
                 if healing.total_healed:
                     logger.info(
                         f"Auto-healed {healing.total_healed} step(s) in {self.doc_path}"
@@ -577,3 +582,6 @@ class DocTestRunner:
                     self._chrome_proc.kill()
             except Exception:
                 pass
+            finally:
+                if self._chrome_proc.pid:
+                    _unregister_chrome_pid(self._chrome_proc.pid)

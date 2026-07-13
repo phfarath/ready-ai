@@ -76,6 +76,12 @@ def _setup_mocks():
     runtime.get_interactive_elements = AsyncMock(return_value='[{"tag": "button", "id": "login-btn", "text": "Login"}]')
 
     llm = AsyncMock()
+    # Configure the vision method to return a real *str*. Without this the
+    # default AsyncMock return value is an AsyncMock, and
+    # ``describe_visual_change`` does ``description.strip()`` on it — which
+    # builds a coroutine that is never awaited, raising
+    # ``RuntimeWarning: coroutine was never awaited`` (VAL-QUAL-001).
+    llm.complete_with_vision_multi = AsyncMock(return_value="No visible changes.")
 
     return chrome_proc, conn, page, input_domain, runtime, llm
 
