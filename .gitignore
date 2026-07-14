@@ -13,3 +13,5 @@ build/
 .factory/
 tmp/PLAN_*.md
 ROADMAP-IMPROVEMENTS.md
+.coverage
+*.log
