@@ -176,6 +176,12 @@ class PageDomain:
             wait_for_load: Whether to wait for Page.loadEventFired
             wait_for_network: Whether to wait for network idle (useful for SPAs)
         """
+        # Validate URL scheme - only allow http and https schemes
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https'):
+            raise ValueError(f"Invalid URL scheme: {parsed.scheme}. Only http and https schemes are allowed.")
+        
         logger.info(f"Navigating to: {url}")
         await self._conn.send("Page.navigate", {"url": url})
         
@@ -217,7 +223,7 @@ class PageDomain:
             "Inspector.targetCrashed",
             "Target.attachedToTarget",
         }
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         peek_deadline = loop.time() + 0.2
         stashed_non_nav: list[dict] = []  # non-nav events to re-queue
@@ -327,7 +333,7 @@ class PageDomain:
         fully idle for longer than `idle_time`. Falls back to the legacy
         polling behaviour when the flag is off or the event never comes.
         """
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         if (
             self._network_idle_cache is not None
             and (now - self._network_idle_cache[0]) < self._network_idle_cache_ttl_s
@@ -336,34 +342,60 @@ class PageDomain:
             return
 
         if os.environ.get("READY_AI_USE_LIFECYCLE_EVENTS", "").lower() in ("1", "true", "yes"):
+            # Pull directly from the shared event queue so we can inspect
+            # both the method *and* params.name. wait_for_event matches on
+            # method only, so it would accept ANY Page.lifecycleEvent (load,
+            # DOMContentLoaded, firstPaint …) as "network idle". We loop
+            # until we see name == "networkIdle", re-queuing every other
+            # event so concurrent waiters are not starved.
+            deadline = asyncio.get_running_loop().time() + timeout
+            stashed: list[dict] = []
+            found_idle = False
             try:
-                await asyncio.wait_for(
-                    self._conn.wait_for_event(
-                        "Page.lifecycleEvent", timeout=timeout
-                    ),
-                    timeout=timeout,
-                )
-                # Quick sanity check: only count it as 'networkIdle' if
-                # Chrome actually emitted that name. wait_for_event returns
-                # the raw params dict; caller is expected to inspect.
-                logger.debug("wait_for_network_idle: lifecycle event received")
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    chunk = min(remaining, 0.5)
+                    try:
+                        event = await asyncio.wait_for(
+                            self._conn._events.get(), timeout=chunk
+                        )
+                        if (
+                            event.get("method") == "Page.lifecycleEvent"
+                            and event.get("params", {}).get("name") == "networkIdle"
+                        ):
+                            found_idle = True
+                            break
+                        # Not the lifecycle event we want — stash for re-queue.
+                        stashed.append(event)
+                    except asyncio.TimeoutError:
+                        # No event in the chunk window; re-check deadline.
+                        continue
+            finally:
+                # Re-queue non-matching events so other waiters see them.
+                for ev in stashed:
+                    await self._conn._events.put(ev)
+
+            if found_idle:
+                logger.debug("wait_for_network_idle: networkIdle lifecycle event received")
                 self._network_idle_cache = (
-                    asyncio.get_event_loop().time(),
+                    asyncio.get_running_loop().time(),
                     idle_time,
                 )
                 return
-            except (asyncio.TimeoutError, TimeoutError):
-                logger.debug("lifecycleEvent timeout, falling back to polling")
-                # Fall through to the legacy implementation.
+            logger.debug("networkIdle lifecycle event not received, falling back to polling")
+            # Fall through to the legacy polling implementation.
 
         await self._conn.send("Network.enable")
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         in_flight = set()
         stashed = []
+        idle_detected = False
 
         try:
             while True:
-                remaining = deadline - asyncio.get_event_loop().time()
+                remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     logger.warning("Network idle wait timed out (some requests may still be pending)")
                     break
@@ -387,19 +419,21 @@ class PageDomain:
                     # Timeout means no event was received for `idle_time` seconds
                     if not in_flight:
                         logger.debug("Network is idle")
+                        idle_detected = True
                         break
         finally:
             # Re-queue non-network events so other waiters aren't starved
             for ev in stashed:
                 await self._conn._events.put(ev)
-            # Mark the moment the network was last seen idle, so the next
-            # caller within the TTL can skip the scan. We do this even on
-            # timeout (caller asked for a stricter condition); a stale
-            # "we tried" marker is still cheaper than a fresh scan.
-            self._network_idle_cache = (
-                asyncio.get_event_loop().time(),
-                idle_time,
-            )
+            # Only cache when the network was actually detected as idle.
+            # Caching on timeout would cause subsequent calls within the
+            # TTL to return a stale 'idle' result even though requests
+            # may still be in flight.
+            if idle_detected:
+                self._network_idle_cache = (
+                    asyncio.get_running_loop().time(),
+                    idle_time,
+                )
 
 
     async def screenshot(
@@ -557,9 +591,9 @@ class PageDomain:
             True if found, False if timed out
         """
         js = f"!!document.querySelector({json.dumps(selector)})"
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
 
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             result = await self._conn.send(
                 "Runtime.evaluate", {"expression": js}
             )

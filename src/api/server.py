@@ -4,6 +4,7 @@ Production-ready with CORS, rate limiting, API key auth, and health checks.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import shutil
-from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request, Path as FPath, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -31,8 +32,6 @@ from src.docs.export import export_docs, SUPPORTED_FORMATS
 from src.history import get_history, get_aggregates
 
 logger = logging.getLogger(__name__)
-
-_SHUTDOWN_EVENT = asyncio.Event()
 
 # ─── API Key Authentication ───────────────────────────────────────────────────
 
@@ -51,6 +50,21 @@ def _load_api_keys() -> set[str]:
 
 
 _READY_AI_API_KEYS = _load_api_keys()
+
+
+def _is_valid_api_key(provided_key: str) -> bool:
+    """Validate an API key using constant-time comparison.
+
+    Iterates all configured keys and uses ``hmac.compare_digest`` for each
+    comparison to prevent timing side-channel attacks.
+    """
+    if not provided_key:
+        return False
+    for configured_key in _READY_AI_API_KEYS:
+        if hmac.compare_digest(provided_key, configured_key):
+            return True
+    return False
+
 
 # ─── Simple in-memory rate limiter ──────────────────────────────────────────
 
@@ -158,7 +172,7 @@ def _get_rate_limit_key(request: Request) -> str:
         client_ip = client_ip.split(",")[0].strip()
 
     api_key = request.headers.get("X-API-Key", "")
-    if api_key and not _AUTH_DISABLED and api_key in _READY_AI_API_KEYS:
+    if api_key and not _AUTH_DISABLED and _is_valid_api_key(api_key):
         return f"key:{api_key[:8]}:{client_ip}"
     return f"ip:{client_ip}"
 
@@ -181,12 +195,28 @@ def _graceful_shutdown_signal_handler(signum, frame) -> None:
     _SHUTDOWN_EVENT.set()
 
 
+def _warn_if_auth_disabled() -> None:
+    """Emit a WARNING when authentication is disabled.
+
+    When ``AUTH_DISABLED=true`` all API key checks are bypassed.  Logging a
+    prominent warning at startup ensures operators are aware that the service
+    is running without authentication and should only be used in trusted or
+    local environments.
+    """
+    if _AUTH_DISABLED:
+        logger.warning(
+            "AUTH_DISABLED is enabled — all API authentication is bypassed. "
+            "Use this only in trusted/local environments."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan manager: setup signal handlers on startup, cleanup on shutdown."""
     # Startup
     signal.signal(signal.SIGTERM, _graceful_shutdown_signal_handler)
     signal.signal(signal.SIGINT, _graceful_shutdown_signal_handler)
+    _warn_if_auth_disabled()
     logger.info("API server started with graceful shutdown handlers")
     yield
     # Shutdown
@@ -238,7 +268,7 @@ async def api_key_middleware(request: Request, call_next):
         return await call_next(request)
 
     api_key = request.headers.get("X-API-Key")
-    if not api_key or api_key not in _READY_AI_API_KEYS:
+    if not api_key or not _is_valid_api_key(api_key):
         return JSONResponse(
             {"detail": "Invalid or missing X-API-Key header"},
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -336,7 +366,7 @@ async def create_run(req: RunRequest):
 
 
 @app.get("/runs/{run_id}", response_model=RunStatusResponse)
-async def get_run_status(run_id: str):
+async def get_run_status(run_id: str = FPath(..., pattern=r"^[A-Za-z0-9_-]+$")):
     """Poll the status of a specific run."""
     status = RunManager.get_status(run_id)
     if not status:
@@ -345,7 +375,10 @@ async def get_run_status(run_id: str):
 
 
 @app.get("/runs/{run_id}/output")
-async def get_run_output(run_id: str):
+async def get_run_output(
+    background_tasks: BackgroundTasks,
+    run_id: str = FPath(..., pattern=r"^[A-Za-z0-9_-]+$"),
+):
     """
     Retrieve the finished markdown and screenshots as a ZIP file.
     Assumes `AgenticLoop` wrote `docs.md` and `screenshots/` to `./output/<run_id>/`
@@ -367,6 +400,9 @@ async def get_run_output(run_id: str):
     if not zip_path.exists():
         raise HTTPException(status_code=500, detail="Failed to generate ZIP archive.")
 
+    # Delete the transient zip after the response has been fully served.
+    background_tasks.add_task(os.unlink, zip_path)
+
     return FileResponse(
         path=zip_path,
         media_type="application/zip",
@@ -375,7 +411,7 @@ async def get_run_output(run_id: str):
 
 
 @app.get("/runs/{run_id}/metrics")
-async def get_run_metrics(run_id: str):
+async def get_run_metrics(run_id: str = FPath(..., pattern=r"^[A-Za-z0-9_-]+$")):
     """Retrieve observability metrics for a completed run."""
     metrics_path = Path(f"./output/{run_id}_metrics.json")
 
@@ -389,7 +425,7 @@ async def get_run_metrics(run_id: str):
 # ─── Export endpoint ──────────────────────────────────────────────────────
 @app.post("/runs/{run_id}/export", response_model=ExportResponse)
 async def export_run(
-    run_id: str,
+    run_id: str = FPath(..., pattern=r"^[A-Za-z0-9_-]+$"),
     req: ExportRequest = Body(...),
 ):
     """
@@ -455,8 +491,8 @@ async def export_run(
 async def list_runs(
     status_filter: str | None = None,
     app_version: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=0, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     """
     List all documentation runs with optional filtering and pagination.
@@ -521,7 +557,10 @@ async def list_runs(
 
 # ─── Run diff ──────────────────────────────────────────────────────────
 @app.get("/runs/{run_id}/diff", response_model=DiffResponse)
-async def get_run_diff(run_id: str, previous_run_id: str | None = None):
+async def get_run_diff(
+    run_id: str = FPath(..., pattern=r"^[A-Za-z0-9_-]+$"),
+    previous_run_id: str | None = Query(default=None, pattern=r"^[A-Za-z0-9_-]+$"),
+):
     """
     Get a textual diff between this run and a previous version.
     If previous_run_id is not provided, attempts to find the most recent
@@ -617,8 +656,8 @@ async def get_run_diff(run_id: str, previous_run_id: str | None = None):
 async def list_docs(
     version: str | None = None,
     status_filter: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=0, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     """
     List all generated documentation sets.
@@ -753,8 +792,8 @@ async def get_docs_version_status(version: str):
 # ─── Historical Tracking ──────────────────────────────────────────────────
 @app.get("/history")
 async def list_history(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=0, le=200),
+    offset: int = Query(default=0, ge=0),
     app_version: str | None = None,
     status: str | None = None,
 ):

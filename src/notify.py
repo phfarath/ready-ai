@@ -33,38 +33,6 @@ class NotificationPayload:
         if not self.timestamp:
             self.timestamp = datetime.now().isoformat()
 
-    def _format_telegram(self) -> str:
-        """Format for Telegram message. Use standalone if this is wired up."""
-        icon_map = {
-            "generated": "📝",
-            "drift_detected": "⚠️",
-            "auto_healed": "🔧",
-            "broken": "❌",
-            "test_passed": "✅",
-        }
-        icon = icon_map.get(self.event_type, "📋")
-        lines = [
-            f"{icon} *{self.title}*",
-            "",
-            self.message,
-        ]
-        if self.app_version:
-            lines.append(f"Version: `{self.app_version}`")
-        if self.run_id:
-            lines.append(f"Run ID: `{self.run_id}`")
-        if self.url:
-            lines.append(f"URL: {self.url}")
-        if self.details:
-            lines.append("")
-            for k, v in self.details.items():
-                if isinstance(v, (int, float)):
-                    lines.append(f"{k}: `{v}`")
-                elif isinstance(v, str) and len(v) <= 100:
-                    lines.append(f"{k}: `{v}`")
-                else:
-                    lines.append(f"{k}: _... (truncated)_")
-        return "\n".join(lines)
-
     def _format_webhook(self) -> dict:
         """Format for generic webhook JSON."""
         return {

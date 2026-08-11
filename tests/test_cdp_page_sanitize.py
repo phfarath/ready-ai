@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.cdp.connection import CDPConnection
 from src.cdp.page import ENV_DOM_MAX_CHARS, PageDomain
-from src.cdp.sanitize import ENV_DOM_VALUE_MAX, ENV_RAW_DOM
+from src.cdp.sanitize import ENV_DOM_VALUE_MAX, ENV_RAW_DOM, REDACTED_SENTINEL
 
 
 def _setup_page(html: str) -> tuple[PageDomain, AsyncMock]:
@@ -58,13 +58,14 @@ async def test_long_non_sensitive_value_is_truncated(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_raw_mode_bypasses_sanitization(monkeypatch):
+async def test_raw_mode_redacts_sensitive_values(monkeypatch):
     monkeypatch.setenv(ENV_RAW_DOM, "true")
     html = '<html><body><input type="password" value="hunter2"></body></html>'
     page, _ = _setup_page(html)
     out = await page.get_dom_html()
-    # The raw HTML is returned without any sanitization passes.
-    assert "hunter2" in out
+    # In raw mode, sensitive values are still redacted.
+    assert "hunter2" not in out
+    assert REDACTED_SENTINEL in out
 
 
 @pytest.mark.asyncio

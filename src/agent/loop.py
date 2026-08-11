@@ -161,16 +161,20 @@ class AgenticLoop:
                 # Enable page events
                 await self._session.page.enable()
 
-                # 3. Inject auth if provided
-                if self._session.cookies_file:
-                    await self._session.inject_cookies()
-                if self._session.username and self._session.password:
-                    await self._session.page.navigate(self.url)
-                    await self._session.handle_login(llm)
-
-                # 4. Navigate to target URL
+                # 3. Navigate to target URL FIRST. CDP Network.setCookie
+                #    requires a valid origin to apply a cookie; injecting
+                #    before navigate causes domain-less cookies to be
+                #    silently dropped because no page is loaded yet.
                 logger.info(f"═══ Navigating to: {self.url}")
                 await self._session.page.navigate(self.url)
+
+                # 4. Inject auth cookies now that the target origin is loaded
+                if self._session.cookies_file:
+                    await self._session.inject_cookies()
+
+                # 5. Handle credential-based login if provided
+                if self._session.username and self._session.password:
+                    await self._session.handle_login(llm)
 
                 # Start thinking cursor
                 if not self.headless:
@@ -494,7 +498,7 @@ class AgenticLoop:
                     raise
 
                 resume_url = self._last_url or self.url
-                await self._session.recover(resume_url)
+                await self._session.recover(resume_url, llm)
                 page = self._session.page
                 input_domain = self._session.input_domain
                 runtime = self._session.runtime

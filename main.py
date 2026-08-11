@@ -138,6 +138,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- BATCH Command ---
     batch_parser = subparsers.add_parser("batch", help="Run multiple documentation flows from a config file")
     batch_parser.add_argument("--config", "-c", required=True, help="YAML or TOML batch config file")
+    batch_parser.add_argument("--output", "-o", default="./output", help="Output directory (default: ./output)")
+    batch_parser.add_argument("--headless", action="store_true", help="Run Chrome headless")
     batch_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
     # --- EXPORT Command ---
@@ -333,6 +335,11 @@ def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
     """If auto-heal produced changes, commit and open a PR."""
     from src.docs.healing_publisher import publish_healing, PublishConfig
 
+    healing_report = getattr(report, "healing_report", None)
+    if healing_report is None:
+        logger.info("⏭️  Skipped: no healing report produced")
+        return
+
     doc_path = Path(args.doc).resolve()
     # Walk up from doc directory to find .git
     repo_root = doc_path
@@ -347,8 +354,10 @@ def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
         remote=getattr(args, "pr_remote", "origin"),
         dry_run=getattr(args, "pr_dry_run", False),
     )
+
+    html_report_path = Path(args.output) / "test_report.html"
     try:
-        result = publish_healing(report.healing_report, cfg)
+        result = publish_healing(healing_report, report, html_report_path, cfg)
         if result.pr_url:
             logger.info(f"✅ PR created: {result.pr_url}")
         elif result.skipped_reason:

@@ -8,6 +8,7 @@ Auto-incrementing message IDs, session-aware messaging, and event listening.
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Any, Optional
 
@@ -256,8 +257,6 @@ class CDPConnection:
         breaker machinery in Commit 4 will see the consecutive
         failures and decide whether to keep the circuit open.
         """
-        import random
-
         if not self._ws_url:
             async with self._state_lock:
                 self._state = ConnectionState.DOWN
@@ -348,9 +347,9 @@ class CDPConnection:
         # Chrome sends Target.attachedToTarget in the next few
         # seconds.
         self._session_id = None
-        deadline = asyncio.get_event_loop().time() + REATTACH_AUTO_WAIT_S
-        while asyncio.get_event_loop().time() < deadline and not self._session_id:
-            remaining = deadline - asyncio.get_event_loop().time()
+        deadline = asyncio.get_running_loop().time() + REATTACH_AUTO_WAIT_S
+        while asyncio.get_running_loop().time() < deadline and not self._session_id:
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             try:
@@ -478,7 +477,7 @@ class CDPConnection:
             message["sessionId"] = self._session_id
 
         # Create a future for this response
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future = loop.create_future()
         self._pending[msg_id] = future
 
@@ -517,6 +516,9 @@ class CDPConnection:
             except Exception:
                 if status == "ok":
                     status = "error"
+                # Clean up the pending future so it doesn't leak when
+                # _ws.send raises (timeout path already pops above).
+                self._pending.pop(msg_id, None)
                 raise
             finally:
                 elapsed_ms = (time.monotonic() - start) * 1000.0
@@ -549,7 +551,7 @@ class CDPConnection:
         flag is set, we raise WebSocketDisconnected so the caller can
         trigger recovery instead of timing out 30s later.
         """
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         stashed: list[dict[str, Any]] = []
 
         # Fast path: if the connection is already dead, do not even
@@ -565,7 +567,7 @@ class CDPConnection:
 
         try:
             while True:
-                remaining = deadline - asyncio.get_event_loop().time()
+                remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     raise TimeoutError(f"Timed out waiting for event {event_name}")
                 # Wake periodically to re-check _abort_wait instead of

@@ -18,6 +18,7 @@ from typing import Optional
 from ..cdp.input import InputDomain
 from ..cdp.page import PageDomain
 from ..cdp.runtime import RuntimeDomain
+from ..cdp.sanitize import is_sensitive_field
 from ..llm.client import LLMClient
 from ..llm.prompts import EXECUTOR_SYSTEM, EXECUTOR_RETRY_SYSTEM
 
@@ -392,7 +393,42 @@ async def _dispatch_action(
             selector = action.get("selector")
             text = action["text"]
             await input_domain.type_text(text, selector=selector)
-            return f"Typed '{text}' into {selector or 'focused element'}"
+
+            # Determine if the element is sensitive for redaction in the action
+            # description. Use the IIFE pattern (() => { ... })() so that
+            # runtime.evaluate returns the result rather than the function
+            # object, and embed the selector via json.dumps() for safe quoting
+            # (matching the convention at lines 367/387/457).
+            is_sensitive = False
+            if selector is not None and selector != '':
+                safe_sel = json.dumps(selector)
+                element_attributes = await runtime.evaluate(
+                    f"(() => {{ "
+                    f"const el = document.querySelector({safe_sel}); "
+                    f"if (!el) return null; "
+                    f"return {{ name: el.name || '', autocomplete: el.autocomplete || '', type: el.type || '' }}; "
+                    f"}})()"
+                )
+            else:
+                # No selector means we are typing into the focused element
+                element_attributes = await runtime.evaluate(
+                    "(() => { "
+                    "const el = document.activeElement; "
+                    "if (!el) return null; "
+                    "return { name: el.name || '', autocomplete: el.autocomplete || '', type: el.type || '' }; "
+                    "})()"
+                )
+
+            if element_attributes:
+                is_sensitive = is_sensitive_field(
+                    name=element_attributes.get('name'),
+                    autocomplete=element_attributes.get('autocomplete'),
+                    field_type=element_attributes.get('type')
+                )
+
+            display_text = '***' if is_sensitive else text
+            target = selector if selector else 'focused element'
+            return f"Typed '{display_text}' into {target}"
 
         elif action_type == "press_key":
             key = action["key"]

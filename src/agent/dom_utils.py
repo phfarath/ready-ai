@@ -79,7 +79,9 @@ async def dom_fingerprint(runtime: RuntimeDomain) -> str:
         # fingerprint (which used to be the case in the duplicate
         # implementation in recovery.py and caused false "no drift"
         # verdicts).
-        get_metrics().increment("fingerprint.errors", source="cdp")
+        metrics = get_metrics()
+        if metrics:
+            metrics.increment("fingerprint.errors", source="cdp")
         logger.debug(f"dom_fingerprint evaluation failed: {exc}")
         return f"{FP_ERROR_PREFIX}{uuid.uuid4().hex}"
     return hashlib.md5(payload_str.encode("utf-8")).hexdigest()

@@ -96,11 +96,22 @@ class LLMClient:
 
     async def _call_with_retry(self, kwargs: dict[str, Any], role: str = "unknown") -> str:
         """
-        Call litellm.acompletion with exponential backoff on rate limit errors.
+        Call litellm.acompletion with exponential backoff on transient errors.
 
         Retries up to MAX_LLM_RETRIES times with exponential backoff
-        (1s, 2s, 4s, 8s, 16s) on 429 RateLimitError.
+        (1s, 2s, 4s, 8s, 16s) on transient exceptions: RateLimitError,
+        Timeout, APIConnectionError, InternalServerError, ServiceUnavailableError.
+        Non-transient exceptions (AuthenticationError, BadRequestError,
+        NotFoundError) are re-raised immediately without retry.
         """
+        # Exceptions that are worth retrying (transient / transport-level).
+        retryable_exceptions = (
+            litellm.exceptions.RateLimitError,
+            litellm.exceptions.Timeout,
+            litellm.exceptions.APIConnectionError,
+            litellm.exceptions.InternalServerError,
+            litellm.exceptions.ServiceUnavailableError,
+        )
         last_error = None
         call_start = time.monotonic()
 
@@ -141,11 +152,12 @@ class LLMClient:
 
                 logger.debug(f"LLM response ({len(content)} chars): {content[:100]}...")
                 return content
-            except litellm.exceptions.RateLimitError as e:
+            except retryable_exceptions as e:
                 last_error = e
                 delay = INITIAL_RETRY_DELAY * (2 ** (attempt - 1))
                 logger.warning(
-                    f"Rate limit hit (attempt {attempt}/{MAX_LLM_RETRIES}), "
+                    f"Transient error {type(e).__name__} "
+                    f"(attempt {attempt}/{MAX_LLM_RETRIES}), "
                     f"retrying in {delay:.1f}s..."
                 )
                 await asyncio.sleep(delay)
@@ -153,7 +165,7 @@ class LLMClient:
                 logger.error(f"LLM call failed: {e}")
                 raise
 
-        logger.error(f"Rate limit exceeded after {MAX_LLM_RETRIES} retries")
+        logger.error(f"LLM call failed after {MAX_LLM_RETRIES} retries")
         raise last_error
 
     async def complete(

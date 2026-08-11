@@ -14,10 +14,12 @@ Designed with OTel-ready interfaces: swap backend in this file only.
 import functools
 import json
 import logging
+import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger("observability")
 
@@ -25,9 +27,68 @@ logger = logging.getLogger("observability")
 # JSON Logging Formatter
 # ---------------------------------------------------------------------------
 
+# Keys whose values MUST be redacted from log output (case-insensitive match).
+_SENSITIVE_KEYS: frozenset[str] = frozenset(
+    {"password", "token", "api_key", "cookies", "authorization"}
+)
+
+_REDACTED_VALUE = "***REDACTED***"
+
+# Quickly identify strings that look like URLs with a scheme authority.
+_URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+
+
+def _strip_url_userinfo(value: str) -> str:
+    """Strip ``user:pass@`` userinfo from an http/https URL.
+
+    Non-URL strings or URLs without userinfo are returned unchanged.
+    """
+    if not _URL_SCHEME_RE.match(value):
+        return value
+    try:
+        parsed = urlparse(value)
+    except (ValueError, TypeError):
+        return value
+    if parsed.scheme in ("http", "https") and (
+        parsed.username or parsed.password
+    ):
+        netloc = parsed.hostname or ""
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunparse(parsed._replace(netloc=netloc))
+    return value
+
+
+def _redact(value: Any) -> Any:
+    """Recursively redact sensitive keys and sanitize URLs in ``value``.
+
+    - Dict keys matching ``_SENSITIVE_KEYS`` (case-insensitive) have their
+      values replaced with ``***REDACTED***``.
+    - String values have URL userinfo stripped.
+    - Nested dicts and lists are traversed recursively.
+    """
+    if isinstance(value, dict):
+        return {
+            k: (
+                _REDACTED_VALUE
+                if k.lower() in _SENSITIVE_KEYS
+                else _redact(v)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _strip_url_userinfo(value)
+    return value
+
 
 class JSONFormatter(logging.Formatter):
-    """Emit log records as single-line JSON for structured analysis."""
+    """Emit log records as single-line JSON for structured analysis.
+
+    Sensitive keys in ``record.structured`` are redacted and URLs have
+    their userinfo stripped before serialization.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -36,9 +97,9 @@ class JSONFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
-        # Attach structured extras if present
+        # Attach structured extras if present (with sensitive data redacted)
         if hasattr(record, "structured"):
-            payload["data"] = record.structured
+            payload["data"] = _redact(record.structured)
         if record.exc_info and record.exc_info[0] is not None:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str, ensure_ascii=False)

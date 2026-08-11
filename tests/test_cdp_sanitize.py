@@ -266,7 +266,7 @@ class TestSanitizeHTMLValues:
 
 
 class TestSanitizeHTMLRawMode:
-    def test_raw_keeps_everything(self):
+    def test_raw_keeps_everything_non_sensitive(self):
         html = '<script>alert(1)</script><div data-x="y">x</div>'
         out = sanitize_html(html, raw=True)
         assert out.html == html
@@ -274,12 +274,25 @@ class TestSanitizeHTMLRawMode:
         assert all(v == 0 for v in out.counters.to_dict().values())
 
     def test_raw_still_redacts_password(self):
-        # The sensitive layer is unconditional; raw mode only
-        # skips the cosmetic passes.
+        # Sensitive values are ALWAYS redacted, even in raw mode.
         html = '<input type="password" value="hunter2">'
         out = sanitize_html(html, raw=True)
-        # In raw mode the HTML is unchanged.
-        assert "hunter2" in out.html
+        assert "hunter2" not in out.html
+        assert REDACTED_SENTINEL in out.html
+        assert out.counters.values_redacted == 1
+        # Structural and data-attr passes are skipped in raw mode.
+        assert out.counters.scripts_removed == 0
+        assert out.counters.data_attrs_removed == 0
+
+    def test_raw_bypasses_truncation_for_non_sensitive(self):
+        long = "x" * 500
+        html = f'<input type="text" name="notes" value="{long}">'
+        out = sanitize_html(html, raw=True, value_max=200)
+        # In raw mode, truncation is bypassed, so the full value is kept.
+        assert long in out.html
+        assert "x" * 200 + "..." not in out.html
+        assert out.counters.values_truncated == 0
+        assert out.counters.values_redacted == 0
 
 
 # ---------------------------------------------------------------------------
@@ -376,12 +389,22 @@ class TestSanitizeInteractiveElement:
         assert out["value"] == "x" * 200 + "..."
         assert out["_redactions"]["value_truncated"] == 1
 
-    def test_raw_keeps_everything(self):
+    def test_raw_still_redacts_password(self):
+        # Sensitive values are ALWAYS redacted, even in raw mode.
         el = self._sample()
         el["type"] = "password"
         el["value"] = "hunter2"
         out = sanitize_interactive_element(el, raw=True)
-        assert out["value"] == "hunter2"
+        assert out["value"] == REDACTED_SENTINEL
+        assert out["_redactions"]["value_redacted"] == 1
+        # In raw mode, truncation is bypassed, but sensitive redaction still happens.
+
+    def test_raw_bypasses_truncation_for_non_sensitive(self):
+        el = self._sample()
+        el["value"] = "x" * 500
+        out = sanitize_interactive_element(el, raw=True, value_max=200)
+        # In raw mode, truncation is bypassed, so the full value is kept.
+        assert out["value"] == "x" * 500
         assert out["_redactions"] == {}
 
     def test_does_not_mutate_input(self):

@@ -245,7 +245,13 @@ def sanitize_html(
     if value_max is None:
         value_max = resolve_value_max()
 
+    # Sensitive values are ALWAYS redacted, regardless of raw mode.
+    # We do this pass first, then conditionally do structural/truncation passes.
+    html, n_redacted = _redact_sensitive_values(html)
+    counters.values_redacted = n_redacted
+
     if raw:
+        # In raw mode, we only do sensitive redaction and skip everything else.
         return SanitizedHTML(html=html, counters=counters)
 
     # Pass 1: structural noise removal.
@@ -263,12 +269,11 @@ def sanitize_html(
     html, n_data = _RE_DATA_ATTR.subn("", html)
     counters.data_attrs_removed = n_data
 
-    # Pass 3: per-input / per-textarea value handling. We
-    # operate on the full document but only touch
-    # <input ...> and <textarea ...> opening tags.
-    html, n_truncated, n_redacted = _sanitize_form_values(html, value_max)
+    # Pass 3: per-input / per-textarea value handling (truncation only).
+    # We already did sensitive redaction above, so this pass only handles
+    # truncation of non-sensitive values.
+    html, n_truncated = _sanitize_form_values_truncate_only(html, value_max)
     counters.values_truncated = n_truncated
-    counters.values_redacted = n_redacted
 
     return SanitizedHTML(html=html, counters=counters)
 
@@ -304,24 +309,19 @@ def _replace_attr_value(tag: str, name: str, new_value: str) -> str:
     )
 
 
-def _sanitize_form_values(
-    html: str, value_max: int
-) -> tuple[str, int, int]:
-    """Walk every input/textarea opening tag and decide what to
-    do with its value attribute.
+def _redact_sensitive_values(html: str) -> tuple[str, int]:
+    """Walk every input/textarea opening tag and redact sensitive values.
 
-    Returns (new_html, n_truncated, n_redacted).
+    Returns (new_html, n_redacted).
     """
-    n_truncated = 0
     n_redacted = 0
 
     def _process_input(match: re.Match) -> str:
-        nonlocal n_truncated, n_redacted
+        nonlocal n_redacted
         tag = match.group(0)
-        field_type = _extract_attr(tag, "type")
-        # For inputs, only touch the value if there IS one.
         if "value" not in tag.lower():
             return tag
+        field_type = _extract_attr(tag, "type")
         autocomplete = _extract_attr(tag, "autocomplete")
         # We need a "name" to feed is_sensitive_field. The id is
         # a reasonable proxy; placeholder too.
@@ -336,6 +336,50 @@ def _sanitize_form_values(
         if is_sensitive_field(name=name, autocomplete=autocomplete, field_type=field_type):
             n_redacted += 1
             return _replace_attr_value(tag, "value", REDACTED_SENTINEL)
+        return tag
+
+    def _process_textarea(match: re.Match) -> str:
+        # Textareas don't have a `value` attribute; the content
+        # lives between the tags. We don't re-write content here
+        # because doing so safely requires parsing the tag's
+        # attributes (we'd lose the closing </textarea>). Instead
+        # we leave textarea content untouched in this pass; the
+        # caller can apply a separate cap if needed.
+        return match.group(0)
+
+    new_html = _RE_INPUT_TAG.sub(_process_input, html)
+    new_html = _RE_TEXTAREA_TAG.sub(_process_textarea, new_html)
+    return new_html, n_redacted
+
+
+def _sanitize_form_values_truncate_only(html: str, value_max: int) -> tuple[str, int]:
+    """Walk every input/textarea opening tag and truncate non-sensitive values.
+
+    Assumes sensitive values are assumed to have already been redacted.
+    Returns (new_html, n_truncated).
+    """
+    n_truncated = 0
+
+    def _process_input(match: re.Match) -> str:
+        nonlocal n_truncated
+        tag = match.group(0)
+        if "value" not in tag.lower():
+            return tag
+        field_type = _extract_attr(tag, "type")
+        autocomplete = _extract_attr(tag, "autocomplete")
+        # We need a "name" to feed is_sensitive_field. The id is
+        # a reasonable proxy; placeholder too.
+        name = (
+            _extract_attr(tag, "name")
+            or _extract_attr(tag, "id")
+            or _extract_attr(tag, "placeholder")
+        )
+        value = _extract_attr(tag, "value") or ""
+        if not value:
+            return tag
+        # Skip if sensitive (because we don't want to truncate redacted values)
+        if is_sensitive_field(name=name, autocomplete=autocomplete, field_type=field_type):
+            return tag
         if value_max and len(value) > value_max:
             n_truncated += 1
             new_value = value[:value_max] + "..."
@@ -353,7 +397,7 @@ def _sanitize_form_values(
 
     new_html = _RE_INPUT_TAG.sub(_process_input, html)
     new_html = _RE_TEXTAREA_TAG.sub(_process_textarea, new_html)
-    return new_html, n_truncated, n_redacted
+    return new_html, n_truncated
 
 
 # ---------------------------------------------------------------------------
@@ -380,12 +424,6 @@ def sanitize_interactive_element(
     if value_max is None:
         value_max = resolve_value_max()
 
-    if raw:
-        return {**element, "_redactions": {}}
-
-    redactions: dict[str, int] = {}
-    out = {**element}
-
     # Decide sensitivity. The runtime domain already maps the
     # `type` field from <input type="..."> directly.
     sensitive = is_sensitive_field(
@@ -393,6 +431,9 @@ def sanitize_interactive_element(
         autocomplete=element.get("autocomplete"),
         field_type=element.get("type"),
     )
+
+    redactions: dict[str, int] = {}
+    out = {**element}
 
     # Apply to text-bearing fields. We do NOT touch `href` here
     # because URLs sometimes encode session tokens but truncating
@@ -406,7 +447,8 @@ def sanitize_interactive_element(
         if sensitive:
             out[field_name] = REDACTED_SENTINEL
             redactions[f"{field_name}_redacted"] = redactions.get(f"{field_name}_redacted", 0) + 1
-        elif value_max and len(v) > value_max:
+        # Only truncate if not in raw mode and the field is not sensitive
+        elif not raw and value_max and len(v) > value_max:
             out[field_name] = v[:value_max] + "..."
             redactions[f"{field_name}_truncated"] = redactions.get(f"{field_name}_truncated", 0) + 1
 

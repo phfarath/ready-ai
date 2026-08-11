@@ -297,9 +297,11 @@ def test_main_maybe_publish_healing_dry_run(
     # Capture publisher invocation without actually running git/gh.
     captured: dict = {}
 
-    def fake_publish(healing_report, cfg):
+    def fake_publish(healing_report, doc_test_report, html_report_path, config):
         captured["healing_report"] = healing_report
-        captured["cfg"] = cfg
+        captured["doc_test_report"] = doc_test_report
+        captured["html_report_path"] = html_report_path
+        captured["cfg"] = config
         from src.docs.healing_publisher import PublishResult
         return PublishResult(
             branch_name="auto-heal/docs/docs-test",

@@ -77,10 +77,15 @@ def _copy_screenshots(screenshots_dir: Path, dest_dir: Path) -> list[Path]:
 
 
 def _slugify(title: str) -> str:
-    """Convert a title to a URL-friendly slug."""
+    """Convert a title to a URL-friendly slug.
+
+    Non-word titles (emoji, punctuation-only, empty) would otherwise produce
+    an empty slug, causing file collisions and broken output paths. Fall back
+    to ``"untitled"`` so the slug is always non-empty.
+    """
     slug = re.sub(r"[^\w\s-]", "", title.lower())
     slug = re.sub(r"[-\s]+", "-", slug).strip("-")
-    return slug
+    return slug or "untitled"
 
 
 def _strip_frontmatter_and_h1(content: str) -> str:

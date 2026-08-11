@@ -231,3 +231,119 @@ def test_screenshot_paths(tmp_path: Path):
 
     for i, step in enumerate(steps, 1):
         assert step.screenshot_path == f"screenshots/step_{i:02d}.png"
+
+
+# ─── Colon position in action header (VAL-QUAL-006) ─────────────────────
+
+
+def _build_doc_with_action(action_line: str, step_word: str = "Step") -> str:
+    """Build a minimal doc whose <details> block uses a custom action header."""
+    return (
+        f"# Test doc\n\n"
+        f"## {step_word} 1: Do something\n\n"
+        f"![{step_word} 1](screenshots/step_01.png)\n\n"
+        f"Some annotation text.\n\n"
+        f"<details>\n"
+        f"<summary>Technical details</summary>\n\n"
+        f"{action_line} click on button#test\n\n"
+        f"</details>\n\n"
+        f"---\n"
+    )
+
+
+def test_action_colon_inside_bold_english(tmp_path: Path):
+    """**Action executed:**  — colon inside bold (current renderer format)."""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(_build_doc_with_action("**Action executed:**"), encoding="utf-8")
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_outside_bold_english(tmp_path: Path):
+    """**Action executed**:  — colon outside bold."""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(_build_doc_with_action("**Action executed**:"), encoding="utf-8")
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_inside_bold_portuguese(tmp_path: Path):
+    """Localized PT, colon inside bold: **Ação executada:**"""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(
+        _build_doc_with_action("**Ação executada:**", step_word="Passo"),
+        encoding="utf-8",
+    )
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_outside_bold_portuguese(tmp_path: Path):
+    """Localized PT, colon outside bold: **Ação executada**:"""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(
+        _build_doc_with_action("**Ação executada**:", step_word="Passo"),
+        encoding="utf-8",
+    )
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_inside_bold_french(tmp_path: Path):
+    """French inside bold: **Action exécutée :** (note space before colon)."""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(
+        _build_doc_with_action("**Action exécutée :**", step_word="Étape"),
+        encoding="utf-8",
+    )
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_outside_bold_french(tmp_path: Path):
+    """French outside bold: **Action exécutée** : (note space before colon)."""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(
+        _build_doc_with_action("**Action exécutée** :", step_word="Étape"),
+        encoding="utf-8",
+    )
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_inside_bold_spanish(tmp_path: Path):
+    """Spanish inside bold: **Acción ejecutada:**"""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(
+        _build_doc_with_action("**Acción ejecutada:**", step_word="Paso"),
+        encoding="utf-8",
+    )
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
+
+
+def test_action_colon_outside_bold_spanish(tmp_path: Path):
+    """Spanish outside bold: **Acción ejecutada**:"""
+    doc_file = tmp_path / "docs.md"
+    doc_file.write_text(
+        _build_doc_with_action("**Acción ejecutada**:", step_word="Paso"),
+        encoding="utf-8",
+    )
+
+    steps = parse_doc(str(doc_file))
+
+    assert steps[0].action_description == "click on button#test"
