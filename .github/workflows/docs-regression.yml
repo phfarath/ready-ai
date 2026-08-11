@@ -18,11 +18,10 @@ on:
         default: "0.85"
       staging_url:
         description: "Staging URL to test against"
-        required: true
-        default: "https://staging.example.com"
+        required: false
 
 env:
-  STAGING_URL: ${{ vars.STAGING_URL || github.event.inputs.staging_url || 'https://staging.example.com' }}
+  STAGING_URL: ${{ vars.STAGING_URL || github.event.inputs.staging_url }}
   THRESHOLD: ${{ github.event.inputs.threshold || '0.85' }}
 
 jobs:
@@ -46,14 +45,24 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Try PyPI first (for external repos); fall back to local install
-          pip install ready-ai 2>/dev/null || pip install -e ".[dev]"
+          pip install -e ".[dev]"
           sudo apt-get update
           sudo apt-get install -y chromium-browser
+
+      - name: Check regression prerequisites
+        id: prerequisites
+        run: |
+          if [ -z "$STAGING_URL" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Documentation regression skipped: configure the STAGING_URL repository variable or provide staging_url when dispatching manually."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # ─── Download baseline docs ───────────────────────────────────────
       - name: Download latest docs baseline
         id: baseline
+        if: steps.prerequisites.outputs.enabled == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -71,18 +80,22 @@ jobs:
           fi
           
           # 2. Fallback: try docs branch
-          if [ ! -f "./docs-baseline/docs.md" ]; then
+          if [ ! -s "./docs-baseline/docs.md" ]; then
+            rm -f ./docs-baseline/docs.md
             git fetch origin docs/latest:docs/latest 2>/dev/null || true
-            git show docs/latest:output/latest/docs.md > ./docs-baseline/docs.md 2>/dev/null || true
-            # Screenshots from branch (best effort)
-            git checkout docs/latest -- output/latest/screenshots 2>/dev/null || true
-            if [ -d "output/latest/screenshots" ]; then
-              cp -r output/latest/screenshots ./docs-baseline/
+            if git show docs/latest:output/latest/docs.md > ./docs-baseline/docs.md 2>/dev/null && [ -s "./docs-baseline/docs.md" ]; then
+              # Screenshots from branch (best effort)
+              git checkout docs/latest -- output/latest/screenshots 2>/dev/null || true
+              if [ -d "output/latest/screenshots" ]; then
+                cp -r output/latest/screenshots ./docs-baseline/
+              fi
+            else
+              rm -f ./docs-baseline/docs.md
             fi
           fi
           
           # 3. Last fallback: try any ./output/*/docs.md from this repo
-          if [ ! -f "./docs-baseline/docs.md" ]; then
+          if [ ! -s "./docs-baseline/docs.md" ]; then
             BASE=$(find ./output -name "docs.md" -type f -print -quit 2>/dev/null || true)
             if [ -n "$BASE" ]; then
               cp "$BASE" ./docs-baseline/docs.md
@@ -93,7 +106,7 @@ jobs:
             fi
           fi
           
-          if [ -f "./docs-baseline/docs.md" ]; then
+          if [ -s "./docs-baseline/docs.md" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
             echo "path=./docs-baseline" >> $GITHUB_OUTPUT
           else
@@ -102,23 +115,40 @@ jobs:
 
       # ─── Run regression test ──────────────────────────────────────────
       - name: Run regression test
-        if: steps.baseline.outputs.found == 'true'
+        if: steps.prerequisites.outputs.enabled == 'true' && steps.baseline.outputs.found == 'true'
         id: test
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CHROME_PATH: /usr/bin/chromium-browser
         run: |
+          set +e
           ready-ai test \
             --doc "./docs-baseline/docs.md" \
             --url "$STAGING_URL" \
             --threshold "$THRESHOLD" \
             --headless \
             --output "./regression-report"
+          EXIT_CODE=$?
+          set -e
           
-          # Parse result for downstream steps
-          if [ -f "./regression-report/report.json" ]; then
-            STATUS=$(jq -r '.overall_status' ./regression-report/report.json)
-            echo "status=$STATUS" >> $GITHUB_OUTPUT
+          REPORT="./regression-report/test_report.json"
+          if [ ! -s "$REPORT" ]; then
+            echo "Regression runner exited $EXIT_CODE without producing $REPORT."
+            exit 1
+          fi
+
+          STATUS=$(jq -er '.overall_status' "$REPORT")
+          case "$STATUS" in
+            PASSED|DRIFT_DETECTED|BROKEN) ;;
+            *)
+              echo "Unexpected documentation regression status: $STATUS"
+              exit 1
+              ;;
+          esac
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          if [ "$EXIT_CODE" -ne 0 ] && [ "$STATUS" != "DRIFT_DETECTED" ]; then
+            exit "$EXIT_CODE"
           fi
 
       # ─── Auto-regenerate on drift ─────────────────────────────────────
@@ -199,8 +229,7 @@ jobs:
             let body = '## 📋 Documentation Regression Test\n\n';
             
             if (status === 'SKIPPED') {
-              body += '⚠️ **No baseline documentation found.** Test skipped.\n';
-              body += 'Generate initial docs on `main` branch first (tag push triggers `docs-generation.yml`).\n';
+              body += '⚠️ **Regression test skipped.** Configure a staging URL and generate a non-empty baseline before enabling this check.\n';
             } else if (status === 'PASSED') {
               body += '✅ **All documentation steps are up to date!**\n\n';
               body += 'No UI drift detected. Screenshots match baseline within threshold.\n';
@@ -216,7 +245,7 @@ jobs:
             }
             
             // Add metrics if report exists
-            const reportPath = './regression-report/report.json';
+            const reportPath = './regression-report/test_report.json';
             if (fs.existsSync(reportPath)) {
               const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
               body += `\n| Metric | Value |\n|---|---|\n`;

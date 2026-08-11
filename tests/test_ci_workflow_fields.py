@@ -60,6 +60,28 @@ def test_workflow_uses_results_length_for_step_count():
     )
 
 
+def test_workflow_installs_the_checked_out_project_with_dev_dependencies():
+    """Regression tests must exercise the PR checkout, not the PyPI release."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert 'pip install -e ".[dev]"' in text
+    assert "pip install ready-ai" not in text
+
+
+def test_workflow_uses_the_report_written_by_the_test_runner():
+    """DocTestRunner writes test_report.json, including on drift."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "./regression-report/test_report.json" in text
+    assert "./regression-report/report.json" not in text
+    assert "without producing $REPORT.\"\n            exit 1" in text
+
+
+def test_workflow_requires_a_nonempty_baseline_and_configured_staging_url():
+    """Missing prerequisites must skip instead of producing a false failure."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert 'if [ -z "$STAGING_URL" ]; then' in text
+    assert 'if [ -s "./docs-baseline/docs.md" ]; then' in text
+
+
 # ---------------------------------------------------------------------------
 # YAML validity
 # ---------------------------------------------------------------------------
