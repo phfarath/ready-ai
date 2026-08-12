@@ -2,11 +2,16 @@
 Planner Agent — takes a goal and page context, produces a step-by-step plan.
 """
 
+from __future__ import annotations
+
 import logging
 import re
+from typing import TYPE_CHECKING
 
-from ..llm.client import LLMClient
 from ..llm.prompts import PLANNER_SYSTEM
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 

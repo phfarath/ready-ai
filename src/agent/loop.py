@@ -5,15 +5,16 @@ V2: Full Planner → Executor (with verification) → Critic (with re-execution)
 Supports authentication via cookies or credentials, and separate annotation model.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import time
 import websockets
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from ..llm.client import LLMClient
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
@@ -22,6 +23,9 @@ from . import planner, executor, critic, recovery
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
 from .state import RunState, DocStepState
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +146,8 @@ class AgenticLoop:
 
         async with Span(name="pipeline", attributes={"goal": self.goal, "url": self.url}):
             try:
+                from ..llm.client import LLMClient
+
                 # 1. Launch Chrome and connect
                 async with Span(name="browser_setup"):
                     await self._session.setup()

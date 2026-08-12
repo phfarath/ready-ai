@@ -6,6 +6,8 @@ previously generated docs.md, re-executes each step against the live UI,
 compares screenshots with baselines, and produces a DocTestReport.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -13,7 +15,7 @@ import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..cdp.browser import launch_chrome, get_ws_url
 from ..cdp.connection import CDPConnection
@@ -24,11 +26,13 @@ from ..docs.parser import parse_doc
 from ..docs.report_html import render_html_report
 from ..docs.terminal_output import ProgressPrinter
 from ..docs.visual_diff import compare_screenshots
-from ..llm.client import LLMClient
 from . import executor
 from .browser_session import _register_chrome_pid, _unregister_chrome_pid
 from .dom_utils import dom_fingerprint as _dom_fingerprint
 from .state import DocStepState, RunState
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +176,7 @@ class DocTestRunner:
             page = PageDomain(self._conn)
             input_domain = InputDomain(self._conn)
             runtime = RuntimeDomain(self._conn)
+            from ..llm.client import LLMClient
             llm = LLMClient(model=self.model)
 
             await page.enable()
