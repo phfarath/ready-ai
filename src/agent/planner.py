@@ -2,6 +2,8 @@
 Planner Agent — takes a goal and page context, produces a step-by-step plan.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 

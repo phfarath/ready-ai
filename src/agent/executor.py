@@ -6,21 +6,26 @@ Each step gets up to MAX_RETRIES attempts. After each action, the DOM is
 compared before/after to detect if anything actually changed.
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
 import logging
 import re
 import websockets
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
 
 from ..cdp.input import InputDomain
 from ..cdp.page import PageDomain
 from ..cdp.runtime import RuntimeDomain
 from ..cdp.sanitize import is_sensitive_field
-from ..llm.client import LLMClient
+from .state import Expectation, OutcomeEvidence
 from ..llm.prompts import EXECUTOR_SYSTEM, EXECUTOR_RETRY_SYSTEM
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,7 @@ class StepResult:
     attempts: int = 1
     failure_reason: str = ""
     status: str = ""
+    evidence: list[OutcomeEvidence] = field(default_factory=list)
 
 
 async def execute_step(
@@ -83,6 +89,7 @@ async def execute_step(
     """
     failures = list(previous_failures or [])
     last_action_desc = ""
+    all_evidence: list[OutcomeEvidence] = []
 
     for attempt in range(1, MAX_RETRIES + 1):
         # Capture DOM state BEFORE action
@@ -99,28 +106,102 @@ async def execute_step(
             failures.append("LLM returned unparseable action JSON")
             continue
 
+        # Capture an event cursor before the action. PageDomain uses it to
+        # evaluate only passive Network/Page evidence caused by this attempt.
+        event_cursor = getattr(page, "event_cursor", 0)
+        if not isinstance(event_cursor, int):
+            event_cursor = 0
+
         # Execute the action
         action_desc = await _dispatch_action(action, page, input_domain, runtime)
         last_action_desc = action_desc
+        try:
+            expectations = _parse_expectations(action)
+        except ValueError as exc:
+            failures.append(f"Attempt {attempt}: invalid expectation: {exc}")
+            continue
 
-        # Actions that don't change DOM are always "successful"
         action_type = action.get("action", "observe")
-        if action_type in ("observe", "wait"):
+
+        # Wait for UI to settle. Explicit navigation barrier handles hard
+        # navigations (process swap / app router transition) so the post-action
+        # fingerprint runs against a live execution context, not a dead one.
+        try:
+            try:
+                await page.wait_for_navigation_settled(
+                    timeout=10.0, after_sequence=event_cursor
+                )
+            except TypeError:
+                # Keep third-party PageDomain doubles made before T-2 usable.
+                await page.wait_for_navigation_settled(timeout=10.0)
+        except Exception:
+            await asyncio.sleep(0.5)  # generic fallback
+
+        evidence: list[OutcomeEvidence] = []
+        # A UI mutation must not hide a failing API request.  The PageDomain
+        # returns only method/status/query-less URL evidence; it never reads a
+        # response body or enables Fetch interception.
+        failures_since = getattr(page, "http_failures_since", None)
+        if callable(failures_since):
+            http_failures = failures_since(event_cursor)
+            evidence.extend(
+                OutcomeEvidence(
+                    kind=item.kind,
+                    passed=item.passed,
+                    observed=item.observed,
+                    details=item.details,
+                )
+                for item in http_failures
+            )
+            if http_failures:
+                statuses = ", ".join(str(item.details.get("status")) for item in http_failures)
+                failures.append(f"Attempt {attempt}: observed HTTP failure status {statuses}")
+                logger.warning("  [Attempt %s] ✗ passive HTTP failure: %s", attempt, statuses)
+                # Continue through the normal retry refresh below instead of
+                # accepting a DOM change as proof of success.
+                dom_html = await page.get_dom_html(max_length=4000)
+                interactive_elements = await runtime.get_interactive_elements()
+                all_evidence.extend(evidence)
+                continue
+
+        # Passive HTTP failure evidence is checked before an observe/wait can
+        # be accepted as successful. A visible UI change is not evidence that
+        # the backend operation succeeded.
+        if action_type in ("observe", "wait") and not expectations:
+            all_evidence.extend(evidence)
             return StepResult(
                 action_desc=action_desc,
                 success=True,
                 retry_needed=False,
                 attempts=attempt,
                 status="completed",
+                evidence=all_evidence,
             )
 
-        # Wait for UI to settle. Explicit navigation barrier handles hard
-        # navigations (process swap / app router transition) so the post-action
-        # fingerprint runs against a live execution context, not a dead one.
-        try:
-            await page.wait_for_navigation_settled(timeout=10.0)
-        except Exception:
-            await asyncio.sleep(0.5)  # generic fallback
+        if expectations:
+            expectation_evidence = await _verify_expectations(
+                page, expectations, after_sequence=event_cursor
+            )
+            evidence.extend(expectation_evidence)
+            failed = [item for item in expectation_evidence if not item.passed]
+            if not failed:
+                all_evidence.extend(evidence)
+                return StepResult(
+                    action_desc=action_desc,
+                    success=True,
+                    retry_needed=False,
+                    attempts=attempt,
+                    status="completed",
+                    evidence=all_evidence,
+                )
+            failures.append(
+                f"Attempt {attempt}: expectation failed: "
+                + "; ".join(item.observed for item in failed)
+            )
+            dom_html = await page.get_dom_html(max_length=4000)
+            interactive_elements = await runtime.get_interactive_elements()
+            all_evidence.extend(evidence)
+            continue
 
         # Capture DOM state AFTER action — bounded so a dead/dying execution
         # context can never hang the whole pipeline. On timeout we treat the
@@ -168,6 +249,7 @@ async def execute_step(
         changed = url_changed or text_changed
 
         if changed:
+            all_evidence.extend(evidence)
             logger.info(f"  [Attempt {attempt}] ✓ Action verified — DOM changed")
             return StepResult(
                 action_desc=action_desc,
@@ -175,6 +257,7 @@ async def execute_step(
                 retry_needed=False,
                 attempts=attempt,
                 status="completed",
+                evidence=all_evidence,
             )
 
         # Action didn't change anything — might have failed silently
@@ -199,6 +282,7 @@ async def execute_step(
             selector = action.get("selector", "")
             if selector:
                 await _try_scroll_into_view(selector, runtime)
+        all_evidence.extend(evidence)
 
     # All retries exhausted
     logger.error(f"  [FAILED] Step after {MAX_RETRIES} attempts: {step}")
@@ -209,7 +293,93 @@ async def execute_step(
         attempts=MAX_RETRIES,
         failure_reason="; ".join(failures),
         status="failed",
+        evidence=all_evidence,
     )
+
+
+def _parse_expectations(action: dict[str, Any]) -> list[Expectation]:
+    """Normalize the LLM action's optional ``expect``/``expects`` contract."""
+    raw = action.get("expects", action.get("expect", []))
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ValueError("expects must be an object or list of objects")
+    return [Expectation.from_dict(item) for item in raw]
+
+
+async def _verify_expectations(
+    page: PageDomain,
+    expectations: list[Expectation],
+    *,
+    after_sequence: int,
+) -> list[OutcomeEvidence]:
+    """Evaluate typed expectations through bounded PageDomain primitives."""
+    evidence: list[OutcomeEvidence] = []
+    for expectation in expectations:
+        try:
+            if expectation.kind == "url":
+                passed = await page.wait_for_url(
+                    expectation.value, mode=expectation.mode, timeout=expectation.timeout
+                )
+                evidence.append(OutcomeEvidence("url", passed, "URL matched" if passed else "URL did not match"))
+            elif expectation.kind == "element":
+                if not expectation.selector:
+                    raise ValueError("element expectation requires selector")
+                passed = await page.wait_for_element(
+                    expectation.selector,
+                    state=expectation.state,
+                    timeout=expectation.timeout,
+                )
+                evidence.append(OutcomeEvidence("element", passed, f"element {expectation.state}" if passed else f"element not {expectation.state}"))
+            elif expectation.kind == "text":
+                passed = await page.wait_for_text(
+                    expectation.value,
+                    selector=expectation.selector,
+                    timeout=expectation.timeout,
+                )
+                evidence.append(OutcomeEvidence("text", passed, "expected text visible" if passed else "expected text absent"))
+            elif expectation.kind == "ax":
+                passed = await page.wait_for_ax_text(expectation.value, timeout=expectation.timeout)
+                evidence.append(OutcomeEvidence("ax", passed, "accessibility text present" if passed else "accessibility text absent"))
+            elif expectation.kind == "network":
+                item = await page.wait_for_http(
+                    status=expectation.status,
+                    url_contains=expectation.value or None,
+                    timeout=expectation.timeout,
+                    after_sequence=after_sequence,
+                )
+                evidence.append(
+                    OutcomeEvidence(
+                        "network",
+                        item is not None and item.passed,
+                        item.observed if item else "expected HTTP response not observed",
+                        item.details if item else {},
+                    )
+                )
+            elif expectation.kind == "download":
+                item = await page.wait_for_download(
+                    filename=expectation.value or None,
+                    timeout=expectation.timeout,
+                    after_sequence=after_sequence,
+                )
+                evidence.append(
+                    OutcomeEvidence(
+                        "download",
+                        item is not None,
+                        item.observed if item else "download not observed",
+                        item.details if item else {},
+                    )
+                )
+            elif expectation.kind == "networkIdle":
+                await page.wait_for_network_idle(timeout=expectation.timeout, after_sequence=after_sequence)
+                evidence.append(OutcomeEvidence("networkIdle", True, "network idle"))
+            else:
+                raise ValueError(f"unsupported expectation kind {expectation.kind!r}")
+        except Exception as exc:  # A timeout is an outcome, not an executor crash.
+            evidence.append(OutcomeEvidence(expectation.kind, False, f"expectation error: {exc}"))
+    return evidence
 
 
 async def _get_action(

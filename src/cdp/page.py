@@ -8,10 +8,12 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from ..observability import get_metrics
-from .connection import CDPConnection
+from .connection import CDPConnection, CDPEventContext
 from .sanitize import (
     is_raw_mode,
     resolve_value_max,
@@ -28,6 +30,25 @@ logger = logging.getLogger(__name__)
 ENV_DOM_MAX_CHARS = "READY_AI_DOM_MAX_CHARS"
 DOM_MAX_CHARS_DEFAULT = 8_000
 DOM_MAX_CHARS_LEGACY_DEFAULT = 4_000  # preserved as the no-env fallback
+
+
+@dataclass(frozen=True)
+class PassiveEvidence:
+    """Small, sanitized proof from a CDP event (never a response body)."""
+
+    kind: str
+    passed: bool
+    observed: str
+    details: dict[str, Any]
+
+
+def _sanitize_evidence_url(value: str) -> str:
+    """Keep origin/path only; query strings often contain credentials."""
+    try:
+        parsed = urlsplit(value)
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    except (TypeError, ValueError):
+        return ""
 
 
 # Universal active cursor + highlight border injected on every new document.
@@ -144,19 +165,59 @@ async def register_cursor_script(conn, session_id=None) -> None:
 class PageDomain:
     """High-level Page domain operations over a CDPConnection."""
 
-    def __init__(self, conn: CDPConnection):
+    def __init__(
+        self,
+        conn: CDPConnection,
+        context: Optional[CDPEventContext] = None,
+    ):
         self._conn = conn
+        # A real BrowserSession has attached a CDP session before it creates a
+        # PageDomain. Unit tests and older integrations without one keep the
+        # legacy queue path until they opt in explicitly.
+        self.context = context or (
+            CDPEventContext(session_id=conn.session_id)
+            if conn.session_id
+            else None
+        )
         # Quick win #6: short-lived cache for wait_for_network_idle so
         # back-to-back calls within the TTL don't repeat the event-loop
         # scan. Bounded by `time.monotonic()`; the value is a sentinel
         # `(monotonic_ts, idle_time)` tuple.
         self._network_idle_cache: tuple[float, float] | None = None
         self._network_idle_cache_ttl_s: float = 1.0
+        self._network_enabled: bool = False
+
+    @property
+    def event_cursor(self) -> int:
+        """Cursor captured before an action for post-action evidence."""
+        return self._conn.event_cursor
+
+    def _is_scoped(self) -> bool:
+        return self.context is not None and not self.context.is_empty
+
+    async def _wait_event(
+        self,
+        event_name: str,
+        timeout: float,
+        *,
+        after_sequence: Optional[int] = None,
+    ) -> dict[str, Any]:
+        return await self._conn.wait_for_event(
+            event_name,
+            timeout,
+            context=self.context if self._is_scoped() else None,
+            after_sequence=after_sequence,
+        )
 
     async def enable(self) -> None:
         """Enable Page domain events (required for loadEventFired etc.) and universal cursor."""
         await self._conn.send("Page.enable")
         await self._conn.send("DOM.enable")
+        # Passive observation only.  We deliberately do not enable Fetch or
+        # request interception: no request is paused and no response body is
+        # ever read by this task.
+        await self._conn.send("Network.enable")
+        self._network_enabled = True
         # Quick win #8: ask Chrome to emit Page.lifecycleEvent so we can
         # wait for networkIdle via a real event instead of a polling
         # window in wait_for_network_idle. Lifecycle events are cheap
@@ -182,27 +243,39 @@ class PageDomain:
         if parsed.scheme not in ('http', 'https'):
             raise ValueError(f"Invalid URL scheme: {parsed.scheme}. Only http and https schemes are allowed.")
         
+        event_cursor = self.event_cursor
         logger.info(f"Navigating to: {url}")
         await self._conn.send("Page.navigate", {"url": url})
         
         if wait_for_load:
             try:
-                await self._conn.wait_for_event("Page.loadEventFired", timeout=30.0)
+                await self._wait_event(
+                    "Page.loadEventFired", timeout=30.0, after_sequence=event_cursor
+                )
             except TimeoutError:
                 logger.warning("Page load event timed out, continuing anyway")
                 
         if wait_for_network:
-            await self.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+            await self.wait_for_network_idle(
+                timeout=10.0, idle_time=0.5, after_sequence=event_cursor
+            )
         else:
             # Check for generic lifecycle events or basic readiness
             try:
-                await self._conn.wait_for_event("Page.domContentEventFired", timeout=2.0)
+                await self._wait_event(
+                    "Page.domContentEventFired", timeout=2.0, after_sequence=event_cursor
+                )
             except TimeoutError:
                 pass
             
         logger.info("Navigation complete")
 
-    async def wait_for_navigation_settled(self, timeout: float = 10.0) -> bool:
+    async def wait_for_navigation_settled(
+        self,
+        timeout: float = 10.0,
+        *,
+        after_sequence: Optional[int] = None,
+    ) -> bool:
         """
         Detect whether a navigation is in flight after an action and, if so,
         wait until the new document has loaded and the network has settled.
@@ -223,6 +296,57 @@ class PageDomain:
             "Inspector.targetCrashed",
             "Target.attachedToTarget",
         }
+        # A scoped PageDomain never reads the compatibility queue.  Every
+        # waiter receives its own event stream, and the action cursor lets us
+        # inspect events which arrived just before this method was entered.
+        if self._is_scoped():
+            cursor = self.event_cursor if after_sequence is None else after_sequence
+            subscription = self._conn.subscribe_events(
+                context=self.context,
+                after_sequence=cursor,
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            try:
+                navigated = False
+                while loop.time() < deadline:
+                    try:
+                        event = await subscription.wait(max(deadline - loop.time(), 0.01))
+                    except TimeoutError:
+                        break
+                    if event.get("method") in nav_methods:
+                        navigated = True
+                        break
+                if not navigated:
+                    return False
+                remaining = max(deadline - loop.time(), 0.0)
+                if remaining:
+                    try:
+                        await self._wait_event(
+                            "Page.loadEventFired",
+                            remaining / 2,
+                            after_sequence=cursor,
+                        )
+                    except TimeoutError:
+                        try:
+                            await self._wait_event(
+                                "Page.domContentEventFired",
+                                max(deadline - loop.time(), 0.01) / 2,
+                                after_sequence=cursor,
+                            )
+                        except TimeoutError:
+                            pass
+                remaining = max(deadline - loop.time(), 0.0)
+                if remaining:
+                    await self.wait_for_network_idle(
+                        timeout=remaining,
+                        idle_time=min(0.3, remaining / 2),
+                        after_sequence=cursor,
+                    )
+                return True
+            finally:
+                subscription.close()
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         peek_deadline = loop.time() + 0.2
@@ -261,7 +385,7 @@ class PageDomain:
             load_budget = remaining() / 2
             if load_budget > 0:
                 try:
-                    await self._conn.wait_for_event(
+                    await self._wait_event(
                         "Page.loadEventFired", timeout=load_budget
                     )
                 except TimeoutError:
@@ -270,7 +394,7 @@ class PageDomain:
                     dc_budget = remaining() / 2
                     if dc_budget > 0:
                         try:
-                            await self._conn.wait_for_event(
+                            await self._wait_event(
                                 "Page.domContentEventFired", timeout=dc_budget
                             )
                         except TimeoutError:
@@ -312,7 +436,13 @@ class PageDomain:
             for ev in stashed_non_nav:
                 await self._conn._events.put(ev)
 
-    async def wait_for_network_idle(self, timeout: float = 30.0, idle_time: float = 0.5) -> None:
+    async def wait_for_network_idle(
+        self,
+        timeout: float = 30.0,
+        idle_time: float = 0.5,
+        *,
+        after_sequence: Optional[int] = None,
+    ) -> None:
         """
         Wait until there are no pending network requests for at least `idle_time` seconds.
 
@@ -335,10 +465,20 @@ class PageDomain:
         """
         now = asyncio.get_running_loop().time()
         if (
+            after_sequence is None
+            and
             self._network_idle_cache is not None
             and (now - self._network_idle_cache[0]) < self._network_idle_cache_ttl_s
         ):
             logger.debug("wait_for_network_idle: cache hit")
+            return
+
+        if self._is_scoped():
+            await self._wait_for_scoped_network_idle(
+                timeout=timeout,
+                idle_time=idle_time,
+                after_sequence=after_sequence,
+            )
             return
 
         if os.environ.get("READY_AI_USE_LIFECYCLE_EVENTS", "").lower() in ("1", "true", "yes"):
@@ -387,7 +527,11 @@ class PageDomain:
             logger.debug("networkIdle lifecycle event not received, falling back to polling")
             # Fall through to the legacy polling implementation.
 
+        # Preserve the legacy polling contract: callers that miss the short
+        # cache refresh Network.enable on each scan. Scoped waits below keep a
+        # single passive domain subscription instead.
         await self._conn.send("Network.enable")
+        self._network_enabled = True
         deadline = asyncio.get_running_loop().time() + timeout
         in_flight = set()
         stashed = []
@@ -434,6 +578,267 @@ class PageDomain:
                     asyncio.get_running_loop().time(),
                     idle_time,
                 )
+
+    async def _wait_for_scoped_network_idle(
+        self,
+        *,
+        timeout: float,
+        idle_time: float,
+        after_sequence: Optional[int],
+    ) -> None:
+        """Network-idle wait backed by a private context subscription.
+
+        This path intentionally does not requeue anything: the subscription
+        owns a copy, while navigation and expectation waits receive their own
+        copies from the connection router.
+        """
+        if not self._network_enabled:
+            await self._conn.send("Network.enable")
+            self._network_enabled = True
+        cursor = self.event_cursor if after_sequence is None else after_sequence
+        subscription = self._conn.subscribe_events(
+            context=self.context,
+            after_sequence=cursor,
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        in_flight: set[str] = set()
+        idle_detected = False
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.warning("Scoped network idle wait timed out")
+                    return
+                try:
+                    event = await subscription.wait(min(idle_time, remaining))
+                except TimeoutError:
+                    if not in_flight:
+                        idle_detected = True
+                        return
+                    continue
+                method = event.get("method", "")
+                params = event.get("params") or {}
+                request_id = params.get("requestId")
+                if method == "Network.requestWillBeSent" and request_id:
+                    in_flight.add(str(request_id))
+                elif method in ("Network.loadingFinished", "Network.loadingFailed") and request_id:
+                    in_flight.discard(str(request_id))
+        finally:
+            subscription.close()
+            if idle_detected:
+                self._network_idle_cache = (loop.time(), idle_time)
+
+    async def _evaluate_value(self, expression: str) -> Any:
+        """Evaluate a small assertion expression without exposing DOM output."""
+        result = await self._conn.send(
+            "Runtime.evaluate",
+            {"expression": expression, "returnByValue": True, "awaitPromise": True},
+            timeout=5.0,
+        )
+        remote = result.get("result", {})
+        return remote.get("value")
+
+    async def wait_for_element(
+        self,
+        selector: str,
+        *,
+        state: str = "visible",
+        timeout: float = 10.0,
+        stable_for: float = 0.2,
+    ) -> bool:
+        """Deterministically wait for an element to be visible/enabled/stable.
+
+        ``stable`` means its visible bounding rectangle stayed unchanged for
+        ``stable_for`` seconds. It deliberately avoids a screenshot or DOM
+        dump, keeping evidence compact and safe.
+        """
+        if state not in {"present", "visible", "enabled", "stable"}:
+            raise ValueError("state must be present, visible, enabled, or stable")
+        safe_selector = json.dumps(selector)
+        expression = f"""(() => {{
+            const el = document.querySelector({safe_selector});
+            if (!el) return null;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return {{
+              visible: !!(rect.width && rect.height) && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0,
+              enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true',
+              rect: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
+            }};
+        }})()"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        stable_since: Optional[float] = None
+        last_rect: Optional[list[Any]] = None
+        while loop.time() < deadline:
+            result = await self._evaluate_value(expression)
+            if not result:
+                stable_since, last_rect = None, None
+            elif state == "present":
+                return True
+            elif state == "visible" and result.get("visible"):
+                return True
+            elif state == "enabled" and result.get("visible") and result.get("enabled"):
+                return True
+            elif state == "stable" and result.get("visible"):
+                rect = result.get("rect")
+                if rect == last_rect:
+                    stable_since = stable_since or loop.time()
+                    if loop.time() - stable_since >= stable_for:
+                        return True
+                else:
+                    last_rect, stable_since = rect, loop.time()
+            await asyncio.sleep(min(0.1, max(deadline - loop.time(), 0.01)))
+        return False
+
+    async def wait_for_url(
+        self,
+        expected: str,
+        *,
+        mode: str = "contains",
+        timeout: float = 10.0,
+    ) -> bool:
+        """Wait for a URL exact match or safe substring match."""
+        if mode not in {"exact", "contains"}:
+            raise ValueError("mode must be exact or contains")
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            current = str(await self._evaluate_value("window.location.href") or "")
+            if (mode == "exact" and current == expected) or (mode == "contains" and expected in current):
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def wait_for_text(
+        self,
+        text: str,
+        *,
+        selector: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> bool:
+        """Wait for visible text, optionally constrained to one element."""
+        root = (
+            f"document.querySelector({json.dumps(selector)})"
+            if selector
+            else "document.body"
+        )
+        expression = f"({root}?.innerText || '').includes({json.dumps(text)})"
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if await self._evaluate_value(expression):
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def wait_for_ax_text(self, text: str, *, timeout: float = 10.0) -> bool:
+        """Wait for sanitized accessibility-tree evidence to contain text."""
+        from .accessibility import get_ax_snapshot
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if text in await get_ax_snapshot(self._conn):
+                return True
+            await asyncio.sleep(0.15)
+        return False
+
+    @staticmethod
+    def _response_evidence(event: dict[str, Any]) -> PassiveEvidence:
+        response = ((event.get("params") or {}).get("response") or {})
+        status = int(response.get("status") or 0)
+        url = _sanitize_evidence_url(str(response.get("url") or ""))
+        return PassiveEvidence(
+            kind="network_http",
+            passed=200 <= status < 400,
+            observed=f"HTTP {status}" if status else "HTTP status unavailable",
+            details={"status": status, "url": url},
+        )
+
+    def http_failures_since(self, sequence: int) -> list[PassiveEvidence]:
+        """Return passive 4xx/5xx outcomes for this page context only."""
+        events = self._conn.events_since(
+            sequence,
+            context=self.context if self._is_scoped() else None,
+            event_name="Network.responseReceived",
+        )
+        evidence = [self._response_evidence(event) for event in events]
+        return [item for item in evidence if item.details.get("status", 0) >= 400]
+
+    async def wait_for_http(
+        self,
+        *,
+        status: Optional[int] = None,
+        url_contains: Optional[str] = None,
+        timeout: float = 10.0,
+        after_sequence: Optional[int] = None,
+    ) -> Optional[PassiveEvidence]:
+        """Wait for a passive Network.responseReceived observation.
+
+        Only the status and a query-less URL are retained. Fetch interception
+        and response bodies are intentionally out of scope.
+        """
+        cursor = self.event_cursor if after_sequence is None else after_sequence
+        subscription = self._conn.subscribe_events(
+            context=self.context if self._is_scoped() else None,
+            event_name="Network.responseReceived",
+            after_sequence=cursor,
+        )
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    event = await subscription.wait(max(deadline - asyncio.get_running_loop().time(), 0.01))
+                except TimeoutError:
+                    return None
+                evidence = self._response_evidence(event)
+                if status is not None and evidence.details["status"] != status:
+                    continue
+                if url_contains and url_contains not in evidence.details["url"]:
+                    continue
+                return evidence
+            return None
+        finally:
+            subscription.close()
+
+    async def wait_for_download(
+        self,
+        *,
+        filename: Optional[str] = None,
+        timeout: float = 10.0,
+        after_sequence: Optional[int] = None,
+    ) -> Optional[PassiveEvidence]:
+        """Wait for the download-start event without reading file contents."""
+        cursor = self.event_cursor if after_sequence is None else after_sequence
+        subscription = self._conn.subscribe_events(
+            context=self.context if self._is_scoped() else None,
+            event_name="Page.downloadWillBegin",
+            after_sequence=cursor,
+        )
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return None
+                try:
+                    event = await subscription.wait(remaining)
+                except TimeoutError:
+                    return None
+                params = event.get("params") or {}
+                suggested = str(params.get("suggestedFilename") or "")
+                if filename and suggested != filename:
+                    continue
+                return PassiveEvidence(
+                    kind="download",
+                    passed=True,
+                    observed="download started",
+                    details={
+                        "filename": suggested,
+                        "url": _sanitize_evidence_url(str(params.get("url") or "")),
+                    },
+                )
+        finally:
+            subscription.close()
 
 
     async def screenshot(

@@ -5,15 +5,16 @@ Module-level async functions following the same pattern as planner.py and critic
 All functions receive explicit dependencies as parameters for testability.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import re
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
-from ..llm.client import LLMClient
 from ..llm.prompts import (
     PLANNER_FAILED_STEP_RECOVERY_SYSTEM,
     PLANNER_REPLAN_SYSTEM,
@@ -22,6 +23,9 @@ from ..llm.prompts import (
 from ..observability import get_metrics, log_event
 from . import planner, executor
 from .dom_utils import dom_fingerprint
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 __all__ = [
     "dom_fingerprint",

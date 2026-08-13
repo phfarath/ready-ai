@@ -5,6 +5,8 @@ Encapsulates launching Chrome, CDP connection management, cookie injection,
 login form handling, and browser crash recovery.
 """
 
+from __future__ import annotations
+
 import atexit
 import json
 import logging
@@ -13,15 +15,17 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..cdp.browser import launch_chrome, get_ws_url
 from ..cdp.connection import CDPConnection
 from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
-from ..llm.client import LLMClient
 from ..observability import log_event
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
