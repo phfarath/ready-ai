@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 from src.api.models import (
     FlowSpec,
+    FlowStepSpec,
     FlowAction,
     FlowRunResult,
     FlowStepResult,
@@ -97,6 +98,18 @@ class TestFlowModels:
     def test_flow_spec_requires_at_least_one_step(self):
         with pytest.raises(Exception):
             FlowSpec(url="https://x.example", steps=[])
+
+    def test_retries_fields_reject_negative_values(self):
+        """B5 — retries budgets must be non-negative everywhere."""
+        with pytest.raises(Exception):
+            FlowAction(action="click", selector="#a", retries=-1)
+        with pytest.raises(Exception):
+            FlowStepSpec(actions=[], retries=-1)
+        with pytest.raises(Exception):
+            FlowSpec(url="https://x.example", steps=[FlowStepSpec()], retries=-1)
+        # Zero is a valid budget (immediate single attempt, no retries).
+        assert FlowAction(action="click", selector="#a", retries=0).retries == 0
+        assert FlowSpec(url="https://x.example", steps=[FlowStepSpec()], retries=0).retries == 0
 
     def test_flow_spec_parses_nested_document(self):
         flow = FlowSpec.model_validate(
@@ -291,3 +304,88 @@ async def test_flows_run_endpoint_returns_500_on_execution_error(monkeypatch):
 
     assert response.status_code == 500
     assert "Run-flow failed" in response.json()["detail"]
+
+
+# ─── B2 — /flows/run concurrency hardening ─────────────────────────────
+
+def test_flow_rate_tier_maps_flows_to_run():
+    """B2 — /flows/run sits on the expensive "run" tier, not "standard"."""
+    from src.api.server import _rate_limiter
+
+    assert _rate_limiter.path_tiers["/flows"] == "run"
+    assert _rate_limiter._get_tier("/flows/run") == "run"
+
+
+@pytest.mark.asyncio
+async def test_flows_run_endpoint_allocates_non_default_browser_port(monkeypatch):
+    """B2 — every /flows/run request gets a port from the RunManager pool."""
+    from src.api.manager import RunManager
+
+    captured = {}
+
+    class FakeLoop:
+        def __init__(self, **kwargs):
+            captured["port"] = kwargs.get("port")
+            self.run_flow = AsyncMock(
+                return_value={
+                    "run_id": "flow-abc",
+                    "flow": "checkout",
+                    "url": "https://app.example.com",
+                    "status": "passed",
+                    "steps": [],
+                    "summary": {},
+                }
+            )
+
+    # Patch the whole class symbol so the route instantiates FakeLoop.
+    monkeypatch.setattr("src.agent.loop.AgenticLoop", FakeLoop)
+    launch_port = 9377
+    acquire = AsyncMock(return_value=launch_port)
+    release = AsyncMock(return_value=None)
+    monkeypatch.setattr(RunManager, "_acquire_port", acquire)
+    monkeypatch.setattr(RunManager, "_release_port", release)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/flows/run", json=FLOW_BODY)
+
+    assert response.status_code == 200
+    assert captured["port"] == launch_port
+    assert captured["port"] != 9222
+    acquire.assert_awaited_once()
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flows_run_endpoint_times_out_returns_503(monkeypatch):
+    """B2 — a run exceeding the timeout returns 503 instead of hanging."""
+    import asyncio
+
+    from src.api.manager import RunManager
+    from src.api import server as server_module
+
+    class HangingLoop:
+        def __init__(self, **kwargs):
+            self.port = kwargs.get("port")
+
+        async def run_flow(self, flow):
+            await asyncio.sleep(30)
+            return {}
+
+    monkeypatch.setattr("src.agent.loop.AgenticLoop", HangingLoop)
+    monkeypatch.setattr(server_module, "FLOW_RUN_TIMEOUT_S", 0.05)
+
+    launch_port = 9388
+    acquire = AsyncMock(return_value=launch_port)
+    release = AsyncMock(return_value=None)
+    monkeypatch.setattr(RunManager, "_acquire_port", acquire)
+    monkeypatch.setattr(RunManager, "_release_port", release)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/flows/run", json=FLOW_BODY)
+
+    assert response.status_code == 503
+    assert "timed out" in response.json()["detail"]
+    # The allocated port is always returned to the pool.
+    release.assert_awaited_once()

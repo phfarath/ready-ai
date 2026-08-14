@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import websockets
 from dataclasses import asdict
@@ -45,6 +46,31 @@ logger = logging.getLogger(__name__)
 # READY-AI-T-3: exceeding it terminates the run with a structured
 # CircuitOpenError instead of retrying forever.
 MAX_CRASHES = 3
+
+# ─── Run-flow outcome classification (READY-AI-T-4 / fix B3) ─────────────
+#
+# ``executor._dispatch_action`` encodes failures in the description it
+# returns: denial-prefixed wording (a failed lookup, an executor error,
+# an unknown action type) or a "Timeout waiting for ..." signal from the
+# ``wait`` action. Success, however, is only *verifiable* for actions that
+# return an explicit non-denial description; for the silent-success actions
+# below the executor has no failure wording at all, so their outcome is
+# assumed passed without verification. Every other action that returns a
+# description matching no denial prefix is fail-CLOSED ("unrecognized
+# action outcome") instead of being guessed as passed.
+KNOWN_DENIAL_PREFIXES: tuple[str, ...] = (
+    "[failed]",
+    "[error]",
+    "[unknown",
+    "timeout ",
+)
+KNOWN_SILENT_SUCCESS_ACTIONS: frozenset[str] = frozenset(
+    {"scroll_to", "type", "press_key", "navigate"}
+)
+
+# Text-bearing actions whose ``text`` parameter and executor description
+# are redacted at the report boundary (fix B1).
+_TEXT_MASKED_ACTIONS: frozenset[str] = frozenset({"type", "click_text"})
 
 
 class AgenticLoop:
@@ -287,16 +313,26 @@ class AgenticLoop:
         A step aborts after the first action whose retry budget is
         exhausted, so the result pinpoints the root cause instead of
         cascading noise; remaining actions/asserts/extractions of that
-        step are left empty.
+        step are reported via ``skipped_asserts``/``skipped_extractions``
+        instead of being silently dropped.
+
+        A CDP disconnection (surfacing as a "CDP connection lost during
+        action" failure) is run-level and terminal: the remaining steps
+        are never executed and are reported as ``skipped`` with reason
+        "aborted: CDP connection lost", ``failure_reason`` on the result
+        carries the sanitized disconnect reason, and the summary counts
+        only executed steps plus the explicitly skipped remainder — the
+        result stays truthful about what did and did not run.
 
         Returns:
             JSON-serializable dict with keys: run_id, flow, url, status,
-            steps[], summary{}
+            steps[], summary{}, failure_reason
         """
         run_ctx = init_run_context(run_id=self.run_id)
         flow_name = flow.name or "run-flow"
         step_results: list[dict] = []
         overall_status = "passed"
+        run_failed_reason: Optional[str] = None
 
         async with Span(name="flow_run", attributes={"url": self.url, "flow": flow_name}):
             try:
@@ -330,11 +366,20 @@ class AgenticLoop:
                     step_results.append(step_report)
                     if step_report["status"] != "passed":
                         overall_status = "failed"
+                    # A CDP disconnection is run-level and terminal: stop
+                    # executing, report the remaining steps as skipped.
+                    disconnect_reason = self._disconnect_failure_reason(step_report)
+                    if disconnect_reason:
+                        run_failed_reason = disconnect_reason
+                        self._mark_remaining_steps_skipped(step_results, flow, index)
+                        break
 
                 self._state.status = "FINISHED" if overall_status == "passed" else "FAILED"
                 self._save_checkpoint()
 
-                result = self._build_flow_result(flow, flow_name, overall_status, step_results)
+                result = self._build_flow_result(
+                    flow, flow_name, overall_status, step_results, run_failed_reason
+                )
                 self._persist_flow_result(result)
                 self._save_flow_metrics(run_ctx, flow_name, overall_status, step_results)
                 return result
@@ -387,6 +432,10 @@ class AgenticLoop:
 
         assert_results: list[dict] = []
         extracted: list[dict] = []
+        # DoD2: declared-but-not-executed asserts/extractions are counted
+        # instead of being silently dropped when the step aborts.
+        skipped_asserts = 0
+        skipped_extractions = 0
         if not aborted:
             for assertion in step.asserts:
                 result = await self._evaluate_flow_assertion(assertion, runtime)
@@ -403,6 +452,9 @@ class AgenticLoop:
                         "value": value,
                     }
                 )
+        else:
+            skipped_asserts = len(step.asserts)
+            skipped_extractions = len(step.extract)
 
         attempts = max((r["attempts"] for r in action_reports), default=1)
         status = (
@@ -419,6 +471,8 @@ class AgenticLoop:
             "attempts": attempts,
             "status": status,
             "failure_reason": "; ".join(dict.fromkeys(reasons)) if reasons else "",
+            "skipped_asserts": skipped_asserts,
+            "skipped_extractions": skipped_extractions,
         }
 
     async def _execute_flow_action(
@@ -465,46 +519,130 @@ class AgenticLoop:
                 last_failure = f"Action error: {exc}"
                 break
             last_desc = desc or ""
-            if self._flow_action_ok(last_desc):
+            if self._flow_action_ok(last_desc, action_type):
                 return {
                     "action": action_type,
                     "params": params,
-                    "description": last_desc,
+                    "description": self._mask_flow_description(
+                        last_desc, action_type, payload
+                    ),
                     "attempts": attempts,
                     "passed": True,
                     "failure_reason": "",
                 }
-            last_failure = last_desc
+            last_failure = self._flow_failure_reason(last_desc, action_type)
 
         return {
             "action": action_type,
             "params": params,
-            "description": last_desc,
+            "description": self._mask_flow_description(last_desc, action_type, payload),
             "attempts": max(attempts, 1),
             "passed": False,
             "failure_reason": last_failure,
         }
 
     @staticmethod
-    def _flow_action_ok(description: str) -> bool:
-        """Match the executor's own success/failure conventions in descriptions."""
+    def _flow_action_ok(description: str, action_type: str) -> bool:
+        """Classify a dispatch description as passed, failing CLOSED.
+
+        Success is only assumed for actions whose executor wording cannot
+        express failure (``KNOWN_SILENT_SUCCESS_ACTIONS``). Every other
+        action must produce a description that matches no denial prefix;
+        unrecognized wording is treated as a failed outcome (see
+        ``_flow_failure_reason``) instead of being guessed as passed.
+        """
         if not description:
             return False
         lowered = description.lower()
-        return not (
-            lowered.startswith("[failed]")
-            or lowered.startswith("[error]")
-            or lowered.startswith("[unknown")
-            or lowered.startswith("timeout ")
-        )
+        for prefix in KNOWN_DENIAL_PREFIXES:
+            if lowered.startswith(prefix):
+                return False
+        return action_type in KNOWN_SILENT_SUCCESS_ACTIONS
+
+    @staticmethod
+    def _flow_failure_reason(description: str, action_type: str) -> str:
+        """Human-readable failure reason for a non-passing description."""
+        if not description:
+            return "empty action outcome"
+        lowered = description.lower()
+        for prefix in KNOWN_DENIAL_PREFIXES:
+            if lowered.startswith(prefix):
+                return description
+        return "unrecognized action outcome"
 
     @staticmethod
     def _flow_params_for_report(payload: dict) -> dict:
         """Build report params; typed text is masked to avoid leaking secrets."""
         params = {k: v for k, v in payload.items() if k != "action"}
-        if payload.get("action") == "type" and "text" in params:
+        if payload.get("action") in _TEXT_MASKED_ACTIONS and "text" in params:
             params["text"] = "***"
         return params
+
+    @staticmethod
+    def _mask_flow_description(description: str, action_type: str, payload: dict) -> str:
+        """Redact raw typed/clicked text from the executor description.
+
+        Display-level redaction at the report boundary: the executor's own
+        locally logged description (out of scope here) may carry the raw
+        value — e.g. when ``is_sensitive_field`` misses the target field —
+        so every occurrence of the raw value in the description is replaced
+        with ``"***"`` before it enters a report. Empty/whitespace text is
+        left untouched.
+        """
+        if action_type not in _TEXT_MASKED_ACTIONS:
+            return description
+        raw = payload.get("text")
+        if not isinstance(raw, str) or not raw.strip():
+            return description
+        return re.sub(re.escape(raw), "***", description)
+
+    @staticmethod
+    def _disconnect_failure_reason(step_report: dict) -> Optional[str]:
+        """Return a sanitized run-level reason when a step hit a CDP disconnect.
+
+        ``_execute_flow_action`` marks every disconnect (a re-raised
+        ``websockets.ConnectionClosed`` / ``WebSocketDisconnected`` from
+        ``_dispatch_action``, or a ``CircuitOpenError`` surfaced outside
+        it) with the "CDP connection lost during action:" marker. The
+        exception payload itself is dropped so no URLs or credentials
+        leak into the run-level result.
+        """
+        for action_report in step_report.get("actions", []):
+            reason = action_report.get("failure_reason") or ""
+            if "CDP connection lost" in reason:
+                action_type = action_report.get("action", "unknown")
+                return f"CDP connection lost during action: {action_type}"
+        return None
+
+    @staticmethod
+    def _mark_remaining_steps_skipped(
+        step_results: list[dict],
+        flow: FlowSpec,
+        failed_index: int,
+    ) -> None:
+        """Append truthful ``skipped`` reports for steps after a CDP abort.
+
+        ``failed_index`` is the 1-based index of the step that failed on
+        the disconnect; the remaining declared steps are never executed
+        and report status "skipped" with an explicit abort reason, and
+        their declared asserts/extractions are counted as skipped.
+        """
+        for j in range(failed_index, len(flow.steps)):
+            step = flow.steps[j]
+            step_results.append(
+                {
+                    "index": j + 1,
+                    "name": step.name,
+                    "actions": [],
+                    "asserts": [],
+                    "extracted": [],
+                    "attempts": 0,
+                    "status": "skipped",
+                    "failure_reason": "aborted: CDP connection lost",
+                    "skipped_asserts": len(step.asserts),
+                    "skipped_extractions": len(step.extract),
+                }
+            )
 
     async def _evaluate_flow_assertion(
         self,
@@ -517,13 +655,22 @@ class AgenticLoop:
         expected = assertion.expected
         actual: object = None
         passed = False
+        # B5: empty-expected comparisons that would otherwise trivially pass
+        # (e.g. url_contains with no expected, or an equality assert against
+        # a missing element with expected "") must fail closed with a clear
+        # message.
+        guard_message = ""
         try:
             if atype in ("url_contains", "url_equals", "not_url_contains"):
                 actual = await runtime.evaluate("window.location.href")
                 actual_s = str(actual or "")
                 exp_s = str(expected or "")
                 if atype == "url_contains":
-                    passed = exp_s in actual_s
+                    if expected is None or str(expected).strip() == "":
+                        passed = False
+                        guard_message = "empty expected value"
+                    else:
+                        passed = exp_s in actual_s
                 elif atype == "url_equals":
                     passed = actual_s == exp_s
                 else:
@@ -558,14 +705,22 @@ class AgenticLoop:
                 if atype == "text_contains":
                     passed = str(expected or "") in actual_s
                 else:
-                    passed = actual_s.strip() == str(expected or "").strip()
+                    if (expected is None or str(expected).strip() == "") and actual_s.strip() == "":
+                        passed = False
+                        guard_message = "empty expected value (element text missing)"
+                    else:
+                        passed = actual_s.strip() == str(expected or "").strip()
             elif atype == "attribute_equals":
                 if not selector or not assertion.attribute:
                     passed = False
                 else:
                     attrs = await runtime.get_element_attributes(selector)
                     actual = attrs.get(assertion.attribute)
-                    passed = str(actual or "") == str(expected or "")
+                    if (expected is None or str(expected).strip() == "") and actual is None:
+                        passed = False
+                        guard_message = "empty expected value (attribute missing)"
+                    else:
+                        passed = str(actual or "") == str(expected or "")
             else:
                 raise ValueError(f"Unsupported flow assertion type: {atype}")
         except Exception as exc:
@@ -584,7 +739,8 @@ class AgenticLoop:
         message = ""
         if not passed:
             message = assertion.message or (
-                f"{atype} failed: expected={expected!r} actual={actual!r}"
+                guard_message
+                or f"{atype} failed: expected={expected!r} actual={actual!r}"
             )
         return {
             "type": atype,
@@ -606,7 +762,7 @@ class AgenticLoop:
         multi = "true" if extraction.multiple else "false"
         js = f"""(() => {{
             const els = Array.from(document.querySelectorAll({safe_sel}));
-            if (els.length === 0) return null;
+            if (els.length === 0) return {multi} ? [] : null;
             const read = (el) => {{
                 let key = {safe_prop};
                 if (key.startsWith('@')) return el.getAttribute(key.slice(1));
@@ -635,12 +791,14 @@ class AgenticLoop:
         flow_name: str,
         status: str,
         step_results: list[dict],
+        failure_reason: Optional[str] = None,
     ) -> dict:
         """Assemble the structured JSON result with a run summary."""
         summary = {
             "steps_total": len(flow.steps),
             "steps_passed": sum(1 for s in step_results if s["status"] == "passed"),
             "steps_failed": sum(1 for s in step_results if s["status"] == "failed"),
+            "steps_skipped": sum(1 for s in step_results if s["status"] == "skipped"),
             "actions_total": sum(len(s["actions"]) for s in step_results),
             "actions_failed": sum(
                 1 for s in step_results for a in s["actions"] if not a["passed"]
@@ -656,6 +814,12 @@ class AgenticLoop:
                 for s in step_results
                 for a in s["actions"]
             ),
+            "skipped_asserts_total": sum(
+                int(s["skipped_asserts"]) for s in step_results
+            ),
+            "skipped_extractions_total": sum(
+                int(s["skipped_extractions"]) for s in step_results
+            ),
         }
         return {
             "run_id": self.run_id,
@@ -664,6 +828,7 @@ class AgenticLoop:
             "status": status,
             "steps": step_results,
             "summary": summary,
+            "failure_reason": failure_reason,
         }
 
     def _persist_flow_result(self, result: dict) -> None:

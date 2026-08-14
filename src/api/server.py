@@ -100,6 +100,7 @@ class TokenBucketRateLimiter:
             "/health": "health",
             "/ready": "health",
             "/runs": "run",
+            "/flows": "run",
             "/batch": "batch",
             "/export": "export",
         }
@@ -350,6 +351,12 @@ async def readiness_check():
 
 # ─── Run-flow endpoint (READY-AI-T-4) ───────────────────────────────────
 
+# Generous per-flow execution budget: a well-formed flow either finishes
+# well inside this window or is returned as a 503 instead of hanging the
+# request (fix B2).
+FLOW_RUN_TIMEOUT_S = 300
+
+
 @app.post("/flows/run", response_model=FlowRunResult)
 async def run_flow(flow: FlowSpec):
     """Execute a declarative run-flow and return its structured result.
@@ -358,28 +365,46 @@ async def run_flow(flow: FlowSpec):
     pipeline is used, but no DocRenderer / screenshots / annotation are
     involved. Each step reports actions (with retry attempts), expects
     (asserts), and extracted data.
+
+    Every request allocates its own browser port from the ``RunManager``
+    pool (released in ``finally``) so concurrent runs never contend on
+    the default 9222 debugging port, and the whole execution runs under
+    ``FLOW_RUN_TIMEOUT_S`` — a timeout is reported as 503 instead of
+    leaving the request hanging.
     """
     import uuid
     from src.agent.loop import AgenticLoop
+    from src.api.manager import RunManager
 
     run_id = flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
-    loop = AgenticLoop(
-        goal=flow.name or "run-flow",
-        url=flow.url,
-        model=flow.model,
-        output_dir=flow.output or "./output",
-        headless=flow.headless,
-        cookies_file=flow.cookies_file,
-        username=flow.username,
-        password=flow.password,
-        run_id=run_id,
-    )
+    port = await RunManager._acquire_port()
     try:
-        data = await loop.run_flow(flow)
+        loop = AgenticLoop(
+            goal=flow.name or "run-flow",
+            url=flow.url,
+            model=flow.model,
+            output_dir=flow.output or "./output",
+            port=port,
+            headless=flow.headless,
+            cookies_file=flow.cookies_file,
+            username=flow.username,
+            password=flow.password,
+            run_id=run_id,
+        )
+        data = await asyncio.wait_for(
+            loop.run_flow(flow), timeout=FLOW_RUN_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Run-flow timed out after {FLOW_RUN_TIMEOUT_S}s",
+        ) from None
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=f"Run-flow failed: {exc}"
         ) from exc
+    finally:
+        await RunManager._release_port(port)
     return FlowRunResult(**data)
 
 

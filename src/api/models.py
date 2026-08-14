@@ -55,6 +55,7 @@ class FlowAction(BaseModel):
     value: Optional[str] = Field(None, description="Generic value for future action types")
     retries: Optional[int] = Field(
         None,
+        ge=0,
         description="Per-action retry budget; falls back to the step/flow default",
     )
 
@@ -91,7 +92,10 @@ class FlowExtraction(BaseModel):
     )
     multiple: bool = Field(
         False,
-        description="Collect all matches into a list when true",
+        description=(
+            "Collect all matches into a list when true "
+            "(an empty list when nothing matches)"
+        ),
     )
 
 
@@ -103,6 +107,7 @@ class FlowStepSpec(BaseModel):
     extract: List[FlowExtraction] = Field(default_factory=list)
     retries: Optional[int] = Field(
         None,
+        ge=0,
         description="Per-step retry budget; falls back to the flow default",
     )
 
@@ -116,7 +121,7 @@ class FlowSpec(BaseModel):
         min_length=1,
         description="Ordered list of steps to execute",
     )
-    retries: int = Field(1, description="Default per-action retry budget")
+    retries: int = Field(1, ge=0, description="Default per-action retry budget")
     headless: bool = Field(True, description="Run Chrome in headless mode")
     run_id: Optional[str] = Field(None, description="Run identifier for result output")
     cookies_file: Optional[str] = Field(None, description="JSON cookies file path")
@@ -163,8 +168,22 @@ class FlowStepResult(BaseModel):
     asserts: List[FlowAssertionResult] = Field(default_factory=list)
     extracted: List[FlowExtractionResult] = Field(default_factory=list)
     attempts: int = 1
-    status: str = Field("passed", description="passed | failed")
+    status: str = Field("passed", description="passed | failed | skipped")
     failure_reason: str = ""
+    skipped_asserts: int = Field(
+        0,
+        description=(
+            "Declared asserts that were not executed because the step "
+            "aborted (e.g. action retry exhaustion or CDP disconnect)"
+        ),
+    )
+    skipped_extractions: int = Field(
+        0,
+        description=(
+            "Declared extractions that were not executed because the "
+            "step aborted"
+        ),
+    )
 
 
 class FlowRunResult(BaseModel):
@@ -175,6 +194,13 @@ class FlowRunResult(BaseModel):
     status: str = Field("passed", description="passed | failed")
     steps: List[FlowStepResult] = Field(default_factory=list)
     summary: dict = Field(default_factory=dict)
+    failure_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Run-level failure reason (e.g. a CDP disconnection that "
+            "aborted the remaining steps); None when the run completed"
+        ),
+    )
 
 
 # ─── Deploy Webhook Models ─────────────────────────────────────────────

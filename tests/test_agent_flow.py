@@ -11,6 +11,7 @@ screenshots or visual annotation.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -78,12 +79,19 @@ def _make_loop(tmp_path, run_id="flow-test"):
 
 @pytest.mark.asyncio
 async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path, monkeypatch):
-    """DoD5a — success flow: actions dispatched, asserts pass, data extracted."""
+    """DoD5a — success flow: actions dispatched, asserts pass, data extracted.
+
+    Uses a ``navigate`` action: with the B3 fail-closed classifier only
+    ``KNOWN_SILENT_SUCCESS_ACTIONS`` (scroll_to, type, press_key, navigate)
+    are assumed passed on their executor wording — anything else must
+    carry an explicit success signal, so plain "Clicked element: ..."
+    would now be reported as an unrecognized outcome.
+    """
     flow = _flow(
         [
             FlowStepSpec(
                 name="Go to checkout",
-                actions=[FlowAction(action="click", selector="#checkout-btn")],
+                actions=[FlowAction(action="navigate", url="https://app.example.com/checkout")],
                 asserts=[
                     FlowAssertion(type="url_contains", expected="/done"),
                     FlowAssertion(type="element_visible", selector="#receipt"),
@@ -94,7 +102,7 @@ async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path
     )
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
-    dispatch = AsyncMock(return_value="Clicked element: #checkout-btn")
+    dispatch = AsyncMock(return_value="Navigated to: https://app.example.com/checkout")
     monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
 
     async def fake_evaluate(expression):
@@ -119,10 +127,10 @@ async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path
     assert step["name"] == "Go to checkout"
     assert step["status"] == "passed"
     assert step["attempts"] == 1
-    assert step["actions"][0]["action"] == "click"
+    assert step["actions"][0]["action"] == "navigate"
     assert step["actions"][0]["attempts"] == 1
     assert step["actions"][0]["passed"] is True
-    assert step["actions"][0]["params"] == {"selector": "#checkout-btn"}
+    assert step["actions"][0]["params"] == {"url": "https://app.example.com/checkout"}
 
     assert step["asserts"][0]["type"] == "url_contains"
     assert step["asserts"][0]["expected"] == "/done"
@@ -141,6 +149,12 @@ async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path
     assert result["summary"]["asserts_failed"] == 0
     assert result["summary"]["extractions"] == 1
 
+    # DoD2 — nothing was skipped on a clean success.
+    assert step["skipped_asserts"] == 0
+    assert step["skipped_extractions"] == 0
+    assert result["summary"]["skipped_asserts_total"] == 0
+    assert result["summary"]["skipped_extractions_total"] == 0
+
     # The docs pipeline relies on the same action dispatcher — it must have run.
     assert dispatch.await_count == 1
 
@@ -152,7 +166,7 @@ async def test_run_flow_reports_failed_assert_with_expected_and_actual(tmp_path,
         [
             FlowStepSpec(
                 name="Confirm order",
-                actions=[FlowAction(action="click", selector="#confirm")],
+                actions=[FlowAction(action="navigate", url="https://app.example.com/confirm")],
                 asserts=[
                     FlowAssertion(
                         type="url_contains",
@@ -167,7 +181,7 @@ async def test_run_flow_reports_failed_assert_with_expected_and_actual(tmp_path,
 
     monkeypatch.setattr(
         "src.agent.loop.executor._dispatch_action",
-        AsyncMock(return_value="Clicked element: #confirm"),
+        AsyncMock(return_value="Navigated to: https://app.example.com/confirm"),
     )
 
     async def fake_evaluate(expression):
@@ -237,6 +251,13 @@ async def test_run_flow_reports_exhausted_retries_per_action(tmp_path, monkeypat
     assert step["extracted"] == []
     assert step["attempts"] == 3
 
+    # DoD2 — the declared-but-not-executed expectations/extractions are
+    # counted instead of being silently dropped.
+    assert step["skipped_asserts"] == 1
+    assert step["skipped_extractions"] == 1
+    assert result["summary"]["skipped_asserts_total"] == 1
+    assert result["summary"]["skipped_extractions_total"] == 1
+
     assert result["summary"]["actions_failed"] == 1
     assert result["summary"]["retries_used"] == 2
 
@@ -248,7 +269,7 @@ async def test_run_flow_never_instantiates_doc_renderer(tmp_path, monkeypatch):
         [
             FlowStepSpec(
                 name="Check page",
-                actions=[FlowAction(action="observe")],
+                actions=[FlowAction(action="navigate", url="https://app.example.com/start")],
                 asserts=[FlowAssertion(type="element_present", selector="#app")],
             )
         ]
@@ -257,7 +278,7 @@ async def test_run_flow_never_instantiates_doc_renderer(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "src.agent.loop.executor._dispatch_action",
-        AsyncMock(return_value="Observing current page state"),
+        AsyncMock(return_value="Navigated to: https://app.example.com/start"),
     )
     runtime.query_selector.return_value = "object-id-1"  # #app exists
 
@@ -299,3 +320,295 @@ async def test_run_flow_reports_cdp_disconnect_as_action_failure(tmp_path, monke
     assert step["status"] == "failed"
     assert step["actions"][0]["passed"] is False
     assert "CDP" in step["actions"][0]["failure_reason"]
+
+
+# ─── B1 — secret masking at the report boundary ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_flow_masks_type_action_text_in_params_and_description(tmp_path, monkeypatch):
+    """B1 — type text is masked even when the field name is not sensitive.
+
+    The executor echoes the raw value into its description whenever the
+    ``is_sensitive_field`` heuristic misses (e.g. field name "code"); the
+    report boundary must redact both ``params.text`` and the description.
+    """
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Enter code",
+                actions=[FlowAction(action="type", selector="#code", text="Sup3rSecret!")],
+                asserts=[FlowAssertion(type="element_present", selector="#submit")],
+            )
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    async def fake_dispatch(payload, *args, **kwargs):
+        # Mimic the executor on a non-sensitive-looking field: raw text echo.
+        return f"Typed '{payload['text']}' into {payload['selector']}"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", fake_dispatch)
+    runtime.query_selector.return_value = "object-id-1"
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "passed"
+    step = result["steps"][0]
+    action_report = step["actions"][0]
+    assert action_report["params"]["text"] == "***"
+    assert "***" in action_report["description"]
+    assert "Sup3rSecret!" not in action_report["description"]
+    # The raw secret must never reach the serialized action reports.
+    assert "Sup3rSecret!" not in json.dumps(step["actions"])
+
+
+@pytest.mark.asyncio
+async def test_run_flow_masks_click_text_action_text_in_params_and_description(tmp_path, monkeypatch):
+    """B1 — click_text text is masked in params and the description."""
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Click option",
+                actions=[FlowAction(action="click_text", text="TopSecretXYZ")],
+            )
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    async def fake_dispatch(payload, *args, **kwargs):
+        return f"Clicked element by text: '{payload['text']}'"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", fake_dispatch)
+
+    result = await loop.run_flow(flow)
+
+    step = result["steps"][0]
+    action_report = step["actions"][0]
+    assert action_report["params"]["text"] == "***"
+    assert "***" in action_report["description"]
+    assert "TopSecretXYZ" not in action_report["description"]
+    assert "TopSecretXYZ" not in json.dumps(step["actions"])
+
+
+# ─── B3 — explicit action-outcome classification ─────────────────────────
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "[Failed] Element not found: #missing",
+        "[Error] click: boom",
+        "[Unknown action: frobnicate]",
+        "Timeout waiting for: #spinner",
+    ],
+)
+def test_flow_action_ok_fails_on_denial_prefixes(description):
+    assert AgenticLoop._flow_action_ok(description, "click") is False
+
+
+@pytest.mark.parametrize(
+    "description,action_type",
+    [
+        ("Scrolled to element: #nav", "scroll_to"),
+        ("Typed '***' into #code", "type"),
+        ("Pressed key: Enter", "press_key"),
+        ("Navigated to: https://app.example.com/a", "navigate"),
+    ],
+)
+def test_flow_silent_success_actions_classified_passed(description, action_type):
+    assert AgenticLoop._flow_action_ok(description, action_type) is True
+
+
+def test_flow_unrecognized_action_outcome_fails_closed():
+    assert AgenticLoop._flow_action_ok("Some random wording", "click") is False
+    assert (
+        AgenticLoop._flow_failure_reason("Some random wording", "click")
+        == "unrecognized action outcome"
+    )
+
+
+def test_wait_timeout_classified_as_failed():
+    """B3 regression — a `wait` timeout must never look passed."""
+    assert AgenticLoop._flow_action_ok("Timeout waiting for: #spinner", "wait") is False
+    assert (
+        AgenticLoop._flow_failure_reason("Timeout waiting for: #spinner", "wait")
+        == "Timeout waiting for: #spinner"
+    )
+
+
+# ─── B4 — truthful run-level CDP disconnect abort ───────────────────────
+
+@pytest.mark.asyncio
+async def test_run_flow_aborts_on_cdp_disconnect_with_run_level_reason(tmp_path, monkeypatch):
+    """B4 — a CDP disconnect sets the run-level reason and skips the rest."""
+    import websockets
+
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Step one",
+                actions=[FlowAction(action="click", selector="#x")],
+            ),
+            FlowStepSpec(
+                name="Step two",
+                actions=[FlowAction(action="click", selector="#y")],
+                asserts=[FlowAssertion(type="element_present", selector="#z")],
+                extract=[FlowExtraction(name="heading", selector="h1")],
+            ),
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    async def boom(*args, **kwargs):
+        raise websockets.exceptions.ConnectionClosed(None, None)
+
+    dispatch = AsyncMock(side_effect=boom)
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    assert result["failure_reason"]
+    assert "CDP connection lost" in result["failure_reason"]
+
+    step1 = result["steps"][0]
+    assert step1["status"] == "failed"
+    assert "CDP connection lost" in step1["actions"][0]["failure_reason"]
+
+    # Remaining steps are truthfully reported as skipped, never re-run.
+    step2 = result["steps"][1]
+    assert step2["status"] == "skipped"
+    assert step2["failure_reason"] == "aborted: CDP connection lost"
+    assert step2["actions"] == []
+    assert step2["asserts"] == []
+    assert step2["extracted"] == []
+    assert step2["skipped_asserts"] == 1
+    assert step2["skipped_extractions"] == 1
+
+    # Summary counts reflect only executed steps + the explicitly skipped one.
+    assert result["summary"]["steps_total"] == 2
+    assert result["summary"]["steps_passed"] == 0
+    assert result["summary"]["steps_failed"] == 1
+    assert result["summary"]["steps_skipped"] == 1
+
+    # No further actions are dispatched and no extra navigation happens.
+    assert dispatch.await_count == 1
+    assert page.navigate.await_count == 1
+
+
+# ─── B5 — fail-closed validation ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_flow_extraction_multiple_zero_matches_returns_empty_list(tmp_path, monkeypatch):
+    """B5 — multiple extraction with no matches yields [] instead of null."""
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="No matches",
+                actions=[FlowAction(action="navigate", url="https://app.example.com/a")],
+                extract=[FlowExtraction(name="empty", selector="#ghost", multiple=True)],
+            )
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action",
+        AsyncMock(return_value="Navigated to: https://app.example.com/a"),
+    )
+    runtime.evaluate.return_value = []  # zero matches
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "passed"
+    assert result["steps"][0]["extracted"][0]["value"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_flow_url_contains_empty_expected_fails_closed(tmp_path, monkeypatch):
+    """B5 — url_contains with a missing/empty expected never passes."""
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Empty expected",
+                actions=[FlowAction(action="navigate", url="https://app.example.com/a")],
+                asserts=[FlowAssertion(type="url_contains", expected="")],
+            )
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action",
+        AsyncMock(return_value="Navigated to: https://app.example.com/a"),
+    )
+    runtime.evaluate.return_value = "https://app.example.com/a"
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    assertion = result["steps"][0]["asserts"][0]
+    assert assertion["passed"] is False
+    assert "empty expected value" in assertion["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_flow_text_equals_empty_expected_missing_actual_fails_closed(tmp_path, monkeypatch):
+    """B5 — text_equals with empty expected + missing text fails instead of passing."""
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Compare",
+                actions=[FlowAction(action="navigate", url="https://app.example.com/a")],
+                asserts=[FlowAssertion(type="text_equals", selector="#missing", expected="")],
+            )
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action",
+        AsyncMock(return_value="Navigated to: https://app.example.com/a"),
+    )
+    runtime.get_element_text.return_value = ""  # element missing / empty text
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    assertion = result["steps"][0]["asserts"][0]
+    assert assertion["passed"] is False
+    assert "empty expected value" in assertion["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_flow_attribute_equals_empty_expected_missing_actual_fails_closed(tmp_path, monkeypatch):
+    """B5 — attribute_equals with empty expected + missing attribute fails."""
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Compare attr",
+                actions=[FlowAction(action="navigate", url="https://app.example.com/a")],
+                asserts=[
+                    FlowAssertion(
+                        type="attribute_equals",
+                        selector="#missing",
+                        attribute="href",
+                        expected="",
+                    )
+                ],
+            )
+        ]
+    )
+    loop, page, runtime, input_domain = _make_loop(tmp_path)
+
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action",
+        AsyncMock(return_value="Navigated to: https://app.example.com/a"),
+    )
+    runtime.get_element_attributes.return_value = {}
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    assertion = result["steps"][0]["asserts"][0]
+    assert assertion["passed"] is False
+    assert "empty expected value" in assertion["message"]
