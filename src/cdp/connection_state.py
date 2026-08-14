@@ -60,6 +60,14 @@ RECONNECT_CAP_S: float = float(os.environ.get("READY_AI_CB_CAP_S", "5.0"))
 # before falling back to a manual `Target.attachToTarget`.
 REATTACH_AUTO_WAIT_S: float = float(os.environ.get("READY_AI_CB_REATTACH_WAIT_S", "3.0"))
 
+# How long the agent loop waits for the connection's own
+# reconnect+reattach to heal a DEGRADED socket before falling back to
+# a full `BrowserSession.recover()` respawn (READY-AI-T-3). Bounded so
+# a hung dial cannot stall the step loop forever.
+RECONNECT_HEAL_WAIT_S: float = float(
+    os.environ.get("READY_AI_CDP_HEAL_WAIT_S", "30.0")
+)
+
 # Master switch: the whole reconnect/CB machinery is opt-in. When
 # false, the legacy behaviour is preserved (a WS drop kills the recv
 # loop and forces BrowserSession.recover).

@@ -17,6 +17,7 @@ from typing import Optional
 
 from ..cdp.browser import launch_chrome, get_ws_url
 from ..cdp.connection import CDPConnection
+from ..cdp.connection_state import ConnectionState
 from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
@@ -165,6 +166,30 @@ class BrowserSession:
         `recover` right away.
         """
         return self._conn is not None and self._conn.is_disconnected
+
+    @property
+    def is_reconnecting(self) -> bool:
+        """True while the connection's auto-reconnect/reattach is in flight.
+
+        READY-AI-T-3: the loop uses this to decide between "wait for
+        the connection to heal itself" and "full respawn via
+        `recover()`".
+        """
+        return self._conn is not None and self._conn.reconnecting
+
+    async def wait_for_reconnect(
+        self,
+        timeout: float,
+        poll_interval: float = 0.1,
+    ) -> Optional[ConnectionState]:
+        """Wait (bounded) for the connection's own reconnect+reattach
+        to resolve the FSM. Returns the final connection state, or
+        None when no connection exists."""
+        if self._conn is None:
+            return None
+        return await self._conn.wait_for_reconnect(
+            timeout=timeout, poll_interval=poll_interval
+        )
 
     @property
     def cdp_state(self) -> Optional[str]:

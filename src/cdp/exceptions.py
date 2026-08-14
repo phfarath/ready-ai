@@ -32,3 +32,42 @@ class WebSocketDisconnected(RuntimeError):
       * `CDPConnection.send` (and `wait_for_event`) when an in-flight
         command is interrupted by a connection drop.
     """
+
+
+class CircuitOpenError(WebSocketDisconnected):
+    """Structured terminal error: the CDP circuit breaker is open.
+
+    Raised when the FSM is in `DOWN` — the reconnect loop exhausted
+    `RECONNECT_MAX_ATTEMPTS` (or `CB_THRESHOLD` failures accumulated)
+    and the connection is no longer trying. It is a
+    `WebSocketDisconnected` subtype, so every existing handler that
+    catches the plain disconnect exception still works, but its type
+    identity lets recovery coordinators treat the condition as
+    terminal.
+
+    Raised by:
+      * `CDPConnection.send` / `wait_for_event` when the fail-fast
+        path runs with the FSM in `DOWN` (circuit open).
+      * `AgenticLoop` when the recovery budget (`MAX_CRASHES`) is
+        exhausted — instead of retrying forever, the coordinator
+        raises this with the connection state, the number of
+        recovery attempts, and the step that was running.
+
+    Attributes:
+        state: FSM state string at failure time (usually ``"down"``).
+        attempts: consecutive failures / recovery attempts observed.
+        step: index of the step that was executing (loop context).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        state: str = "down",
+        attempts: int = 0,
+        step: int | None = None,
+    ):
+        super().__init__(message)
+        self.state = state
+        self.attempts = attempts
+        self.step = step

@@ -26,7 +26,7 @@ from .connection_state import (
     REATTACH_AUTO_WAIT_S,
     ConnectionState,
 )
-from .exceptions import WebSocketDisconnected
+from .exceptions import CircuitOpenError, WebSocketDisconnected
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,24 @@ class CDPConnection:
                     WebSocketDisconnected("CDP WebSocket closed")
                 )
         self._pending.clear()
+
+    def _disconnect_error(self, message: str) -> WebSocketDisconnected:
+        """Pick the exception type for a failed CDP interaction.
+
+        When the FSM is `DOWN` (circuit breaker open, no reconnect in
+        flight) a structured `CircuitOpenError` is raised so recovery
+        coordinators can treat the condition as terminal; every other
+        state (`DEGRADED` mid-drop, `CLOSED` intentional teardown)
+        keeps the plain `WebSocketDisconnected`. Compared by value
+        (==) so tests that reload the state module keep working.
+        """
+        if self._state == ConnectionState.DOWN:
+            return CircuitOpenError(
+                message,
+                state=ConnectionState.DOWN.value,
+                attempts=self._consecutive_failures,
+            )
+        return WebSocketDisconnected(message)
 
     async def _reconnect(self) -> None:
         """Background reconnect loop with exponential backoff and jitter.
@@ -461,8 +479,12 @@ class CDPConnection:
         # tore us down. Either way, do not even enqueue a command —
         # callers should treat the situation as 'go through
         # BrowserSession.recover()' rather than retrying in a loop.
+        # READY-AI-T-3: an open circuit raises the structured
+        # CircuitOpenError so the recovery coordinator can spot the
+        # terminal condition by type (still a WebSocketDisconnected,
+        # so existing handlers keep working).
         if self._state in (ConnectionState.DOWN, ConnectionState.CLOSED):
-            raise WebSocketDisconnected(
+            raise self._disconnect_error(
                 f"CDP connection is {self._state.value}; not sending {method}"
             )
 
@@ -561,7 +583,7 @@ class CDPConnection:
             ConnectionState.DOWN,
             ConnectionState.CLOSED,
         ):
-            raise WebSocketDisconnected(
+            raise self._disconnect_error(
                 f"CDP connection is {self._state.value} or aborted"
             )
 
@@ -589,7 +611,7 @@ class CDPConnection:
                         ConnectionState.DOWN,
                         ConnectionState.CLOSED,
                     ):
-                        raise WebSocketDisconnected(
+                        raise self._disconnect_error(
                             "CDP WebSocket closed during wait_for_event"
                         ) from None
         finally:
@@ -654,6 +676,16 @@ class CDPConnection:
         return self._state in (ConnectionState.DOWN, ConnectionState.CLOSED)
 
     @property
+    def reconnecting(self) -> bool:
+        """True while the auto-reconnect/reattach machinery is in flight.
+
+        Lets the recovery coordinator (AgenticLoop) distinguish "the
+        connection is trying to heal itself right now" from "the
+        circuit is open / the orchestrator tore us down".
+        """
+        return self._reconnect_task is not None and not self._reconnect_task.done()
+
+    @property
     def state(self) -> ConnectionState:
         """Expose the current FSM state (mostly for diagnostics)."""
         return self._state
@@ -676,6 +708,42 @@ class CDPConnection:
                 )
         except asyncio.TimeoutError:
             return
+
+    async def wait_for_reconnect(
+        self,
+        timeout: float,
+        poll_interval: float = 0.1,
+    ) -> ConnectionState:
+        """Wait, bounded by ``timeout``, for the FSM to leave DEGRADED.
+
+        The auto-reconnect task heals the socket (HEALTHY), exhausts
+        its attempts (DOWN), or is called off by teardown (CLOSED) on
+        its own; this method only observes it so the agent loop can
+        decide whether a full `BrowserSession.recover()` respawn is
+        needed (READY-AI-T-3).
+
+        Returns the final observed state:
+          * HEALTHY — reconnect + reattach succeeded; continue on the
+            same session.
+          * DOWN / CLOSED — terminal; a respawn is required.
+          * DEGRADED — the timeout elapsed while the reconnect was
+            still in flight.
+
+        Cancellation is not swallowed: `asyncio.CancelledError`
+        propagates to the caller so an aborted run tears down
+        cleanly. State comparisons are by value (==) because tests
+        reload the state module mid-session.
+        """
+        if self._state != ConnectionState.DEGRADED:
+            return self._state
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self._state == ConnectionState.DEGRADED:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(poll_interval, remaining))
+        return self._state
 
     async def close(self) -> None:
         """Close the WebSocket connection and cancel background tasks.

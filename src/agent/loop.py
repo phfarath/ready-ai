@@ -17,6 +17,8 @@ from ..llm.client import LLMClient
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
+from ..cdp.connection_state import ConnectionState, RECONNECT_HEAL_WAIT_S
+from ..cdp.exceptions import CircuitOpenError, WebSocketDisconnected
 from ..observability import Span, init_run_context, get_metrics, log_event
 from . import planner, executor, critic, recovery
 from .cursor import CursorAnimator, extract_selector
@@ -24,6 +26,11 @@ from .browser_session import BrowserSession
 from .state import RunState, DocStepState
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on full browser respawns (BrowserSession.recover) per run.
+# READY-AI-T-3: exceeding it terminates the run with a structured
+# CircuitOpenError instead of retrying forever.
+MAX_CRASHES = 3
 
 
 class AgenticLoop:
@@ -85,6 +92,11 @@ class AgenticLoop:
         self._cursor = CursorAnimator()
         self._last_url: Optional[str] = None
         self._max_replans_per_step = 2
+
+        # READY-AI-T-3: full-respawn budget for the whole run (spanning
+        # multiple `_execute_steps` invocations), so a flapping CDP
+        # session can never trigger an unbounded respawn loop.
+        self._connection_crashes: int = 0
 
         # Checkpointing state
         self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
@@ -325,6 +337,96 @@ class AgenticLoop:
             details += f"\n\n**Failure details:** {result.failure_reason}"
         return details
 
+    async def _recover_session_after_disconnect(
+        self,
+        exc: Exception,
+        llm: LLMClient,
+        step_idx: int,
+    ) -> None:
+        """Unified CDP disconnect recovery (READY-AI-T-3).
+
+        Both disconnect exception types — `websockets.exceptions.
+        ConnectionClosed` and our `WebSocketDisconnected` (including
+        its structured `CircuitOpenError` subtype) — land in this ONE
+        recovery path, so the loop no longer depends on which subtype
+        the connection layer happened to raise.
+
+        Recovery ladder:
+
+          1. Bounded auto-reconnect wait: while the connection's own
+             reconnect+reattach is still in flight (DEGRADED), give it
+             up to `RECONNECT_HEAL_WAIT_S` to heal. On success the
+             in-flight step resumes on the same session — no Chrome
+             respawn, no checkpoint reset.
+          2. Full respawn: when the circuit is open (DOWN) or the heal
+             wait timed out, fall back to `BrowserSession.recover()`.
+             Respawns are bounded by `MAX_CRASHES`; exceeding the
+             budget raises a structured `CircuitOpenError` instead of
+             retrying forever — terminal failures are never masked.
+
+        Step context is preserved by construction: this method never
+        touches ``self._state.current_step_index``, so the caller's
+        while-loop re-runs only the in-flight step; completed
+        (checkpointed) steps are never re-executed. Cancellation is
+        never swallowed: `asyncio.CancelledError` propagates so the
+        caller can tear down cleanly.
+        """
+        logger.warning(
+            "CDP session disconnected during step %d: %r",
+            step_idx + 1,
+            exc,
+        )
+        session = self._session
+        conn = session.conn
+
+        # 1. In-flight auto-reconnect? Give the connection a bounded
+        #    chance to heal itself before we consider a full respawn.
+        if (
+            conn is not None
+            and conn.state == ConnectionState.DEGRADED
+            and session.is_reconnecting
+        ):
+            final_state = await session.wait_for_reconnect(
+                timeout=RECONNECT_HEAL_WAIT_S, poll_interval=0.1
+            )
+            if final_state == ConnectionState.HEALTHY:
+                metrics = get_metrics()
+                if metrics:
+                    metrics.increment("recovery.reattach")
+                logger.info(
+                    "⟲ CDP reconnected and reattached in place; "
+                    "resuming step %d on the same session",
+                    step_idx + 1,
+                )
+                return
+        # 2. Full respawn, bounded by the crash budget.
+        self._connection_crashes += 1
+        if self._connection_crashes > MAX_CRASHES:
+            state = conn.state.value if conn is not None else "unknown"
+            metrics = get_metrics()
+            if metrics:
+                metrics.increment("recovery.exhausted")
+            logger.error(
+                "⟲ Exceeded maximum global CDP recoveries (%s). "
+                "Aborting pipeline.",
+                MAX_CRASHES,
+            )
+            raise CircuitOpenError(
+                f"CDP session unrecoverable after {MAX_CRASHES} respawn "
+                f"attempts (connection state: {state})",
+                state=state,
+                attempts=self._connection_crashes,
+                step=step_idx,
+            )
+        resume_url = self._last_url or self.url
+        logger.info(
+            "⟲ Full browser respawn after CDP disconnect "
+            "(respawn %d/%d)",
+            self._connection_crashes,
+            MAX_CRASHES,
+        )
+        await session.recover(resume_url, llm)
+
     async def _execute_steps(
         self,
         steps: list[str],
@@ -342,10 +444,10 @@ class AgenticLoop:
         runtime = self._session.runtime
 
         step_list = list(steps)
-        step_idx = self._state.current_step_index
+        # READY-AI-T-3: resume from the last valid checkpoint so
+        # completed steps are never re-executed on recovery.
+        step_idx = recovery.resume_step_index(self._state, len(step_list))
         i = start_number + step_idx
-        crashes = 0
-        MAX_CRASHES = 3
         replan_attempts_by_index: dict[int, int] = {}
 
         while step_idx < len(step_list):
@@ -488,17 +590,20 @@ class AgenticLoop:
                 i += 1
                 self._cursor.moving = True
 
-            except websockets.exceptions.ConnectionClosed:
-                crashes += 1
+            except (
+                websockets.exceptions.ConnectionClosed,
+                WebSocketDisconnected,
+            ) as exc:
+                # READY-AI-T-3: BOTH disconnect subtypes route through
+                # the same coordinator — it waits for the connection's
+                # own reconnect+reattach first, and only then falls
+                # back to a bounded full respawn.
                 metrics = get_metrics()
                 if metrics:
                     metrics.increment("recovery.crash")
-                if crashes > MAX_CRASHES:
-                    logger.error(f"Exceeded maximum global crashes ({MAX_CRASHES}). Aborting pipeline.")
-                    raise
-
-                resume_url = self._last_url or self.url
-                await self._session.recover(resume_url, llm)
+                await self._recover_session_after_disconnect(
+                    exc, llm, step_idx
+                )
                 page = self._session.page
                 input_domain = self._session.input_domain
                 runtime = self._session.runtime
