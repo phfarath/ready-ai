@@ -5,13 +5,15 @@ V2: Full Planner → Executor (with verification) → Critic (with re-execution)
 Supports authentication via cookies or credentials, and separate annotation model.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import time
 import websockets
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..llm.client import LLMClient
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
@@ -24,6 +26,18 @@ from . import planner, executor, critic, recovery
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
 from .state import RunState, DocStepState
+
+if TYPE_CHECKING:
+    from ..api.models import (
+        FlowAction,
+        FlowAssertion,
+        FlowExtraction,
+        FlowSpec,
+        FlowStepSpec,
+    )
+    from ..cdp.input import InputDomain
+    from ..cdp.page import PageDomain
+    from ..cdp.runtime import RuntimeDomain
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +261,444 @@ class AgenticLoop:
             finally:
                 await self._cursor.stop()
                 await self._session.teardown()
+
+    # ─── Docs-independent run-flow mode (READY-AI-T-4) ──────────────────
+    #
+    # Executes declarative YAML/JSON flows (actions, asserts, extractions,
+    # retries) over the SAME browser/CDP core used by the documentation
+    # pipeline — and, unlike `run()`, never instantiates DocRenderer or any
+    # screenshot/annotation component. Each step is reported with its
+    # actions (including retry attempts), expectations, and extracted data.
+
+    async def run_flow(self, flow: FlowSpec) -> dict:
+        """
+        Execute a declarative run-flow and return a structured JSON result.
+
+        Flow steps declare concrete actions (dispatched through
+        ``executor._dispatch_action`` — the same CDP executor core the
+        documentation path uses), expectations (asserts), extractions,
+        and retry budgets. Unlike ``run()`` this mode:
+
+          * never instantiates DocRenderer / screenshots / vision annotation
+          * never calls the LLM (except credential login when provided)
+          * reports per step: actions + attempts, asserts (expected/actual),
+            extracted data, and the step's overall retry accounting
+
+        A step aborts after the first action whose retry budget is
+        exhausted, so the result pinpoints the root cause instead of
+        cascading noise; remaining actions/asserts/extractions of that
+        step are left empty.
+
+        Returns:
+            JSON-serializable dict with keys: run_id, flow, url, status,
+            steps[], summary{}
+        """
+        run_ctx = init_run_context(run_id=self.run_id)
+        flow_name = flow.name or "run-flow"
+        step_results: list[dict] = []
+        overall_status = "passed"
+
+        async with Span(name="flow_run", attributes={"url": self.url, "flow": flow_name}):
+            try:
+                async with Span(name="browser_setup"):
+                    await self._session.setup()
+
+                page = self._session.page
+                runtime = self._session.runtime
+                input_domain = self._session.input_domain
+
+                await page.enable()
+                logger.info("═══ Run-flow '%s' — navigating to: %s", flow_name, self.url)
+                await page.navigate(self.url)
+
+                if self._session.cookies_file:
+                    await self._session.inject_cookies()
+
+                if self._session.username and self._session.password:
+                    llm = LLMClient(model=self.model)
+                    await self._session.handle_login(llm)
+
+                try:
+                    await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+                except Exception as exc:
+                    logger.debug(f"Flow start network-idle wait failed/timed out: {exc}")
+
+                for index, step in enumerate(flow.steps, start=1):
+                    step_report = await self._execute_flow_step(
+                        step, index, flow.retries, page, input_domain, runtime
+                    )
+                    step_results.append(step_report)
+                    if step_report["status"] != "passed":
+                        overall_status = "failed"
+
+                self._state.status = "FINISHED" if overall_status == "passed" else "FAILED"
+                self._save_checkpoint()
+
+                result = self._build_flow_result(flow, flow_name, overall_status, step_results)
+                self._persist_flow_result(result)
+                self._save_flow_metrics(run_ctx, flow_name, overall_status, step_results)
+                return result
+            except Exception as exc:
+                logger.error(f"Run-flow failed: {exc}")
+                self._state.status = "FAILED"
+                try:
+                    self._save_checkpoint()
+                except Exception:
+                    pass
+                raise
+            finally:
+                await self._session.teardown()
+
+    async def _execute_flow_step(
+        self,
+        step: FlowStepSpec,
+        index: int,
+        default_retries: int,
+        page: PageDomain,
+        input_domain: InputDomain,
+        runtime: RuntimeDomain,
+    ) -> dict:
+        """Execute one declarative step and build its structured report.
+
+        Actions run first (each with its retry budget). If an action
+        exhausts its budget the step is aborted and the remaining
+        actions/asserts/extractions are not evaluated, so the failure
+        reason is unambiguous. Otherwise asserts and extractions run and
+        are reported per step.
+        """
+        step_retries = step.retries if step.retries is not None else default_retries
+        action_reports: list[dict] = []
+        reasons: list[str] = []
+        aborted = False
+
+        for action in step.actions:
+            report = await self._execute_flow_action(
+                action, step_retries, page, input_domain, runtime
+            )
+            action_reports.append(report)
+            if not report["passed"]:
+                reasons.append(
+                    report["failure_reason"]
+                    or report["description"]
+                    or f"action '{report['action']}' failed"
+                )
+                aborted = True
+                break
+
+        assert_results: list[dict] = []
+        extracted: list[dict] = []
+        if not aborted:
+            for assertion in step.asserts:
+                result = await self._evaluate_flow_assertion(assertion, runtime)
+                assert_results.append(result)
+                if not result["passed"]:
+                    reasons.append(result["message"] or f"assert '{result['type']}' failed")
+
+            for extraction in step.extract:
+                value = await self._extract_flow_value(extraction, runtime)
+                extracted.append(
+                    {
+                        "name": extraction.name,
+                        "selector": extraction.selector,
+                        "value": value,
+                    }
+                )
+
+        attempts = max((r["attempts"] for r in action_reports), default=1)
+        status = (
+            "failed"
+            if aborted or any(not a["passed"] for a in assert_results)
+            else "passed"
+        )
+        return {
+            "index": index,
+            "name": step.name,
+            "actions": action_reports,
+            "asserts": assert_results,
+            "extracted": extracted,
+            "attempts": attempts,
+            "status": status,
+            "failure_reason": "; ".join(dict.fromkeys(reasons)) if reasons else "",
+        }
+
+    async def _execute_flow_action(
+        self,
+        action: FlowAction,
+        default_retries: int,
+        page: PageDomain,
+        input_domain: InputDomain,
+        runtime: RuntimeDomain,
+    ) -> dict:
+        """Dispatch one declarative action with a bounded retry budget.
+
+        Retries re-run the SAME declared action (deterministic flow
+        semantics) through ``executor._dispatch_action`` — the executor
+        core shared with the documentation pipeline. A CDP disconnect
+        surfaces as a failed report instead of hanging the flow.
+        """
+        payload = {
+            k: v
+            for k, v in {
+                **action.model_dump(exclude_unset=True),
+                **(action.model_extra or {}),
+            }.items()
+            if v is not None
+        }
+        payload.pop("retries", None)
+        action_type = str(payload.get("action", "observe"))
+        budget = max(0, action.retries if action.retries is not None else default_retries)
+        params = self._flow_params_for_report(payload)
+
+        attempts = 0
+        last_desc = ""
+        last_failure = ""
+        while attempts <= budget:
+            attempts += 1
+            try:
+                desc = await executor._dispatch_action(
+                    payload, page, input_domain, runtime
+                )
+            except (websockets.exceptions.ConnectionClosed, WebSocketDisconnected) as exc:
+                last_failure = f"CDP connection lost during action: {exc}"
+                break
+            except Exception as exc:
+                last_failure = f"Action error: {exc}"
+                break
+            last_desc = desc or ""
+            if self._flow_action_ok(last_desc):
+                return {
+                    "action": action_type,
+                    "params": params,
+                    "description": last_desc,
+                    "attempts": attempts,
+                    "passed": True,
+                    "failure_reason": "",
+                }
+            last_failure = last_desc
+
+        return {
+            "action": action_type,
+            "params": params,
+            "description": last_desc,
+            "attempts": max(attempts, 1),
+            "passed": False,
+            "failure_reason": last_failure,
+        }
+
+    @staticmethod
+    def _flow_action_ok(description: str) -> bool:
+        """Match the executor's own success/failure conventions in descriptions."""
+        if not description:
+            return False
+        lowered = description.lower()
+        return not (
+            lowered.startswith("[failed]")
+            or lowered.startswith("[error]")
+            or lowered.startswith("[unknown")
+            or lowered.startswith("timeout ")
+        )
+
+    @staticmethod
+    def _flow_params_for_report(payload: dict) -> dict:
+        """Build report params; typed text is masked to avoid leaking secrets."""
+        params = {k: v for k, v in payload.items() if k != "action"}
+        if payload.get("action") == "type" and "text" in params:
+            params["text"] = "***"
+        return params
+
+    async def _evaluate_flow_assertion(
+        self,
+        assertion: FlowAssertion,
+        runtime: RuntimeDomain,
+    ) -> dict:
+        """Evaluate one declarative expectation against the live page."""
+        atype = assertion.type
+        selector = assertion.selector
+        expected = assertion.expected
+        actual: object = None
+        passed = False
+        try:
+            if atype in ("url_contains", "url_equals", "not_url_contains"):
+                actual = await runtime.evaluate("window.location.href")
+                actual_s = str(actual or "")
+                exp_s = str(expected or "")
+                if atype == "url_contains":
+                    passed = exp_s in actual_s
+                elif atype == "url_equals":
+                    passed = actual_s == exp_s
+                else:
+                    passed = exp_s not in actual_s
+            elif atype in ("element_present", "element_missing"):
+                if not selector:
+                    passed = False
+                else:
+                    actual = await runtime.query_selector(selector)
+                    found = actual is not None
+                    passed = found if atype == "element_present" else not found
+            elif atype == "element_visible":
+                if not selector:
+                    passed = False
+                else:
+                    safe_sel = json.dumps(selector)
+                    js = (
+                        f"(() => {{ const el = document.querySelector({safe_sel}); "
+                        f"if (!el) return false; const r = el.getBoundingClientRect(); "
+                        f"if (r.width === 0 || r.height === 0) return false; "
+                        f"const s = window.getComputedStyle(el); "
+                        f"return s.visibility !== 'hidden' && s.display !== 'none'; }})()"
+                    )
+                    actual = await runtime.evaluate(js)
+                    passed = bool(actual)
+            elif atype in ("text_contains", "text_equals"):
+                if selector:
+                    actual = await runtime.get_element_text(selector)
+                else:
+                    actual = await runtime.get_visible_text()
+                actual_s = str(actual or "")
+                if atype == "text_contains":
+                    passed = str(expected or "") in actual_s
+                else:
+                    passed = actual_s.strip() == str(expected or "").strip()
+            elif atype == "attribute_equals":
+                if not selector or not assertion.attribute:
+                    passed = False
+                else:
+                    attrs = await runtime.get_element_attributes(selector)
+                    actual = attrs.get(assertion.attribute)
+                    passed = str(actual or "") == str(expected or "")
+            else:
+                raise ValueError(f"Unsupported flow assertion type: {atype}")
+        except Exception as exc:
+            passed = False
+            actual = None
+            message = f"{atype} errored: {exc}"
+            return {
+                "type": atype,
+                "selector": selector,
+                "expected": expected,
+                "actual": actual,
+                "passed": passed,
+                "message": message,
+            }
+
+        message = ""
+        if not passed:
+            message = assertion.message or (
+                f"{atype} failed: expected={expected!r} actual={actual!r}"
+            )
+        return {
+            "type": atype,
+            "selector": selector,
+            "expected": expected,
+            "actual": actual,
+            "passed": passed,
+            "message": message,
+        }
+
+    async def _extract_flow_value(
+        self,
+        extraction: FlowExtraction,
+        runtime: RuntimeDomain,
+    ) -> object:
+        """Read one extracted value (or list) from the live page."""
+        safe_sel = json.dumps(extraction.selector)
+        safe_prop = json.dumps(extraction.attribute or "textContent")
+        multi = "true" if extraction.multiple else "false"
+        js = f"""(() => {{
+            const els = Array.from(document.querySelectorAll({safe_sel}));
+            if (els.length === 0) return null;
+            const read = (el) => {{
+                let key = {safe_prop};
+                if (key.startsWith('@')) return el.getAttribute(key.slice(1));
+                try {{
+                    if (key in el) {{
+                        const v = el[key];
+                        if (v === undefined) return null;
+                        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+                        return null;
+                    }}
+                }} catch (e) {{ }}
+                return el.getAttribute(key);
+            }};
+            const values = els.map(read);
+            return {multi} ? values : values[0];
+        }})()"""
+        try:
+            return await runtime.evaluate(js)
+        except Exception as exc:
+            logger.warning(f"Flow extraction '{extraction.name}' failed: {exc}")
+            return None
+
+    def _build_flow_result(
+        self,
+        flow: FlowSpec,
+        flow_name: str,
+        status: str,
+        step_results: list[dict],
+    ) -> dict:
+        """Assemble the structured JSON result with a run summary."""
+        summary = {
+            "steps_total": len(flow.steps),
+            "steps_passed": sum(1 for s in step_results if s["status"] == "passed"),
+            "steps_failed": sum(1 for s in step_results if s["status"] == "failed"),
+            "actions_total": sum(len(s["actions"]) for s in step_results),
+            "actions_failed": sum(
+                1 for s in step_results for a in s["actions"] if not a["passed"]
+            ),
+            "asserts_total": sum(len(s["asserts"]) for s in step_results),
+            "asserts_failed": sum(
+                1 for s in step_results for a in s["asserts"] if not a["passed"]
+            ),
+            "extractions": sum(len(s["extracted"]) for s in step_results),
+            "attempts_total": sum(int(s["attempts"]) for s in step_results),
+            "retries_used": sum(
+                max(0, int(a["attempts"]) - 1)
+                for s in step_results
+                for a in s["actions"]
+            ),
+        }
+        return {
+            "run_id": self.run_id,
+            "flow": flow_name,
+            "url": self.url,
+            "status": status,
+            "steps": step_results,
+            "summary": summary,
+        }
+
+    def _persist_flow_result(self, result: dict) -> None:
+        """Write the flow result JSON alongside the run state output."""
+        try:
+            out = Path(self.output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            path = out / f"{self.run_id}_flow_result.json"
+            path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+            logger.info("═══ Flow result saved to: %s", path)
+        except Exception as exc:
+            logger.warning(f"Failed to save flow result: {exc}")
+
+    def _save_flow_metrics(
+        self,
+        run_ctx,
+        flow_name: str,
+        status: str,
+        step_results: list[dict],
+    ) -> None:
+        """Write flow run metrics to a JSON file alongside the result."""
+        try:
+            summary = run_ctx.run_summary(
+                status=status.upper(),
+                flow=flow_name,
+                steps_planned=len(step_results),
+            )
+            metrics_path = Path(self.output_dir) / f"{self.run_id}_flow_metrics.json"
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics_path.write_text(
+                json.dumps(summary, indent=2, default=str), encoding="utf-8"
+            )
+            logger.info("═══ Flow metrics saved to: %s", metrics_path)
+        except Exception as exc:
+            logger.warning(f"Failed to save flow metrics: {exc}")
 
     def _save_metrics(self, run_ctx, status: str = "FINISHED", **extra) -> None:
         """Write run metrics to a JSON file alongside the output."""

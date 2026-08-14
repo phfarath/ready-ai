@@ -26,6 +26,7 @@ from src.api.models import (
     DiffResponse,
     DocsSetItem, DocsListResponse,
     DocsVersionStatus,
+    FlowSpec, FlowRunResult,
 )
 from src.api.manager import RunManager
 from src.docs.export import export_docs, SUPPORTED_FORMATS
@@ -345,6 +346,41 @@ async def readiness_check():
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ─── Run-flow endpoint (READY-AI-T-4) ───────────────────────────────────
+
+@app.post("/flows/run", response_model=FlowRunResult)
+async def run_flow(flow: FlowSpec):
+    """Execute a declarative run-flow and return its structured result.
+
+    Docs-independent mode: the same executor/CDP core as the documentation
+    pipeline is used, but no DocRenderer / screenshots / annotation are
+    involved. Each step reports actions (with retry attempts), expects
+    (asserts), and extracted data.
+    """
+    import uuid
+    from src.agent.loop import AgenticLoop
+
+    run_id = flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
+    loop = AgenticLoop(
+        goal=flow.name or "run-flow",
+        url=flow.url,
+        model=flow.model,
+        output_dir=flow.output or "./output",
+        headless=flow.headless,
+        cookies_file=flow.cookies_file,
+        username=flow.username,
+        password=flow.password,
+        run_id=run_id,
+    )
+    try:
+        data = await loop.run_flow(flow)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Run-flow failed: {exc}"
+        ) from exc
+    return FlowRunResult(**data)
 
 
 # ─── Run endpoints ────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
@@ -141,6 +142,27 @@ def _build_parser() -> argparse.ArgumentParser:
     batch_parser.add_argument("--output", "-o", default="./output", help="Output directory (default: ./output)")
     batch_parser.add_argument("--headless", action="store_true", help="Run Chrome headless")
     batch_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
+
+    # --- RUN-FLOW Command (READY-AI-T-4) ---
+    # Docs-independent declarative execution: flow YAML/JSON with actions,
+    # asserts, extractions and retries → structured JSON result. Never
+    # instantiates DocRenderer and does not require screenshots/annotation.
+    flow_parser = subparsers.add_parser(
+        "run-flow",
+        help="Run a declarative flow (YAML/JSON) and output a structured JSON result",
+    )
+    flow_parser.add_argument("--config", "-c", required=True, help="Flow YAML or JSON file")
+    flow_parser.add_argument("--output", "-o", default="./output", help="Output directory (default: ./output)")
+    flow_parser.add_argument("--headless", action="store_true", default=False, help="Run Chrome headless")
+    flow_parser.add_argument("--port", "-p", type=int, default=9222, help="Chrome debugging port")
+    flow_parser.add_argument(
+        "--model", "-m", default=None, help="LLM model (only used for credential auto-login)"
+    )
+    flow_parser.add_argument("--cookies-file", default=None, help="JSON cookies file")
+    flow_parser.add_argument("--username", default=None, help="Username for auto-login")
+    flow_parser.add_argument("--password", default=None, help="Password for auto-login")
+    flow_parser.add_argument("--run-id", default=None, help="Run identifier for result output")
+    flow_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
     # --- EXPORT Command ---
     export_parser = subparsers.add_parser("export", help="Export generated docs to a static-site format")
@@ -420,6 +442,66 @@ async def async_main_batch(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def async_main_run_flow(args: argparse.Namespace) -> None:
+    """Run a declarative flow (YAML/JSON) and print a structured JSON result.
+
+    Docs-independent mode (READY-AI-T-4): actions, asserts, extractions and
+    retries are executed through the same agent/executor core as the docs
+    pipeline, but no DocRenderer or screenshots are involved. The result
+    JSON is printed to stdout; exit code 0 means the whole flow passed.
+    """
+    import uuid
+    from src.api.batch_loader import load_flow_config
+    from src.agent.loop import AgenticLoop
+
+    logger = logging.getLogger("main")
+    logger.info("🏃 ready-ai — Declarative Run-Flow")
+
+    flow = load_flow_config(args.config)
+    run_id = args.run_id or flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
+
+    loop = AgenticLoop(
+        goal=flow.name or "run-flow",
+        url=flow.url,
+        model=args.model or flow.model,
+        output_dir=args.output,
+        port=args.port,
+        headless=args.headless or flow.headless,
+        cookies_file=args.cookies_file or flow.cookies_file,
+        username=args.username or flow.username,
+        password=args.password or flow.password,
+        run_id=run_id,
+    )
+
+    try:
+        result = await loop.run_flow(flow)
+    except KeyboardInterrupt:
+        logger.info("⚠️  Interrupted by user")
+        sys.exit(1)
+    except Exception as exc:
+        logger.error("❌ Run-flow failed: %s", exc, exc_info=True)
+        sys.exit(1)
+
+    print(json.dumps(result, indent=2, default=str))
+
+    summary = result["summary"]
+    if result["status"] == "passed":
+        logger.info(
+            "✅ Run-flow passed (%s/%s steps)",
+            summary["steps_passed"],
+            summary["steps_total"],
+        )
+    else:
+        logger.warning(
+            "❌ Run-flow failed (%s/%s steps; %s action(s), %s assert(s))",
+            summary["steps_failed"],
+            summary["steps_total"],
+            summary["actions_failed"],
+            summary["asserts_failed"],
+        )
+        sys.exit(1)
+
+
 async def async_main_export(args: argparse.Namespace) -> None:
     """Export a completed run to a documentation format."""
     from pathlib import Path
@@ -485,6 +567,8 @@ def cli() -> None:
         uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
     elif args.command == "batch":
         asyncio.run(async_main_batch(args))
+    elif args.command == "run-flow":
+        asyncio.run(async_main_run_flow(args))
     elif args.command == "export":
         asyncio.run(async_main_export(args))
 
