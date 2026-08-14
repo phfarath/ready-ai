@@ -434,8 +434,18 @@ class AgenticLoop:
         annotation_llm: LLMClient,
         doc: DocRenderer,
         start_number: int = 1,
+        start_index: Optional[int] = None,
     ) -> list[executor.StepResult]:
-        """Execute a list of steps with verification, screenshots, and annotations."""
+        """Execute a list of steps with verification, screenshots, and annotations.
+
+        ``start_index`` seeds the first step to execute within ``steps``.
+        The default (None) resolves the checkpoint index via
+        ``recovery.resume_step_index`` so the MAIN plan never
+        re-executes confirmed steps after a crash/resume. Sub-plan /
+        critic re-execution passes ``start_index=0``: those runs are
+        independent of the main-plan cursor, which would otherwise
+        silently skip their first missing step once it is nonzero.
+        """
         results = []
         self._last_url = None
 
@@ -445,8 +455,14 @@ class AgenticLoop:
 
         step_list = list(steps)
         # READY-AI-T-3: resume from the last valid checkpoint so
-        # completed steps are never re-executed on recovery.
-        step_idx = recovery.resume_step_index(self._state, len(step_list))
+        # completed steps are never re-executed on recovery — valid
+        # ONLY for the main-plan path. Sub-plan/critic executions pass
+        # an explicit start_index and skip this resolution (their first
+        # step must never be skipped because the main cursor moved).
+        if start_index is None:
+            step_idx = recovery.resume_step_index(self._state, len(step_list))
+        else:
+            step_idx = start_index
         i = start_number + step_idx
         replan_attempts_by_index: dict[int, int] = {}
 
@@ -698,4 +714,9 @@ class AgenticLoop:
         return await self._execute_steps(
             new_steps, llm, annotation_llm, doc,
             start_number=next_num,
+            # READY-AI-T-3/Q3: a sub-plan always starts at ITS OWN
+            # first step. Seeding from `state.current_step_index`
+            # (the MAIN-plan cursor) would skip the first missing
+            # step once that cursor is nonzero.
+            start_index=0,
         )

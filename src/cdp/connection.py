@@ -256,6 +256,20 @@ class CDPConnection:
             )
         return WebSocketDisconnected(message)
 
+    def _release_reconnect_slot(self) -> None:
+        """Drop the finished reconnect task reference (READY-AI-T-3/Q2).
+
+        ``_handle_disconnect`` only schedules a reconnect while
+        ``self._reconnect_task is None``. If the completed task kept
+        its own reference, a SECOND disconnect in the same session
+        could never schedule a fresh reconnect task — the headline
+        reattach path would work exactly once per session. Called
+        from every ``_reconnect`` exit (success, exhaustion, and the
+        abort paths) so the guard-by-identity semantics stay
+        consistent everywhere.
+        """
+        self._reconnect_task = None
+
     async def _reconnect(self) -> None:
         """Background reconnect loop with exponential backoff and jitter.
 
@@ -274,12 +288,17 @@ class CDPConnection:
         DOWN, the disconnect event is signalled, and the circuit
         breaker machinery in Commit 4 will see the consecutive
         failures and decide whether to keep the circuit open.
+
+        Every exit path releases its own task slot (see
+        `_release_reconnect_slot`) so a future disconnect can spawn a
+        fresh reconnect.
         """
         if not self._ws_url:
             async with self._state_lock:
                 self._state = ConnectionState.DOWN
             self._disconnect_event.set()
             logger.error("reconnect aborted: no cached ws_url")
+            self._release_reconnect_slot()
             return
 
         metrics = get_metrics()
@@ -289,6 +308,7 @@ class CDPConnection:
             # were sleeping in the backoff.
             if self._state == ConnectionState.CLOSED:
                 logger.info("reconnect aborted: connection was closed")
+                self._release_reconnect_slot()
                 return
 
             delay = min(RECONNECT_CAP_S, RECONNECT_BASE_S * (2 ** attempt))
@@ -324,6 +344,7 @@ class CDPConnection:
                 if metrics is not None:
                     metrics.increment("cdp.reconnect.attempts", outcome="success")
                 logger.info(f"CDP reconnected after {attempt + 1} attempt(s)")
+                self._release_reconnect_slot()
                 return
             except asyncio.CancelledError:
                 raise
@@ -344,6 +365,7 @@ class CDPConnection:
             f"CDP reconnect failed after {RECONNECT_MAX_ATTEMPTS} attempts; "
             f"circuit OPEN. Last error: {last_error}"
         )
+        self._release_reconnect_slot()
 
     async def _post_reconnect_reattach(self) -> None:
         """Re-attach to the page target after a successful reconnect.

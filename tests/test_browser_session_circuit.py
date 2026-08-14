@@ -650,3 +650,56 @@ class TestRecoveryCoordinator:
             await conn._reconnect_task
         except asyncio.CancelledError:
             pass
+
+
+class TestReexecuteMissingSteps:
+    """Sub-plan (critic) re-execution must start at its OWN step 0.
+
+    READY-AI-T-3/Q3: `_execute_steps` previously seeded every run from
+    `recovery.resume_step_index(self._state, ...)`, and that helper
+    reads `state.current_step_index` — an index belonging to the MAIN
+    plan. Once the main-plan cursor is nonzero, a later critic round
+    would silently skip the first missing step of its sub-plan.
+    """
+
+    @pytest.mark.asyncio
+    async def test_second_critic_round_executes_both_sub_steps(
+        self, tmp_path, monkeypatch
+    ):
+        loop, bs, conn = _make_recovery_loop(tmp_path)
+        bs._page = _OkPage()
+        bs._input = _StubInput()
+        bs._runtime = _UrlRuntime()
+
+        llm = MagicMock()
+        llm.complete = AsyncMock(
+            return_value="1. Re-cover the CTA\n2. Capture the success toast"
+        )
+
+        exec_mock = AsyncMock(return_value=_success_result())
+        annotation = _patch_loop_helpers(monkeypatch, exec_mock)
+        doc = DocRenderer("T-3 sub-plan: 2nd round")
+
+        # First critic round: a 2-step sub-plan executed in full. The
+        # shared _execute_steps advances the MAIN-plan cursor to 2.
+        results1 = await loop._reexecute_missing_steps(
+            ["missing A", "missing B"], llm, annotation, doc
+        )
+        assert len(results1) == 2
+        assert exec_mock.await_count == 2
+        assert loop._state.current_step_index == 2
+
+        # Second critic round: a fresh 2-step sub-plan. Its steps must
+        # ALL run again — the nonzero main-plan cursor must NOT leak
+        # into the sub-plan (pre-fix, the first of the 2 was skipped).
+        results2 = await loop._reexecute_missing_steps(
+            ["missing C", "missing D"], llm, annotation, doc
+        )
+
+        assert len(results2) == 2
+        # 2 (round 1) + 2 (round 2) — BOTH round-2 sub-steps executed.
+        assert exec_mock.await_count == 4
+        # All four doc steps present with consecutive numbers — none
+        # skipped.
+        assert [s.step_number for s in doc.steps] == [1, 2, 3, 4]
+        assert all(r.success for r in results2)

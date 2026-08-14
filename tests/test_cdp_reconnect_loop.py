@@ -334,6 +334,61 @@ class TestReconnectingProperty:
         assert conn.reconnecting is False
 
 
+class TestReconnectTaskLifecycle:
+    """READY-AI-T-3/Q2: a finished reconnect must free the task slot so
+    a SECOND disconnect in the same session can schedule a fresh
+    reconnect. Before the fix the completed task lingered in
+    ``_reconnect_task`` and the ``is None`` guard in
+    ``_handle_disconnect`` never let the headline reattach path run
+    more than once per session."""
+
+    @pytest.mark.asyncio
+    async def test_second_disconnect_schedules_a_fresh_reconnect(self):
+        ws = _ws_mock()
+
+        async def fake_connect(*args, **kwargs):
+            return ws
+
+        # The reconnect scheduler in `_handle_disconnect` is gated by
+        # the module-level AUTORECONNECT_ENABLED flag; patch it
+        # directly to keep the test hermetic (no env/reload dance).
+        with patch("src.cdp.connection.AUTORECONNECT_ENABLED", True), \
+             patch("src.cdp.connection.websockets.connect", new=fake_connect), \
+             patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()), \
+             patch.object(
+                 CDPConnection, "_post_reconnect_reattach", new=AsyncMock()
+             ):
+            conn = CDPConnection()
+            conn._ws_url = "ws://test"
+            conn._state = ConnectionState.HEALTHY
+
+            # FIRST disconnect: schedules a reconnect task and the FSM
+            # moves HEALTHY -> DEGRADED.
+            await conn._handle_disconnect(intentional=False)
+            assert conn._reconnect_task is not None
+            assert conn.reconnecting is True
+            assert conn._state == ConnectionState.DEGRADED
+
+            # The reconnect heals the socket and finishes. The finished
+            # task must NOT keep pinning the slot.
+            await conn._reconnect_task
+            assert conn._state == ConnectionState.HEALTHY
+            assert conn._reconnect_task is None
+            assert conn.reconnecting is False
+
+            # SECOND disconnect in the SAME session: must schedule a
+            # BRAND NEW reconnect task (this is where the pre-fix bug
+            # silently skipped — reconnecting stayed False forever).
+            await conn._handle_disconnect(intentional=False)
+            assert conn._reconnect_task is not None
+            assert conn.reconnecting is True
+
+            # Let it heal too so no task is left dangling.
+            await conn._reconnect_task
+            assert conn._reconnect_task is None
+            assert conn._state == ConnectionState.HEALTHY
+
+
 class TestWaitForReconnect:
     @pytest.mark.asyncio
     async def test_returns_immediately_when_not_degraded(self):
