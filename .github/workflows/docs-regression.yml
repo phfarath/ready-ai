@@ -54,6 +54,7 @@ jobs:
         run: |
           if [ -z "$STAGING_URL" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "status=SKIPPED" >> "$GITHUB_OUTPUT"
             echo "::notice::Documentation regression skipped: configure the STAGING_URL repository variable or provide staging_url when dispatching manually."
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
@@ -224,7 +225,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const status = '${{ steps.test.outputs.status || 'SKIPPED' }}';
+            const status = '${{ steps.test.outputs.status || steps.prerequisites.outputs.status || 'SKIPPED' }}';
             
             let body = '## 📋 Documentation Regression Test\n\n';
             
