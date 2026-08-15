@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from .connection import CDPConnection
 from .sanitize import is_raw_mode as _is_raw_mode
+from .locator import Locator, NodeRef, ActionValidator
 
 logger = logging.getLogger(__name__)
 
@@ -199,3 +200,20 @@ class AccessibilityDomain:
     async def get_snapshot(self, max_nodes: int = 200) -> str:
         """Public wrapper that re-uses the module-level helper."""
         return await get_ax_snapshot(self._conn, max_nodes=max_nodes)
+
+    async def resolve_element(
+        self,
+        *,
+        role: Optional[str] = None,
+        name: Optional[str] = None,
+        text: Optional[str] = None,
+        test_id: Optional[str] = None,
+        css: Optional[str] = None,
+    ) -> Optional["NodeRef"]:
+        locator = Locator(self._conn)
+        return await locator.resolve(
+            role=role, name=name, text=text, test_id=test_id, css=css
+        )
+
+    def get_validator(self) -> "ActionValidator":
+        return ActionValidator(self._conn)

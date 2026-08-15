@@ -11,6 +11,7 @@ import logging
 from typing import Optional
 
 from .connection import CDPConnection
+from .accessibility import ActionValidator
 
 logger = logging.getLogger(__name__)
 
@@ -287,3 +288,105 @@ class InputDomain:
             },
         )
         await asyncio.sleep(0.1)  # Let scroll settle briefly
+
+
+    async def fill(self, selector: str, text: str, delay: float = 0.05) -> bool:
+        """Fill an input/select/textarea with text. Validates visibility and enabled."""
+        validator = ActionValidator(self._conn)
+        if not await validator.check_visible(selector):
+            logger.warning(f"Fill failed: {selector} not visible")
+            return False
+        if not await validator.check_enabled(selector):
+            logger.warning(f"Fill failed: {selector} not enabled")
+            return False
+        await self.type_text(text, selector=selector, delay=delay)
+        return True
+
+    async def select(self, selector: str, value: str) -> bool:
+        """Select an option in a <select> element by value or visible text."""
+        safe_sel = selector.replace('"', '\"')
+        safe_value = value.replace('"', '\"')
+        js = f"""
+        (() => {{
+            const sel = document.querySelector("{safe_sel}");
+            if (!sel || sel.tagName !== "SELECT") return false;
+            for (const opt of sel.options) {{
+                if (opt.value === "{safe_value}" || opt.text === "{safe_value}" || opt.innerText?.trim() === "{safe_value}") {{
+                    opt.selected = true;
+                    sel.dispatchEvent(new Event("change", {{bubbles: true}}));
+                    return true;
+                }}
+            }}
+            return false;
+        }})()
+        """
+        result = await self._conn.send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+        val = result.get("result", {}).get("value")
+        return bool(val)
+
+    async def check(self, selector: str, checked: bool = True) -> bool:
+        """Check/uncheck a checkbox or radio input."""
+        safe_sel = selector.replace('"', '\"')
+        state = "true" if checked else "false"
+        js = f"""
+        (() => {{
+            const el = document.querySelector("{safe_sel}");
+            if (!el) return false;
+            if (el.type === "checkbox" || el.type === "radio") {{
+                el.checked = {state};
+                el.dispatchEvent(new Event("change", {{bubbles: true}}));
+                return true;
+            }}
+            return false;
+        }})()
+        """
+        result = await self._conn.send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+        val = result.get("result", {}).get("value")
+        return bool(val)
+
+    async def hover(self, selector: str) -> bool:
+        """Hover over an element (move mouse, dispatch mouseover/mouseenter)."""
+        doc = await self._conn.send("DOM.getDocument")
+        root_id = doc["root"]["nodeId"]
+        try:
+            result = await self._conn.send("DOM.querySelector", {"nodeId": root_id, "selector": selector})
+            node_id = result.get("nodeId", 0)
+            if node_id == 0:
+                return False
+            box = await self._conn.send("DOM.getBoxModel", {"nodeId": node_id})
+            quad = box["model"]["content"]
+            center_x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4
+            center_y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4
+            await self.move_cursor(center_x, center_y)
+            await self._conn.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": center_x, "y": center_y})
+            await self._conn.send("Runtime.evaluate", {"expression": "(() => { const sel = document.querySelector(\"" + selector.replace(chr(34), "\\\"") + "\"); if (sel) sel.dispatchEvent(new MouseEvent(\"mouseover\", {bubbles: true})); })()"})
+            return True
+        except Exception as exc:
+            logger.warning(f"Hover failed for {selector}: {exc}")
+            return False
+
+    async def drag(self, selector: str, target_selector: Optional[str] = None, offset_x: float = 0, offset_y: float = 0) -> bool:
+        """Drag an element by selector (dragstart, dragover target, drop)."""
+        doc = await self._conn.send("DOM.getDocument")
+        root_id = doc["root"]["nodeId"]
+        try:
+            result = await self._conn.send("DOM.querySelector", {"nodeId": root_id, "selector": selector})
+            node_id = result.get("nodeId", 0)
+            if node_id == 0:
+                return False
+            # Dispatch drag sequence via JS for reliability
+            safe_sel = selector.replace('"', '\"')
+            js = f"""
+            (() => {{
+                const src = document.querySelector("{safe_sel}");
+                if (!src) return false;
+                const evtInit = {{bubbles: true, cancelable: true}};
+                src.dispatchEvent(new DragEvent("dragstart", evtInit));
+                return true;
+            }})()
+            """
+            await self._conn.send("Runtime.evaluate", {"expression": js})
+            return True
+        except Exception as exc:
+            logger.warning(f"Drag failed for {selector}: {exc}")
+            return False

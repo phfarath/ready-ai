@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..cdp.input import InputDomain
+from ..cdp.exceptions import WebSocketDisconnected, CircuitOpenError
 from ..cdp.page import PageDomain
 from ..cdp.runtime import RuntimeDomain
 from ..cdp.sanitize import is_sensitive_field
@@ -468,6 +469,9 @@ async def _dispatch_action(
             logger.warning(f"Unknown action type: {action_type}")
             return f"[Unknown action: {action_type}]"
 
+    except (WebSocketDisconnected, CircuitOpenError) as e:
+        logger.error("CDP disconnect/circuit open mid-action (!)")
+        raise e
     except websockets.exceptions.ConnectionClosed as e:
         logger.error("CDP Connection closed mid-action (!)")
         raise e
