@@ -10,6 +10,20 @@ from src.agent.loop import AgenticLoop
 from src.agent.state import RunState
 
 
+FLOW_YAML = """\
+name: cli-flow
+url: https://app.example.com/start
+retries: 2
+steps:
+  - name: "Check page"
+    actions:
+      - action: observe
+    asserts:
+      - type: url_contains
+        expected: "/start"
+"""
+
+
 class _PlanPage:
     async def enable(self):
         return None
@@ -136,6 +150,140 @@ async def test_plan_only_creates_checkpoint_without_docs(tmp_path, monkeypatch):
     assert loop._state.planned_steps == ["Click Sign In", "Verify dashboard loads"]
     assert not (Path(tmp_path) / "docs.md").exists()
     assert json.loads((Path(tmp_path) / "plan-run_state.json").read_text())["status"] == "PLANNED"
+
+
+# ─── run-flow command (READY-AI-T-4) ─────────────────────────────────
+
+def test_run_flow_parses_config_and_flags(tmp_path):
+    config_path = tmp_path / "flow.yaml"
+    config_path.write_text("url: https://app.example.com\nsteps: []\n", encoding="utf-8")
+
+    raw = parse_args([
+        "run-flow",
+        "--config",
+        str(config_path),
+        "--headless",
+        "--run-id",
+        "flow-1",
+        "--output",
+        str(tmp_path / "out"),
+    ])
+
+    assert raw.command == "run-flow"
+    assert raw.config == str(config_path)
+    assert raw.headless is True
+    assert raw.run_id == "flow-1"
+    assert raw.output == str(tmp_path / "out")
+
+
+def test_run_flow_defaults():
+    raw = parse_args(["run-flow", "--config", "flow.yaml"])
+
+    assert raw.command == "run-flow"
+    assert raw.output == "./output"
+    assert raw.port == 9222
+    assert raw.headless is False
+    assert raw.run_id is None
+    assert raw.model is None
+    assert raw.cookies_file is None
+
+
+def test_run_flow_requires_config():
+    with pytest.raises(SystemExit):
+        parse_args(["run-flow"])
+
+
+@pytest.mark.asyncio
+async def test_run_flow_cli_prints_json_result(tmp_path, monkeypatch, capsys):
+    """DoD1 — `run-flow` accepts a flow YAML and produces a JSON result."""
+    from main import async_main_run_flow
+    from src.api.models import FlowAction, FlowSpec, FlowStepSpec
+
+    config_path = tmp_path / "flow.yaml"
+    config_path.write_text(FLOW_YAML, encoding="utf-8")
+
+    fake_loop = AsyncMock()
+    fake_loop.run_flow = AsyncMock(return_value={
+        "run_id": "flow-x",
+        "flow": "cli-flow",
+        "url": "https://app.example.com/start",
+        "status": "passed",
+        "steps": [
+            {
+                "index": 1,
+                "name": "Check page",
+                "actions": [
+                    {
+                        "action": "observe",
+                        "params": {},
+                        "description": "Observing current page state",
+                        "attempts": 1,
+                        "passed": True,
+                        "failure_reason": "",
+                    }
+                ],
+                "asserts": [
+                    {
+                        "type": "url_contains",
+                        "selector": None,
+                        "expected": "/start",
+                        "actual": "https://app.example.com/start",
+                        "passed": True,
+                        "message": "",
+                    }
+                ],
+                "extracted": [],
+                "attempts": 1,
+                "status": "passed",
+                "failure_reason": "",
+            }
+        ],
+        "summary": {
+            "steps_total": 1,
+            "steps_passed": 1,
+            "steps_failed": 0,
+            "actions_total": 1,
+            "actions_failed": 0,
+            "asserts_total": 1,
+            "asserts_failed": 0,
+            "extractions": 0,
+            "attempts_total": 1,
+            "retries_used": 0,
+        },
+    })
+
+    def _fake_loop_cls(**kwargs):
+        return fake_loop
+
+    monkeypatch.setattr(
+        "src.api.batch_loader.load_flow_config",
+        lambda path: FlowSpec(
+            name="cli-flow",
+            url="https://app.example.com/start",
+            retries=2,
+            steps=[FlowStepSpec(actions=[FlowAction(action="observe")])],
+        ),
+    )
+    monkeypatch.setattr("src.agent.loop.AgenticLoop", _fake_loop_cls)
+
+    args = SimpleNamespace(
+        config=str(config_path),
+        output="./out",
+        headless=False,
+        port=9222,
+        model="gpt-4o-mini",
+        cookies_file=None,
+        username=None,
+        password=None,
+        run_id="flow-x",
+    )
+    await async_main_run_flow(args)
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["run_id"] == "flow-x"
+    assert payload["status"] == "passed"
+    assert payload["steps"][0]["asserts"][0]["passed"] is True
 
 
 @pytest.mark.asyncio

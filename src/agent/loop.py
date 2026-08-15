@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import websockets
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
+from ..cdp.connection_state import ConnectionState, RECONNECT_HEAL_WAIT_S
+from ..cdp.exceptions import CircuitOpenError, WebSocketDisconnected
 from ..observability import Span, init_run_context, get_metrics, log_event
 from . import planner, executor, critic, recovery
 from .cursor import CursorAnimator, extract_selector
@@ -25,9 +28,49 @@ from .browser_session import BrowserSession
 from .state import RunState, DocStepState
 
 if TYPE_CHECKING:
+    from ..api.models import (
+        FlowAction,
+        FlowAssertion,
+        FlowExtraction,
+        FlowSpec,
+        FlowStepSpec,
+    )
+    from ..cdp.input import InputDomain
+    from ..cdp.page import PageDomain
+    from ..cdp.runtime import RuntimeDomain
     from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on full browser respawns (BrowserSession.recover) per run.
+# READY-AI-T-3: exceeding it terminates the run with a structured
+# CircuitOpenError instead of retrying forever.
+MAX_CRASHES = 3
+
+# ─── Run-flow outcome classification (READY-AI-T-4 / fix B3) ─────────────
+#
+# ``executor._dispatch_action`` encodes failures in the description it
+# returns: denial-prefixed wording (a failed lookup, an executor error,
+# an unknown action type) or a "Timeout waiting for ..." signal from the
+# ``wait`` action. Success, however, is only *verifiable* for actions that
+# return an explicit non-denial description; for the silent-success actions
+# below the executor has no failure wording at all, so their outcome is
+# assumed passed without verification. Every other action that returns a
+# description matching no denial prefix is fail-CLOSED ("unrecognized
+# action outcome") instead of being guessed as passed.
+KNOWN_DENIAL_PREFIXES: tuple[str, ...] = (
+    "[failed]",
+    "[error]",
+    "[unknown",
+    "timeout ",
+)
+KNOWN_SILENT_SUCCESS_ACTIONS: frozenset[str] = frozenset(
+    {"scroll_to", "type", "press_key", "navigate"}
+)
+
+# Text-bearing actions whose ``text`` parameter and executor description
+# are redacted at the report boundary (fix B1).
+_TEXT_MASKED_ACTIONS: frozenset[str] = frozenset({"type", "click_text"})
 
 
 class AgenticLoop:
@@ -89,6 +132,11 @@ class AgenticLoop:
         self._cursor = CursorAnimator()
         self._last_url: Optional[str] = None
         self._max_replans_per_step = 2
+
+        # READY-AI-T-3: full-respawn budget for the whole run (spanning
+        # multiple `_execute_steps` invocations), so a flapping CDP
+        # session can never trigger an unbounded respawn loop.
+        self._connection_crashes: int = 0
 
         # Checkpointing state
         self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
@@ -242,6 +290,583 @@ class AgenticLoop:
                 await self._cursor.stop()
                 await self._session.teardown()
 
+    # ─── Docs-independent run-flow mode (READY-AI-T-4) ──────────────────
+    #
+    # Executes declarative YAML/JSON flows (actions, asserts, extractions,
+    # retries) over the SAME browser/CDP core used by the documentation
+    # pipeline — and, unlike `run()`, never instantiates DocRenderer or any
+    # screenshot/annotation component. Each step is reported with its
+    # actions (including retry attempts), expectations, and extracted data.
+
+    async def run_flow(self, flow: FlowSpec) -> dict:
+        """
+        Execute a declarative run-flow and return a structured JSON result.
+
+        Flow steps declare concrete actions (dispatched through
+        ``executor._dispatch_action`` — the same CDP executor core the
+        documentation path uses), expectations (asserts), extractions,
+        and retry budgets. Unlike ``run()`` this mode:
+
+          * never instantiates DocRenderer / screenshots / vision annotation
+          * never calls the LLM (except credential login when provided)
+          * reports per step: actions + attempts, asserts (expected/actual),
+            extracted data, and the step's overall retry accounting
+
+        A step aborts after the first action whose retry budget is
+        exhausted, so the result pinpoints the root cause instead of
+        cascading noise; remaining actions/asserts/extractions of that
+        step are reported via ``skipped_asserts``/``skipped_extractions``
+        instead of being silently dropped.
+
+        A CDP disconnection (surfacing as a "CDP connection lost during
+        action" failure) is run-level and terminal: the remaining steps
+        are never executed and are reported as ``skipped`` with reason
+        "aborted: CDP connection lost", ``failure_reason`` on the result
+        carries the sanitized disconnect reason, and the summary counts
+        only executed steps plus the explicitly skipped remainder — the
+        result stays truthful about what did and did not run.
+
+        Returns:
+            JSON-serializable dict with keys: run_id, flow, url, status,
+            steps[], summary{}, failure_reason
+        """
+        run_ctx = init_run_context(run_id=self.run_id)
+        flow_name = flow.name or "run-flow"
+        step_results: list[dict] = []
+        overall_status = "passed"
+        run_failed_reason: Optional[str] = None
+
+        async with Span(name="flow_run", attributes={"url": self.url, "flow": flow_name}):
+            try:
+                async with Span(name="browser_setup"):
+                    await self._session.setup()
+
+                page = self._session.page
+                runtime = self._session.runtime
+                input_domain = self._session.input_domain
+
+                await page.enable()
+                logger.info("═══ Run-flow '%s' — navigating to: %s", flow_name, self.url)
+                await page.navigate(self.url)
+
+                if self._session.cookies_file:
+                    await self._session.inject_cookies()
+
+                if self._session.username and self._session.password:
+                    llm = LLMClient(model=self.model)
+                    await self._session.handle_login(llm)
+
+                try:
+                    await page.wait_for_network_idle(timeout=10.0, idle_time=0.5)
+                except Exception as exc:
+                    logger.debug(f"Flow start network-idle wait failed/timed out: {exc}")
+
+                for index, step in enumerate(flow.steps, start=1):
+                    step_report = await self._execute_flow_step(
+                        step, index, flow.retries, page, input_domain, runtime
+                    )
+                    step_results.append(step_report)
+                    if step_report["status"] != "passed":
+                        overall_status = "failed"
+                    # A CDP disconnection is run-level and terminal: stop
+                    # executing, report the remaining steps as skipped.
+                    disconnect_reason = self._disconnect_failure_reason(step_report)
+                    if disconnect_reason:
+                        run_failed_reason = disconnect_reason
+                        self._mark_remaining_steps_skipped(step_results, flow, index)
+                        break
+
+                self._state.status = "FINISHED" if overall_status == "passed" else "FAILED"
+                self._save_checkpoint()
+
+                result = self._build_flow_result(
+                    flow, flow_name, overall_status, step_results, run_failed_reason
+                )
+                self._persist_flow_result(result)
+                self._save_flow_metrics(run_ctx, flow_name, overall_status, step_results)
+                return result
+            except Exception as exc:
+                logger.error(f"Run-flow failed: {exc}")
+                self._state.status = "FAILED"
+                try:
+                    self._save_checkpoint()
+                except Exception:
+                    pass
+                raise
+            finally:
+                await self._session.teardown()
+
+    async def _execute_flow_step(
+        self,
+        step: FlowStepSpec,
+        index: int,
+        default_retries: int,
+        page: PageDomain,
+        input_domain: InputDomain,
+        runtime: RuntimeDomain,
+    ) -> dict:
+        """Execute one declarative step and build its structured report.
+
+        Actions run first (each with its retry budget). If an action
+        exhausts its budget the step is aborted and the remaining
+        actions/asserts/extractions are not evaluated, so the failure
+        reason is unambiguous. Otherwise asserts and extractions run and
+        are reported per step.
+        """
+        step_retries = step.retries if step.retries is not None else default_retries
+        action_reports: list[dict] = []
+        reasons: list[str] = []
+        aborted = False
+
+        for action in step.actions:
+            report = await self._execute_flow_action(
+                action, step_retries, page, input_domain, runtime
+            )
+            action_reports.append(report)
+            if not report["passed"]:
+                reasons.append(
+                    report["failure_reason"]
+                    or report["description"]
+                    or f"action '{report['action']}' failed"
+                )
+                aborted = True
+                break
+
+        assert_results: list[dict] = []
+        extracted: list[dict] = []
+        # DoD2: declared-but-not-executed asserts/extractions are counted
+        # instead of being silently dropped when the step aborts.
+        skipped_asserts = 0
+        skipped_extractions = 0
+        if not aborted:
+            for assertion in step.asserts:
+                result = await self._evaluate_flow_assertion(assertion, runtime)
+                assert_results.append(result)
+                if not result["passed"]:
+                    reasons.append(result["message"] or f"assert '{result['type']}' failed")
+
+            for extraction in step.extract:
+                value = await self._extract_flow_value(extraction, runtime)
+                extracted.append(
+                    {
+                        "name": extraction.name,
+                        "selector": extraction.selector,
+                        "value": value,
+                    }
+                )
+        else:
+            skipped_asserts = len(step.asserts)
+            skipped_extractions = len(step.extract)
+
+        attempts = max((r["attempts"] for r in action_reports), default=1)
+        status = (
+            "failed"
+            if aborted or any(not a["passed"] for a in assert_results)
+            else "passed"
+        )
+        return {
+            "index": index,
+            "name": step.name,
+            "actions": action_reports,
+            "asserts": assert_results,
+            "extracted": extracted,
+            "attempts": attempts,
+            "status": status,
+            "failure_reason": "; ".join(dict.fromkeys(reasons)) if reasons else "",
+            "skipped_asserts": skipped_asserts,
+            "skipped_extractions": skipped_extractions,
+        }
+
+    async def _execute_flow_action(
+        self,
+        action: FlowAction,
+        default_retries: int,
+        page: PageDomain,
+        input_domain: InputDomain,
+        runtime: RuntimeDomain,
+    ) -> dict:
+        """Dispatch one declarative action with a bounded retry budget.
+
+        Retries re-run the SAME declared action (deterministic flow
+        semantics) through ``executor._dispatch_action`` — the executor
+        core shared with the documentation pipeline. A CDP disconnect
+        surfaces as a failed report instead of hanging the flow.
+        """
+        payload = {
+            k: v
+            for k, v in {
+                **action.model_dump(exclude_unset=True),
+                **(action.model_extra or {}),
+            }.items()
+            if v is not None
+        }
+        payload.pop("retries", None)
+        action_type = str(payload.get("action", "observe"))
+        budget = max(0, action.retries if action.retries is not None else default_retries)
+        params = self._flow_params_for_report(payload)
+
+        attempts = 0
+        last_desc = ""
+        last_failure = ""
+        while attempts <= budget:
+            attempts += 1
+            try:
+                desc = await executor._dispatch_action(
+                    payload, page, input_domain, runtime
+                )
+            except (websockets.exceptions.ConnectionClosed, WebSocketDisconnected) as exc:
+                last_failure = f"CDP connection lost during action: {exc}"
+                break
+            except Exception as exc:
+                last_failure = f"Action error: {exc}"
+                break
+            last_desc = desc or ""
+            if self._flow_action_ok(last_desc, action_type):
+                return {
+                    "action": action_type,
+                    "params": params,
+                    "description": self._mask_flow_description(
+                        last_desc, action_type, payload
+                    ),
+                    "attempts": attempts,
+                    "passed": True,
+                    "failure_reason": "",
+                }
+            last_failure = self._flow_failure_reason(last_desc, action_type)
+
+        return {
+            "action": action_type,
+            "params": params,
+            "description": self._mask_flow_description(last_desc, action_type, payload),
+            "attempts": max(attempts, 1),
+            "passed": False,
+            "failure_reason": last_failure,
+        }
+
+    @staticmethod
+    def _flow_action_ok(description: str, action_type: str) -> bool:
+        """Classify a dispatch description as passed, failing CLOSED.
+
+        Success is only assumed for actions whose executor wording cannot
+        express failure (``KNOWN_SILENT_SUCCESS_ACTIONS``). Every other
+        action must produce a description that matches no denial prefix;
+        unrecognized wording is treated as a failed outcome (see
+        ``_flow_failure_reason``) instead of being guessed as passed.
+        """
+        if not description:
+            return False
+        lowered = description.lower()
+        for prefix in KNOWN_DENIAL_PREFIXES:
+            if lowered.startswith(prefix):
+                return False
+        return action_type in KNOWN_SILENT_SUCCESS_ACTIONS
+
+    @staticmethod
+    def _flow_failure_reason(description: str, action_type: str) -> str:
+        """Human-readable failure reason for a non-passing description."""
+        if not description:
+            return "empty action outcome"
+        lowered = description.lower()
+        for prefix in KNOWN_DENIAL_PREFIXES:
+            if lowered.startswith(prefix):
+                return description
+        return "unrecognized action outcome"
+
+    @staticmethod
+    def _flow_params_for_report(payload: dict) -> dict:
+        """Build report params; typed text is masked to avoid leaking secrets."""
+        params = {k: v for k, v in payload.items() if k != "action"}
+        if payload.get("action") in _TEXT_MASKED_ACTIONS and "text" in params:
+            params["text"] = "***"
+        return params
+
+    @staticmethod
+    def _mask_flow_description(description: str, action_type: str, payload: dict) -> str:
+        """Redact raw typed/clicked text from the executor description.
+
+        Display-level redaction at the report boundary: the executor's own
+        locally logged description (out of scope here) may carry the raw
+        value — e.g. when ``is_sensitive_field`` misses the target field —
+        so every occurrence of the raw value in the description is replaced
+        with ``"***"`` before it enters a report. Empty/whitespace text is
+        left untouched.
+        """
+        if action_type not in _TEXT_MASKED_ACTIONS:
+            return description
+        raw = payload.get("text")
+        if not isinstance(raw, str) or not raw.strip():
+            return description
+        return re.sub(re.escape(raw), "***", description)
+
+    @staticmethod
+    def _disconnect_failure_reason(step_report: dict) -> Optional[str]:
+        """Return a sanitized run-level reason when a step hit a CDP disconnect.
+
+        ``_execute_flow_action`` marks every disconnect (a re-raised
+        ``websockets.ConnectionClosed`` / ``WebSocketDisconnected`` from
+        ``_dispatch_action``, or a ``CircuitOpenError`` surfaced outside
+        it) with the "CDP connection lost during action:" marker. The
+        exception payload itself is dropped so no URLs or credentials
+        leak into the run-level result.
+        """
+        for action_report in step_report.get("actions", []):
+            reason = action_report.get("failure_reason") or ""
+            if "CDP connection lost" in reason:
+                action_type = action_report.get("action", "unknown")
+                return f"CDP connection lost during action: {action_type}"
+        return None
+
+    @staticmethod
+    def _mark_remaining_steps_skipped(
+        step_results: list[dict],
+        flow: FlowSpec,
+        failed_index: int,
+    ) -> None:
+        """Append truthful ``skipped`` reports for steps after a CDP abort.
+
+        ``failed_index`` is the 1-based index of the step that failed on
+        the disconnect; the remaining declared steps are never executed
+        and report status "skipped" with an explicit abort reason, and
+        their declared asserts/extractions are counted as skipped.
+        """
+        for j in range(failed_index, len(flow.steps)):
+            step = flow.steps[j]
+            step_results.append(
+                {
+                    "index": j + 1,
+                    "name": step.name,
+                    "actions": [],
+                    "asserts": [],
+                    "extracted": [],
+                    "attempts": 0,
+                    "status": "skipped",
+                    "failure_reason": "aborted: CDP connection lost",
+                    "skipped_asserts": len(step.asserts),
+                    "skipped_extractions": len(step.extract),
+                }
+            )
+
+    async def _evaluate_flow_assertion(
+        self,
+        assertion: FlowAssertion,
+        runtime: RuntimeDomain,
+    ) -> dict:
+        """Evaluate one declarative expectation against the live page."""
+        atype = assertion.type
+        selector = assertion.selector
+        expected = assertion.expected
+        actual: object = None
+        passed = False
+        # B5: empty-expected comparisons that would otherwise trivially pass
+        # (e.g. url_contains with no expected, or an equality assert against
+        # a missing element with expected "") must fail closed with a clear
+        # message.
+        guard_message = ""
+        try:
+            if atype in ("url_contains", "url_equals", "not_url_contains"):
+                actual = await runtime.evaluate("window.location.href")
+                actual_s = str(actual or "")
+                exp_s = str(expected or "")
+                if atype == "url_contains":
+                    if expected is None or str(expected).strip() == "":
+                        passed = False
+                        guard_message = "empty expected value"
+                    else:
+                        passed = exp_s in actual_s
+                elif atype == "url_equals":
+                    passed = actual_s == exp_s
+                else:
+                    passed = exp_s not in actual_s
+            elif atype in ("element_present", "element_missing"):
+                if not selector:
+                    passed = False
+                else:
+                    actual = await runtime.query_selector(selector)
+                    found = actual is not None
+                    passed = found if atype == "element_present" else not found
+            elif atype == "element_visible":
+                if not selector:
+                    passed = False
+                else:
+                    safe_sel = json.dumps(selector)
+                    js = (
+                        f"(() => {{ const el = document.querySelector({safe_sel}); "
+                        f"if (!el) return false; const r = el.getBoundingClientRect(); "
+                        f"if (r.width === 0 || r.height === 0) return false; "
+                        f"const s = window.getComputedStyle(el); "
+                        f"return s.visibility !== 'hidden' && s.display !== 'none'; }})()"
+                    )
+                    actual = await runtime.evaluate(js)
+                    passed = bool(actual)
+            elif atype in ("text_contains", "text_equals"):
+                if selector:
+                    actual = await runtime.get_element_text(selector)
+                else:
+                    actual = await runtime.get_visible_text()
+                actual_s = str(actual or "")
+                if atype == "text_contains":
+                    passed = str(expected or "") in actual_s
+                else:
+                    if (expected is None or str(expected).strip() == "") and actual_s.strip() == "":
+                        passed = False
+                        guard_message = "empty expected value (element text missing)"
+                    else:
+                        passed = actual_s.strip() == str(expected or "").strip()
+            elif atype == "attribute_equals":
+                if not selector or not assertion.attribute:
+                    passed = False
+                else:
+                    attrs = await runtime.get_element_attributes(selector)
+                    actual = attrs.get(assertion.attribute)
+                    if (expected is None or str(expected).strip() == "") and actual is None:
+                        passed = False
+                        guard_message = "empty expected value (attribute missing)"
+                    else:
+                        passed = str(actual or "") == str(expected or "")
+            else:
+                raise ValueError(f"Unsupported flow assertion type: {atype}")
+        except Exception as exc:
+            passed = False
+            actual = None
+            message = f"{atype} errored: {exc}"
+            return {
+                "type": atype,
+                "selector": selector,
+                "expected": expected,
+                "actual": actual,
+                "passed": passed,
+                "message": message,
+            }
+
+        message = ""
+        if not passed:
+            message = assertion.message or (
+                guard_message
+                or f"{atype} failed: expected={expected!r} actual={actual!r}"
+            )
+        return {
+            "type": atype,
+            "selector": selector,
+            "expected": expected,
+            "actual": actual,
+            "passed": passed,
+            "message": message,
+        }
+
+    async def _extract_flow_value(
+        self,
+        extraction: FlowExtraction,
+        runtime: RuntimeDomain,
+    ) -> object:
+        """Read one extracted value (or list) from the live page."""
+        safe_sel = json.dumps(extraction.selector)
+        safe_prop = json.dumps(extraction.attribute or "textContent")
+        multi = "true" if extraction.multiple else "false"
+        js = f"""(() => {{
+            const els = Array.from(document.querySelectorAll({safe_sel}));
+            if (els.length === 0) return {multi} ? [] : null;
+            const read = (el) => {{
+                let key = {safe_prop};
+                if (key.startsWith('@')) return el.getAttribute(key.slice(1));
+                try {{
+                    if (key in el) {{
+                        const v = el[key];
+                        if (v === undefined) return null;
+                        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+                        return null;
+                    }}
+                }} catch (e) {{ }}
+                return el.getAttribute(key);
+            }};
+            const values = els.map(read);
+            return {multi} ? values : values[0];
+        }})()"""
+        try:
+            return await runtime.evaluate(js)
+        except Exception as exc:
+            logger.warning(f"Flow extraction '{extraction.name}' failed: {exc}")
+            return None
+
+    def _build_flow_result(
+        self,
+        flow: FlowSpec,
+        flow_name: str,
+        status: str,
+        step_results: list[dict],
+        failure_reason: Optional[str] = None,
+    ) -> dict:
+        """Assemble the structured JSON result with a run summary."""
+        summary = {
+            "steps_total": len(flow.steps),
+            "steps_passed": sum(1 for s in step_results if s["status"] == "passed"),
+            "steps_failed": sum(1 for s in step_results if s["status"] == "failed"),
+            "steps_skipped": sum(1 for s in step_results if s["status"] == "skipped"),
+            "actions_total": sum(len(s["actions"]) for s in step_results),
+            "actions_failed": sum(
+                1 for s in step_results for a in s["actions"] if not a["passed"]
+            ),
+            "asserts_total": sum(len(s["asserts"]) for s in step_results),
+            "asserts_failed": sum(
+                1 for s in step_results for a in s["asserts"] if not a["passed"]
+            ),
+            "extractions": sum(len(s["extracted"]) for s in step_results),
+            "attempts_total": sum(int(s["attempts"]) for s in step_results),
+            "retries_used": sum(
+                max(0, int(a["attempts"]) - 1)
+                for s in step_results
+                for a in s["actions"]
+            ),
+            "skipped_asserts_total": sum(
+                int(s["skipped_asserts"]) for s in step_results
+            ),
+            "skipped_extractions_total": sum(
+                int(s["skipped_extractions"]) for s in step_results
+            ),
+        }
+        return {
+            "run_id": self.run_id,
+            "flow": flow_name,
+            "url": self.url,
+            "status": status,
+            "steps": step_results,
+            "summary": summary,
+            "failure_reason": failure_reason,
+        }
+
+    def _persist_flow_result(self, result: dict) -> None:
+        """Write the flow result JSON alongside the run state output."""
+        try:
+            out = Path(self.output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            path = out / f"{self.run_id}_flow_result.json"
+            path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+            logger.info("═══ Flow result saved to: %s", path)
+        except Exception as exc:
+            logger.warning(f"Failed to save flow result: {exc}")
+
+    def _save_flow_metrics(
+        self,
+        run_ctx,
+        flow_name: str,
+        status: str,
+        step_results: list[dict],
+    ) -> None:
+        """Write flow run metrics to a JSON file alongside the result."""
+        try:
+            summary = run_ctx.run_summary(
+                status=status.upper(),
+                flow=flow_name,
+                steps_planned=len(step_results),
+            )
+            metrics_path = Path(self.output_dir) / f"{self.run_id}_flow_metrics.json"
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics_path.write_text(
+                json.dumps(summary, indent=2, default=str), encoding="utf-8"
+            )
+            logger.info("═══ Flow metrics saved to: %s", metrics_path)
+        except Exception as exc:
+            logger.warning(f"Failed to save flow metrics: {exc}")
+
     def _save_metrics(self, run_ctx, status: str = "FINISHED", **extra) -> None:
         """Write run metrics to a JSON file alongside the output."""
         try:
@@ -331,6 +956,96 @@ class AgenticLoop:
             details += f"\n\n**Failure details:** {result.failure_reason}"
         return details
 
+    async def _recover_session_after_disconnect(
+        self,
+        exc: Exception,
+        llm: LLMClient,
+        step_idx: int,
+    ) -> None:
+        """Unified CDP disconnect recovery (READY-AI-T-3).
+
+        Both disconnect exception types — `websockets.exceptions.
+        ConnectionClosed` and our `WebSocketDisconnected` (including
+        its structured `CircuitOpenError` subtype) — land in this ONE
+        recovery path, so the loop no longer depends on which subtype
+        the connection layer happened to raise.
+
+        Recovery ladder:
+
+          1. Bounded auto-reconnect wait: while the connection's own
+             reconnect+reattach is still in flight (DEGRADED), give it
+             up to `RECONNECT_HEAL_WAIT_S` to heal. On success the
+             in-flight step resumes on the same session — no Chrome
+             respawn, no checkpoint reset.
+          2. Full respawn: when the circuit is open (DOWN) or the heal
+             wait timed out, fall back to `BrowserSession.recover()`.
+             Respawns are bounded by `MAX_CRASHES`; exceeding the
+             budget raises a structured `CircuitOpenError` instead of
+             retrying forever — terminal failures are never masked.
+
+        Step context is preserved by construction: this method never
+        touches ``self._state.current_step_index``, so the caller's
+        while-loop re-runs only the in-flight step; completed
+        (checkpointed) steps are never re-executed. Cancellation is
+        never swallowed: `asyncio.CancelledError` propagates so the
+        caller can tear down cleanly.
+        """
+        logger.warning(
+            "CDP session disconnected during step %d: %r",
+            step_idx + 1,
+            exc,
+        )
+        session = self._session
+        conn = session.conn
+
+        # 1. In-flight auto-reconnect? Give the connection a bounded
+        #    chance to heal itself before we consider a full respawn.
+        if (
+            conn is not None
+            and conn.state == ConnectionState.DEGRADED
+            and session.is_reconnecting
+        ):
+            final_state = await session.wait_for_reconnect(
+                timeout=RECONNECT_HEAL_WAIT_S, poll_interval=0.1
+            )
+            if final_state == ConnectionState.HEALTHY:
+                metrics = get_metrics()
+                if metrics:
+                    metrics.increment("recovery.reattach")
+                logger.info(
+                    "⟲ CDP reconnected and reattached in place; "
+                    "resuming step %d on the same session",
+                    step_idx + 1,
+                )
+                return
+        # 2. Full respawn, bounded by the crash budget.
+        self._connection_crashes += 1
+        if self._connection_crashes > MAX_CRASHES:
+            state = conn.state.value if conn is not None else "unknown"
+            metrics = get_metrics()
+            if metrics:
+                metrics.increment("recovery.exhausted")
+            logger.error(
+                "⟲ Exceeded maximum global CDP recoveries (%s). "
+                "Aborting pipeline.",
+                MAX_CRASHES,
+            )
+            raise CircuitOpenError(
+                f"CDP session unrecoverable after {MAX_CRASHES} respawn "
+                f"attempts (connection state: {state})",
+                state=state,
+                attempts=self._connection_crashes,
+                step=step_idx,
+            )
+        resume_url = self._last_url or self.url
+        logger.info(
+            "⟲ Full browser respawn after CDP disconnect "
+            "(respawn %d/%d)",
+            self._connection_crashes,
+            MAX_CRASHES,
+        )
+        await session.recover(resume_url, llm)
+
     async def _execute_steps(
         self,
         steps: list[str],
@@ -338,8 +1053,18 @@ class AgenticLoop:
         annotation_llm: LLMClient,
         doc: DocRenderer,
         start_number: int = 1,
+        start_index: Optional[int] = None,
     ) -> list[executor.StepResult]:
-        """Execute a list of steps with verification, screenshots, and annotations."""
+        """Execute a list of steps with verification, screenshots, and annotations.
+
+        ``start_index`` seeds the first step to execute within ``steps``.
+        The default (None) resolves the checkpoint index via
+        ``recovery.resume_step_index`` so the MAIN plan never
+        re-executes confirmed steps after a crash/resume. Sub-plan /
+        critic re-execution passes ``start_index=0``: those runs are
+        independent of the main-plan cursor, which would otherwise
+        silently skip their first missing step once it is nonzero.
+        """
         results = []
         self._last_url = None
 
@@ -348,10 +1073,16 @@ class AgenticLoop:
         runtime = self._session.runtime
 
         step_list = list(steps)
-        step_idx = self._state.current_step_index
+        # READY-AI-T-3: resume from the last valid checkpoint so
+        # completed steps are never re-executed on recovery — valid
+        # ONLY for the main-plan path. Sub-plan/critic executions pass
+        # an explicit start_index and skip this resolution (their first
+        # step must never be skipped because the main cursor moved).
+        if start_index is None:
+            step_idx = recovery.resume_step_index(self._state, len(step_list))
+        else:
+            step_idx = start_index
         i = start_number + step_idx
-        crashes = 0
-        MAX_CRASHES = 3
         replan_attempts_by_index: dict[int, int] = {}
 
         while step_idx < len(step_list):
@@ -494,17 +1225,20 @@ class AgenticLoop:
                 i += 1
                 self._cursor.moving = True
 
-            except websockets.exceptions.ConnectionClosed:
-                crashes += 1
+            except (
+                websockets.exceptions.ConnectionClosed,
+                WebSocketDisconnected,
+            ) as exc:
+                # READY-AI-T-3: BOTH disconnect subtypes route through
+                # the same coordinator — it waits for the connection's
+                # own reconnect+reattach first, and only then falls
+                # back to a bounded full respawn.
                 metrics = get_metrics()
                 if metrics:
                     metrics.increment("recovery.crash")
-                if crashes > MAX_CRASHES:
-                    logger.error(f"Exceeded maximum global crashes ({MAX_CRASHES}). Aborting pipeline.")
-                    raise
-
-                resume_url = self._last_url or self.url
-                await self._session.recover(resume_url, llm)
+                await self._recover_session_after_disconnect(
+                    exc, llm, step_idx
+                )
                 page = self._session.page
                 input_domain = self._session.input_domain
                 runtime = self._session.runtime
@@ -599,4 +1333,9 @@ class AgenticLoop:
         return await self._execute_steps(
             new_steps, llm, annotation_llm, doc,
             start_number=next_num,
+            # READY-AI-T-3/Q3: a sub-plan always starts at ITS OWN
+            # first step. Seeding from `state.current_step_index`
+            # (the MAIN-plan cursor) would skip the first missing
+            # step once that cursor is nonzero.
+            start_index=0,
         )

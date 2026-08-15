@@ -20,10 +20,11 @@ Expected format (YAML):
         output: "./output/v2.3.1/onboarding"
 """
 
+import json
 import logging
 from pathlib import Path
 
-from src.api.models import BatchConfig, BatchConfigFlow
+from src.api.models import BatchConfig, BatchConfigFlow, FlowSpec
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,54 @@ def _load_toml(path: Path) -> BatchConfig:
         raise ValueError("TOML batch config must contain a top-level table")
 
     return _parse_dict(data)
+
+
+def load_flow_config(path: str | Path) -> FlowSpec:
+    """
+    Load a declarative run-flow document (READY-AI-T-4) from YAML or JSON.
+
+    The document drives the docs-independent run-flow mode — same parsing
+    conventions as the batch config loader:
+
+        name: "checkout-smoke"
+        url: "https://app.example.com/checkout"
+        retries: 2
+        steps:
+          - name: "Open cart"
+            actions:
+              - action: navigate
+                url: "https://app.example.com/cart"
+            asserts:
+              - type: url_contains
+                expected: "/cart"
+            extract:
+              - name: item_count
+                selector: ".cart-item"
+                multiple: true
+
+    Raises:
+        FileNotFoundError: when ``path`` does not exist.
+        ValueError: for unsupported suffixes or non-mapping documents.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Flow file not found: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix in (".yaml", ".yml"):
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    elif suffix == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        raise ValueError(
+            f"Unsupported flow format: {suffix}. Use .yaml, .yml, or .json"
+        )
+
+    if not isinstance(data, dict):
+        raise ValueError("Flow config must contain a top-level mapping")
+
+    return FlowSpec(**data)
 
 
 def _parse_dict(data: dict) -> BatchConfig:

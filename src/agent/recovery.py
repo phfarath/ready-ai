@@ -23,6 +23,7 @@ from ..llm.prompts import (
 from ..observability import get_metrics, log_event
 from . import planner, executor
 from .dom_utils import dom_fingerprint
+from .state import RunState
 
 if TYPE_CHECKING:
     from ..llm.client import LLMClient
@@ -31,6 +32,7 @@ __all__ = [
     "dom_fingerprint",
     "is_spa_drift",
     "parse_recovery_decision",
+    "resume_step_index",
 ]
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,34 @@ def parse_recovery_decision(response: str) -> dict:
         if match:
             return json.loads(match.group(1))
     return {"decision": "mark_manual", "reason": "Recovery decision could not be parsed."}
+
+
+def resume_step_index(state: RunState, step_count: int) -> int:
+    """Index of the first step to (re)execute when entering the step loop.
+
+    This is only valid for the MAIN-plan recovery path. The
+    AgenticLoop checkpoint advances ``current_step_index`` only AFTER
+    a step is fully confirmed — executed, verified, annotated, and
+    recorded in the doc — so the last valid checkpoint never points
+    at or before a completed step. Resuming from it (in-memory or
+    from disk) therefore never re-executes confirmed steps on the
+    main plan (READY-AI-T-3: "não recomeça passos concluídos").
+
+    Do NOT use this to seed sub-plan / critic re-execution
+    (``_reexecute_missing_steps``): ``current_step_index`` belongs to
+    the MAIN plan, and once it is nonzero a sub-plan seeded from it
+    would silently skip its first missing step. Sub-plans must start
+    at index 0 (the caller passes ``start_index=0`` to
+    ``AgenticLoop._execute_steps``).
+
+    A corrupted checkpoint whose index points past the plan is clamped
+    back to 0 rather than letting the loop skip or overrun the step
+    list.
+    """
+    idx = int(getattr(state, "current_step_index", 0) or 0)
+    if idx < 0 or idx > step_count:
+        return 0
+    return idx
 
 
 async def recover_failed_step(

@@ -135,3 +135,42 @@ class TestLoopPlaceholder:
     async def test_todo(self):
         """Loop tests will be added in the next iteration."""
         assert True
+
+
+# ─── Locator / Action Fixtures (READY-AI-T-5) ────────────────────────────
+
+@pytest.fixture
+def locator_fixture_success():
+    """Fixture: locator resolves via role+name and action succeeds."""
+    return {"method": "role+name", "selector": '[role="button"][name="Submit"]', "visible": True}
+
+@pytest.fixture
+def locator_fixture_covered_target():
+    """Fixture: target covered by overlay; action fails hit-target check."""
+    return {"method": "css", "selector": "#submit", "visible": True, "hit_target_ok": False}
+
+@pytest.fixture
+def locator_fixture_fallback():
+    """Fixture: role+name fails; falls back to text; then CSS."""
+    return {"fallback_path": ["role+name", "text", "css"], "final_selector": "#submit-btn"}
+
+@pytest.fixture
+def locator_fixture_not_visible():
+    """Fixture: element exists but is not visible; action should fail."""
+    return {"method": "data-testid", "selector": '[data-testid="hidden"]', "visible": False, "stable": False}
+
+@pytest.fixture
+def locator_fixture_not_reachable():
+    """Fixture: element not reachable (stability/hit-target failure)."""
+    return {"method": "css", "selector": ".stale-btn", "visible": True, "stable": False, "hit_target_ok": False}
+
+
+@pytest.fixture
+def locator_action_check_fixture():
+    """Fixture for check/hover/drag actions with AX tree participation."""
+    return {
+        "actions": ["check", "hover", "drag", "fill", "select"],
+        "ax_role": "checkbox",
+        "ax_name": "Accept terms",
+        "path_report": "LocatorPath(role=checkbox, name=Accept terms)",
+    }

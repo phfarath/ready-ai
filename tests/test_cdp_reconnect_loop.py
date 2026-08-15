@@ -26,6 +26,7 @@ from src.cdp.connection_state import (
     RECONNECT_MAX_ATTEMPTS,
     ConnectionState,
 )
+from src.cdp.exceptions import CircuitOpenError, WebSocketDisconnected
 
 
 # ---------------------------------------------------------------------------
@@ -300,3 +301,191 @@ class TestBackoffGrowsAndCaps:
                     assert expected_base <= d <= expected_base * 1.1, (
                         f"delay {i} = {d} out of band [{expected_base}, {expected_base*1.1}]"
                     )
+
+
+class TestReconnectingProperty:
+    @pytest.mark.asyncio
+    async def test_reconnecting_tracks_inflight_task(self):
+        conn = CDPConnection()
+        # No reconnect scheduled yet.
+        assert conn.reconnecting is False
+
+        task = asyncio.create_task(asyncio.sleep(10))
+        conn._reconnect_task = task
+        assert conn.reconnecting is True
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        # Once the task finished (cancelled), no reconnect in flight.
+        assert conn.reconnecting is False
+
+    @pytest.mark.asyncio
+    async def test_reconnecting_false_when_task_finished(self):
+        async def done_immediately():
+            return None
+
+        conn = CDPConnection()
+        task = asyncio.create_task(done_immediately())
+        await task
+        conn._reconnect_task = task
+        assert conn.reconnecting is False
+
+
+class TestReconnectTaskLifecycle:
+    """READY-AI-T-3/Q2: a finished reconnect must free the task slot so
+    a SECOND disconnect in the same session can schedule a fresh
+    reconnect. Before the fix the completed task lingered in
+    ``_reconnect_task`` and the ``is None`` guard in
+    ``_handle_disconnect`` never let the headline reattach path run
+    more than once per session."""
+
+    @pytest.mark.asyncio
+    async def test_second_disconnect_schedules_a_fresh_reconnect(self):
+        ws = _ws_mock()
+
+        async def fake_connect(*args, **kwargs):
+            return ws
+
+        # The reconnect scheduler in `_handle_disconnect` is gated by
+        # the module-level AUTORECONNECT_ENABLED flag; patch it
+        # directly to keep the test hermetic (no env/reload dance).
+        with patch("src.cdp.connection.AUTORECONNECT_ENABLED", True), \
+             patch("src.cdp.connection.websockets.connect", new=fake_connect), \
+             patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()), \
+             patch.object(
+                 CDPConnection, "_post_reconnect_reattach", new=AsyncMock()
+             ):
+            conn = CDPConnection()
+            conn._ws_url = "ws://test"
+            conn._state = ConnectionState.HEALTHY
+
+            # FIRST disconnect: schedules a reconnect task and the FSM
+            # moves HEALTHY -> DEGRADED.
+            await conn._handle_disconnect(intentional=False)
+            assert conn._reconnect_task is not None
+            assert conn.reconnecting is True
+            assert conn._state == ConnectionState.DEGRADED
+
+            # The reconnect heals the socket and finishes. The finished
+            # task must NOT keep pinning the slot.
+            await conn._reconnect_task
+            assert conn._state == ConnectionState.HEALTHY
+            assert conn._reconnect_task is None
+            assert conn.reconnecting is False
+
+            # SECOND disconnect in the SAME session: must schedule a
+            # BRAND NEW reconnect task (this is where the pre-fix bug
+            # silently skipped — reconnecting stayed False forever).
+            await conn._handle_disconnect(intentional=False)
+            assert conn._reconnect_task is not None
+            assert conn.reconnecting is True
+
+            # Let it heal too so no task is left dangling.
+            await conn._reconnect_task
+            assert conn._reconnect_task is None
+            assert conn._state == ConnectionState.HEALTHY
+
+
+class TestWaitForReconnect:
+    @pytest.mark.asyncio
+    async def test_returns_immediately_when_not_degraded(self):
+        # HEALTHY / DOWN / CLOSED are stable states: no polling needed.
+        for state in (
+            ConnectionState.HEALTHY,
+            ConnectionState.DOWN,
+            ConnectionState.CLOSED,
+        ):
+            conn = CDPConnection()
+            conn._state = state
+            start = asyncio.get_event_loop().time()
+            result = await conn.wait_for_reconnect(timeout=1.0)
+            elapsed = asyncio.get_event_loop().time() - start
+            assert result == state
+            assert elapsed < 0.05, f"should return instantly, took {elapsed}s"
+
+    @pytest.mark.asyncio
+    async def test_reports_healthy_after_successful_reattach(self):
+        # The auto-reconnect task heals the socket: the wait should
+        # observe the FSM flip DEGRADED -> HEALTHY.
+        conn = CDPConnection()
+        conn._state = ConnectionState.DEGRADED
+
+        async def heal():
+            await asyncio.sleep(0.05)
+            conn._state = ConnectionState.HEALTHY
+
+        asyncio.create_task(heal())
+        result = await conn.wait_for_reconnect(timeout=2.0, poll_interval=0.01)
+        assert result == ConnectionState.HEALTHY
+
+    @pytest.mark.asyncio
+    async def test_reports_down_when_reconnect_exhausted(self):
+        # The auto-reconnect exhausts its attempts and opens the
+        # circuit: the wait should observe DEGRADED -> DOWN.
+        conn = CDPConnection()
+        conn._state = ConnectionState.DEGRADED
+
+        async def open_circuit():
+            await asyncio.sleep(0.05)
+            conn._state = ConnectionState.DOWN
+
+        asyncio.create_task(open_circuit())
+        result = await conn.wait_for_reconnect(timeout=2.0, poll_interval=0.01)
+        assert result == ConnectionState.DOWN
+
+    @pytest.mark.asyncio
+    async def test_times_out_while_still_degraded(self):
+        # The reconnect keeps churning past the deadline: the wait must
+        # return the current DEGRADED state instead of hanging.
+        conn = CDPConnection()
+        conn._state = ConnectionState.DEGRADED
+        start = asyncio.get_event_loop().time()
+        result = await conn.wait_for_reconnect(timeout=0.05, poll_interval=0.01)
+        elapsed = asyncio.get_event_loop().time() - start
+        assert result == ConnectionState.DEGRADED
+        assert 0.03 <= elapsed < 1.0, f"unexpected elapsed: {elapsed}"
+
+
+class TestCircuitOpenError:
+    def test_subclasses_web_socket_disconnected(self):
+        # Structurally distinct while remaining catchable everywhere
+        # the plain disconnect exception is caught.
+        assert issubclass(CircuitOpenError, WebSocketDisconnected)
+        assert issubclass(CircuitOpenError, RuntimeError)
+
+    def test_carries_structured_fields(self):
+        err = CircuitOpenError(
+            "boom", state="down", attempts=4, step=2
+        )
+        assert str(err) == "boom"
+        assert err.state == "down"
+        assert err.attempts == 4
+        assert err.step == 2
+
+    @pytest.mark.asyncio
+    async def test_send_raises_circuit_open_error_when_down(self):
+        # Fail-fast on an open circuit yields the structured subtype.
+        conn = CDPConnection()
+        conn._ws = _ws_mock()
+        conn._state = ConnectionState.DOWN
+        conn._consecutive_failures = 5
+        with pytest.raises(CircuitOpenError) as excinfo:
+            await conn.send("Page.navigate", {"url": "x"})
+        assert excinfo.value.state == "down"
+        assert excinfo.value.attempts == 5
+        # The socket was NOT touched.
+        conn._ws.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_raises_plain_disconnected_when_closed(self):
+        # CLOSED is an intentional teardown, not a circuit failure: it
+        # must keep the plain (non-CircuitOpen) exception type.
+        conn = CDPConnection()
+        conn._ws = _ws_mock()
+        conn._state = ConnectionState.CLOSED
+        with pytest.raises(WebSocketDisconnected) as excinfo:
+            await conn.send("Page.navigate", {"url": "x"})
+        assert not isinstance(excinfo.value, CircuitOpenError)
