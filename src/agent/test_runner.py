@@ -6,6 +6,8 @@ previously generated docs.md, re-executes each step against the live UI,
 compares screenshots with baselines, and produces a DocTestReport.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import json

@@ -7,9 +7,65 @@ import json
 import logging
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Expectation:
+    """Typed post-action assertion accepted by the executor.
+
+    The JSON shape is intentionally small so it can be supplied by an LLM or a
+    future declarative flow without turning arbitrary JavaScript into an
+    assertion mechanism. Unsupported shapes become a failed outcome instead of
+    being silently ignored.
+    """
+
+    kind: str
+    value: str = ""
+    selector: Optional[str] = None
+    state: str = "visible"
+    mode: str = "contains"
+    status: Optional[int] = None
+    timeout: float = 10.0
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "Expectation":
+        if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str):
+            raise ValueError("expectation requires a string kind")
+        timeout = raw.get("timeout", 10.0)
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("expectation timeout must be numeric") from exc
+        if timeout <= 0:
+            raise ValueError("expectation timeout must be positive")
+        status = raw.get("status")
+        if status is not None:
+            try:
+                status = int(status)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("expectation status must be an integer") from exc
+        return cls(
+            kind=raw["kind"],
+            value=str(raw.get("value", "")),
+            selector=raw.get("selector"),
+            state=str(raw.get("state", "visible")),
+            mode=str(raw.get("mode", "contains")),
+            status=status,
+            timeout=timeout,
+        )
+
+
+@dataclass(frozen=True)
+class OutcomeEvidence:
+    """Serializable, sanitized evidence explaining one expectation outcome."""
+
+    kind: str
+    passed: bool
+    observed: str
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

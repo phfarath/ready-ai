@@ -16,7 +16,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from ..llm.client import LLMClient
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
@@ -39,6 +38,7 @@ if TYPE_CHECKING:
     from ..cdp.input import InputDomain
     from ..cdp.page import PageDomain
     from ..cdp.runtime import RuntimeDomain
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,8 @@ class AgenticLoop:
 
         async with Span(name="pipeline", attributes={"goal": self.goal, "url": self.url}):
             try:
+                from ..llm.client import LLMClient
+
                 # 1. Launch Chrome and connect
                 async with Span(name="browser_setup"):
                     await self._session.setup()

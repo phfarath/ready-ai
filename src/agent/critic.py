@@ -2,13 +2,18 @@
 Critic Agent — reviews generated documentation and provides quality feedback.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from ..llm.client import LLMClient
 from ..llm.prompts import CRITIC_SYSTEM
 from ..observability import get_metrics, log_event
+
+if TYPE_CHECKING:
+    from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 

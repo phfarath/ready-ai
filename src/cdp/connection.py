@@ -10,7 +10,10 @@ import json
 import logging
 import random
 import time
+from collections import deque
+from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -31,6 +34,157 @@ from .exceptions import CircuitOpenError, WebSocketDisconnected
 logger = logging.getLogger(__name__)
 
 
+def _history_safe_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep only routing and outcome fields in the retained event history.
+
+    Subscribers receive live protocol messages briefly, but the cursor history
+    exists across an action boundary.  It must therefore never retain network
+    headers, response bodies, DOM payloads, or query-string secrets.
+    """
+    safe: dict[str, Any] = {"method": event.get("method", "")}
+    for key in ("sessionId", "targetId"):
+        if event.get(key) is not None:
+            safe[key] = event[key]
+
+    params = event.get("params") or {}
+    safe_params: dict[str, Any] = {}
+    for key in (
+        "sessionId",
+        "targetId",
+        "frameId",
+        "requestId",
+        "loaderId",
+        "name",
+        "suggestedFilename",
+    ):
+        if params.get(key) is not None:
+            safe_params[key] = params[key]
+    if isinstance(params.get("frame"), dict) and params["frame"].get("id"):
+        safe_params["frame"] = {"id": params["frame"]["id"]}
+    if isinstance(params.get("targetInfo"), dict):
+        target_info = params["targetInfo"]
+        safe_params["targetInfo"] = {
+            key: target_info[key]
+            for key in ("targetId", "type")
+            if target_info.get(key) is not None
+        }
+    if isinstance(params.get("response"), dict):
+        response = params["response"]
+        url = str(response.get("url") or "")
+        parsed = urlsplit(url)
+        safe_params["response"] = {
+            "status": response.get("status"),
+            "url": urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+        }
+    elif params.get("url") is not None:
+        url = str(params["url"])
+        parsed = urlsplit(url)
+        safe_params["url"] = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    if safe_params:
+        safe["params"] = safe_params
+    return safe
+
+
+@dataclass(frozen=True)
+class CDPEventContext:
+    """The CDP execution context an event belongs to.
+
+    CDP multiplexes page targets, sessions, and out-of-process frames over one
+    WebSocket.  A waiter must therefore state which context it accepts instead
+    of competing for a process-wide event queue.
+    """
+
+    target_id: Optional[str] = None
+    session_id: Optional[str] = None
+    frame_id: Optional[str] = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.target_id or self.session_id or self.frame_id)
+
+    def matches(self, event: dict[str, Any]) -> bool:
+        """Return whether all requested context fields match *event*.
+
+        A missing requested field deliberately does not match.  Treating it as
+        a wildcard would allow a main-frame waiter to consume an OOPIF event.
+        """
+        params = event.get("params") or {}
+        target_info = params.get("targetInfo") or {}
+        actual_target = (
+            event.get("targetId")
+            or params.get("targetId")
+            or target_info.get("targetId")
+        )
+        actual_session = event.get("sessionId") or params.get("sessionId")
+        actual_frame = params.get("frameId") or (params.get("frame") or {}).get("id")
+        return (
+            (self.target_id is None or actual_target == self.target_id)
+            and (self.session_id is None or actual_session == self.session_id)
+            and (self.frame_id is None or actual_frame == self.frame_id)
+        )
+
+
+class CDPEventSubscription:
+    """Independent, lossless view of a filtered CDP event stream.
+
+    Each subscriber owns a private queue.  Publishing clones an event into all
+    matching subscribers, so a network observer and a navigation waiter cannot
+    steal events from one another.  ``close`` is idempotent and should be used
+    for long-lived consumers; ``wait`` is cancellation-safe.
+    """
+
+    def __init__(
+        self,
+        connection: "CDPConnection",
+        context: Optional[CDPEventContext],
+        event_name: Optional[str],
+        after_sequence: int,
+    ) -> None:
+        self._connection = connection
+        self.context = context or CDPEventContext()
+        self.event_name = event_name
+        self.after_sequence = after_sequence
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._closed = False
+
+    def matches(self, sequence: int, event: dict[str, Any]) -> bool:
+        return (
+            not self._closed
+            and sequence > self.after_sequence
+            and (self.event_name is None or event.get("method") == self.event_name)
+            and self.context.matches(event)
+        )
+
+    async def wait(self, timeout: float = 30.0) -> dict[str, Any]:
+        """Return the next matching raw event, or raise a deterministic error."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            if self._connection._abort_wait.is_set() or self._connection._state in (
+                ConnectionState.DOWN,
+                ConnectionState.CLOSED,
+            ):
+                raise WebSocketDisconnected("CDP WebSocket closed during event wait")
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                label = self.event_name or "matching CDP event"
+                raise TimeoutError(f"Timed out waiting for {label}")
+            try:
+                return await asyncio.wait_for(self._queue.get(), timeout=min(remaining, 0.5))
+            except asyncio.TimeoutError:
+                continue
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._connection._subscriptions.discard(self)
+
+    async def __aenter__(self) -> "CDPEventSubscription":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+
 class CDPConnection:
     """Low-level CDP WebSocket connection with auto-incrementing IDs."""
 
@@ -40,6 +194,12 @@ class CDPConnection:
         self._session_id: Optional[str] = None
         self._pending: dict[int, asyncio.Future] = {}
         self._events: asyncio.Queue = asyncio.Queue()
+        # `_events` remains a legacy compatibility queue. New code consumes
+        # private subscriptions below; no subscriber ever removes an event
+        # from another subscriber's view.
+        self._subscriptions: set[CDPEventSubscription] = set()
+        self._event_sequence: int = 0
+        self._event_history: deque[tuple[int, dict[str, Any]]] = deque(maxlen=512)
         self._recv_task: Optional[asyncio.Task] = None
 
         # P0-1 reconnect machinery. Fields are added here so the rest of
@@ -119,8 +279,9 @@ class CDPConnection:
                                     self._post_attach_enable(new_session)
                                 )
 
-                    # CDP event (e.g., Page.loadEventFired)
-                    await self._events.put(msg)
+                    # CDP event (e.g., Page.loadEventFired). Fan it out before
+                    # yielding so no matching subscription can lose it.
+                    await self._publish_event(msg)
                 else:
                     # Unmatched message — could be a response to an unknown ID
                     logger.debug(f"Unmatched CDP message: {json.dumps(msg)[:200]}")
@@ -474,6 +635,61 @@ class CDPConnection:
         self._msg_id += 1
         return self._msg_id
 
+    @property
+    def event_cursor(self) -> int:
+        """Monotonic cursor callers can capture before an action/wait."""
+        return self._event_sequence
+
+    def subscribe_events(
+        self,
+        *,
+        context: Optional[CDPEventContext] = None,
+        event_name: Optional[str] = None,
+        after_sequence: Optional[int] = None,
+    ) -> CDPEventSubscription:
+        """Create an independent subscription for one CDP context.
+
+        ``after_sequence`` is normally a cursor captured immediately before an
+        action. The bounded history closes the race between subscribing and the
+        browser publishing an event, without storing payloads beyond 512 recent
+        protocol messages. Retained copies include only sanitized routing and
+        outcome metadata.
+        """
+        cursor = self._event_sequence if after_sequence is None else after_sequence
+        subscription = CDPEventSubscription(self, context, event_name, cursor)
+        self._subscriptions.add(subscription)
+        for sequence, event in self._event_history:
+            if subscription.matches(sequence, event):
+                subscription._queue.put_nowait(event)
+        return subscription
+
+    def events_since(
+        self,
+        sequence: int,
+        *,
+        context: Optional[CDPEventContext] = None,
+        event_name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded passive evidence slice without consuming events."""
+        ctx = context or CDPEventContext()
+        return [
+            event
+            for item_sequence, event in self._event_history
+            if item_sequence > sequence
+            and (event_name is None or event.get("method") == event_name)
+            and ctx.matches(event)
+        ]
+
+    async def _publish_event(self, event: dict[str, Any]) -> None:
+        """Publish a CDP event to legacy and private consumer streams."""
+        self._event_sequence += 1
+        sequence = self._event_sequence
+        self._event_history.append((sequence, _history_safe_event(event)))
+        await self._events.put(event)
+        for subscription in tuple(self._subscriptions):
+            if subscription.matches(sequence, event):
+                subscription._queue.put_nowait(event)
+
     async def send(
         self,
         method: str,
@@ -573,7 +789,12 @@ class CDPConnection:
                     )
 
     async def wait_for_event(
-        self, event_name: str, timeout: float = 30.0
+        self,
+        event_name: str,
+        timeout: float = 30.0,
+        *,
+        context: Optional[CDPEventContext] = None,
+        after_sequence: Optional[int] = None,
     ) -> dict[str, Any]:
         """
         Wait for a specific CDP event.
@@ -595,6 +816,22 @@ class CDPConnection:
         flag is set, we raise WebSocketDisconnected so the caller can
         trigger recovery instead of timing out 30s later.
         """
+        # Scoped callers use a private stream.  This is intentionally an
+        # opt-in branch so legacy tests and integrations that inject directly
+        # into `_events` retain their historic behaviour while page/session
+        # code moves to explicit contexts.
+        if context is not None and not context.is_empty:
+            subscription = self.subscribe_events(
+                context=context,
+                event_name=event_name,
+                after_sequence=after_sequence,
+            )
+            try:
+                event = await subscription.wait(timeout)
+                return event.get("params", {})
+            finally:
+                subscription.close()
+
         deadline = asyncio.get_running_loop().time() + timeout
         stashed: list[dict[str, Any]] = []
 
