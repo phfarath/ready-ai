@@ -38,7 +38,7 @@ ready-ai = "main:cli"
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["src*", "ready_ai*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
