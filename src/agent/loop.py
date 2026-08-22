@@ -72,6 +72,94 @@ KNOWN_SILENT_SUCCESS_ACTIONS: frozenset[str] = frozenset(
 # are redacted at the report boundary (fix B1).
 _TEXT_MASKED_ACTIONS: frozenset[str] = frozenset({"type", "click_text"})
 
+# ─── LLM call instrumentation (READY-AI-T-US2, H7 observability) ────────
+#
+# Pure observability for hypothesis H7 ("stable replays still invoke the
+# LLM"): counts LLM calls per pipeline phase so author-once/replay-
+# deterministic architecture can be validated or refuted with data.
+# Proxies are transparent; no flow, retry, or output behavior changes.
+
+ROLE_TO_PHASE: dict[str, str] = {
+    "planner": "planner",
+    "executor": "executor",
+    "critic": "critic",
+    "recovery": "healer",
+    "annotator": "annotation",
+}
+
+
+class LLMCallStats:
+    """Per-run counter of LLM calls bucketed by pipeline phase."""
+
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = {}
+
+    def record(self, phase: str) -> None:
+        self._counts[phase] = self._counts.get(phase, 0) + 1
+
+    def as_dict(self) -> dict[str, int]:
+        return dict(self._counts)
+
+    def total(self) -> int:
+        return sum(self._counts.values())
+
+    def __repr__(self) -> str:
+        breakdown = ", ".join(
+            f"{phase}={count}" for phase, count in sorted(self._counts.items())
+        )
+        return f"LLMCallStats(total={self.total()}{', ' + breakdown if breakdown else ''})"
+
+
+class _CountingLLMClient:
+    """Transparent proxy that counts LLM calls by phase into ``stats``.
+
+    Delegates every attribute to the wrapped client. ``complete``,
+    ``complete_with_vision``, and ``complete_with_vision_multi`` increment
+    the counter at invocation time (before awaiting the delegate): one
+    proxy call equals one LLM call attempt, regardless of internal client
+    retries or outcome — matching the DoD's definition of "chamadas LLM".
+    ``role`` is read from kwargs with each method's real default
+    (``complete`` → "unknown", vision methods → "annotator"); unknown
+    roles fall through to their own name as bucket.
+    """
+
+    _COUNTED_METHODS: frozenset[str] = frozenset({
+        "complete",
+        "complete_with_vision",
+        "complete_with_vision_multi",
+    })
+    _DEFAULT_ROLE: dict[str, str] = {
+        "complete": "unknown",
+        "complete_with_vision": "annotator",
+        "complete_with_vision_multi": "annotator",
+    }
+
+    def __init__(self, inner, stats: LLMCallStats) -> None:
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_stats", stats)
+
+    def __getattr__(self, name: str):
+        inner = object.__getattribute__(self, "_inner")
+        if name not in _CountingLLMClient._COUNTED_METHODS:
+            return getattr(inner, name)
+        stats = object.__getattribute__(self, "_stats")
+        default_role = _CountingLLMClient._DEFAULT_ROLE.get(name, "unknown")
+
+        async def counted(*args, **kwargs):
+            role = kwargs.get("role", default_role)
+            stats.record(ROLE_TO_PHASE.get(role, role))
+            return await getattr(inner, name)(*args, **kwargs)
+
+        counted.__name__ = name
+        return counted
+
+
+def _instrument_llm(llm, stats: LLMCallStats):
+    """Wrap an LLM-like client in a counting proxy; None passes through."""
+    if llm is None:
+        return None
+    return _CountingLLMClient(llm, stats)
+
 
 class AgenticLoop:
     """
@@ -201,8 +289,12 @@ class AgenticLoop:
                     await self._session.setup()
 
                 # 2. Create domain helpers
-                llm = LLMClient(model=self.model)
-                annotation_llm = LLMClient(model=self.annotation_model)
+                # READY-AI-T-US2: count LLM calls per phase (H7 baseline).
+                self._llm_stats = LLMCallStats()
+                llm = _instrument_llm(LLMClient(model=self.model), self._llm_stats)
+                annotation_llm = _instrument_llm(
+                    LLMClient(model=self.annotation_model), self._llm_stats
+                )
                 doc = DocRenderer(
                     goal=self.goal, title=self.title, language=self.language,
                     app_version=self.app_version, git_commit=self.git_commit,
@@ -261,6 +353,7 @@ class AgenticLoop:
                 # 8. Save output
                 self._save_checkpoint("FINISHED")
                 markdown = doc.render()
+                logger.info("LLM calls by phase: %s", self._llm_stats)
                 output_path = save_docs(
                     markdown,
                     doc.screenshots,
@@ -274,6 +367,7 @@ class AgenticLoop:
                     git_commit=self.git_commit,
                     deployed_at=self.deployed_at,
                     status="FINISHED",
+                    llm_calls=self._llm_stats.as_dict(),
                 )
                 logger.info(f"═══ Documentation saved to: {output_path}")
 
