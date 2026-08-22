@@ -42,8 +42,11 @@ async def test_navigate_http_scheme_passes():
     page = PageDomain(conn)
     # Should not raise; disable wait_for_load and wait_for_network to avoid extra calls
     await page.navigate("http://example.com", wait_for_load=False, wait_for_network=False)
-    # Verify that Page.navigate was called
-    conn.send.assert_called_once_with("Page.navigate", {"url": "http://example.com"})
+    # Verify that Page.navigate was called (challenge probe may add later calls)
+    assert conn.send.await_args_list[0].args[:2] == (
+        "Page.navigate",
+        {"url": "http://example.com"},
+    )
 
 
 @pytest.mark.asyncio
@@ -53,7 +56,10 @@ async def test_navigate_https_scheme_passes():
     conn.send = AsyncMock(return_value={})
     page = PageDomain(conn)
     await page.navigate("https://example.com", wait_for_load=False, wait_for_network=False)
-    conn.send.assert_called_once_with("Page.navigate", {"url": "https://example.com"})
+    assert conn.send.await_args_list[0].args[:2] == (
+        "Page.navigate",
+        {"url": "https://example.com"},
+    )
 
 
 @pytest.mark.asyncio
@@ -64,9 +70,15 @@ async def test_navigate_scheme_case_insensitive():
     page = PageDomain(conn)
     # Uppercase HTTP
     await page.navigate("HTTP://example.com", wait_for_load=False, wait_for_network=False)
-    conn.send.assert_called_with("Page.navigate", {"url": "HTTP://example.com"})
+    assert conn.send.await_args_list[0].args[:2] == (
+        "Page.navigate",
+        {"url": "HTTP://example.com"},
+    )
     # Reset mock
     conn.send.reset_mock()
     # Mixed case
     await page.navigate("HtTpS://example.com", wait_for_load=False, wait_for_network=False)
-    conn.send.assert_called_with("Page.navigate", {"url": "HtTpS://example.com"})
+    assert conn.send.await_args_list[0].args[:2] == (
+        "Page.navigate",
+        {"url": "HtTpS://example.com"},
+    )

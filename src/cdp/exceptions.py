@@ -71,3 +71,48 @@ class CircuitOpenError(WebSocketDisconnected):
         self.state = state
         self.attempts = attempts
         self.step = step
+
+
+class ChallengePageError(RuntimeError):
+    """Raised when a navigation lands on a WAF/bot-challenge interstitial.
+
+    Cloudflare, DataDome, PerimeterX and SSO captive portals answer with
+    HTTP 200 and an HTML challenge (~20-40KB, sparse markup) instead of
+    an error status. Trusting that document poisons every downstream
+    observation, so `PageDomain.navigate` fails loud here BEFORE any
+    agent state is built from it.
+
+    Deliberately NOT a `WebSocketDisconnected` subtype: the connection is
+    healthy and no heal/reconnect should fire. Handle it as a failed step
+    (or pause for human solving) via the existing `except RuntimeError`
+    handlers, or target it directly:
+
+        try:
+            await page.navigate(url)
+        except ChallengePageError:
+            # Surface "blocked by bot protection"; do not retry blindly —
+            # repeated hits escalate the WAF score.
+            ...
+
+    The exception carries context only — never raw page HTML (privacy
+    rule: no un-sanitized DOM leaves the CDP layer).
+
+    Attributes:
+        signature: matched challenge marker (lowercase), e.g. ``"just a moment"``.
+        url: sanitized navigation target (origin/path only; query strings
+          often contain credentials).
+        title: document title at detection time (may be empty).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        signature: str,
+        url: str = "",
+        title: str = "",
+    ):
+        super().__init__(message)
+        self.signature = signature
+        self.url = url
+        self.title = title
