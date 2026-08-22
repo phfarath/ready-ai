@@ -5,8 +5,23 @@ Documentation Output — writes markdown and screenshot files to disk.
 import base64
 import logging
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def render_llm_calls_section(llm_calls: dict[str, int]) -> str:
+    """
+    Format the "LLM calls by phase" block appended to summaries (READY-AI-T-US2).
+
+    Phases are ordered by descending count then name; a total line is
+    always present.
+    """
+    lines = ["LLM calls by phase:"]
+    for phase, count in sorted(llm_calls.items(), key=lambda item: (-item[1], item[0])):
+        lines.append(f"  {phase}: {count}")
+    lines.append(f"  total: {sum(llm_calls.values())}")
+    return "\n".join(lines)
 
 
 def save_docs(
@@ -23,6 +38,7 @@ def save_docs(
     deployed_at: str = "",
     status: str = "FINISHED",
     error: str = "",
+    llm_calls: Optional[dict[str, int]] = None,
 ) -> str:
     """
     Save the generated documentation to disk.
@@ -41,6 +57,8 @@ def save_docs(
         deployed_at: Deployment timestamp
         status: Run status
         error: Error message if failed
+        llm_calls: Optional phase → call-count map; when provided (even
+            empty), appends an "LLM calls by phase" section to summary.txt
 
     Returns:
         Path to the saved markdown file
@@ -87,11 +105,13 @@ def save_docs(
 
     # Save a summary
     summary_path = output_path / "summary.txt"
-    summary_path.write_text(
+    summary_text = (
         f"Generated documentation\n"
         f"Steps: {len(screenshots)}\n"
-        f"Screenshots: {list(screenshots.keys())}\n",
-        encoding="utf-8",
+        f"Screenshots: {list(screenshots.keys())}\n"
     )
+    if llm_calls is not None:
+        summary_text += render_llm_calls_section(llm_calls) + "\n"
+    summary_path.write_text(summary_text, encoding="utf-8")
 
     return str(md_path)
