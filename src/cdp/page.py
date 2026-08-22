@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..observability import get_metrics
 from .connection import CDPConnection, CDPEventContext
+from .exceptions import ChallengePageError
 from .sanitize import (
     is_raw_mode,
     resolve_value_max,
@@ -30,6 +31,89 @@ logger = logging.getLogger(__name__)
 ENV_DOM_MAX_CHARS = "READY_AI_DOM_MAX_CHARS"
 DOM_MAX_CHARS_DEFAULT = 8_000
 DOM_MAX_CHARS_LEGACY_DEFAULT = 4_000  # preserved as the no-env fallback
+
+# WAF/bot-protection interstitials (Cloudflare, DataDome, PerimeterX, SSO
+# captive portals) answer with HTTP 200 and a challenge document. An agent
+# that trusts it hallucinates from the challenge text, so navigate() probes
+# the settled document and fails loud via ChallengePageError on a match.
+ENV_CHALLENGE_DETECT = "READY_AI_CHALLENGE_DETECT"
+ENV_CHALLENGE_SIZE_FLOOR = "READY_AI_CHALLENGE_SIZE_FLOOR"
+CHALLENGE_SIGNATURES: tuple[str, ...] = (
+    "just a moment",
+    "cf-turnstile",
+    "challenge-form",
+    "datadome",
+    "press & hold",
+    "verify you are human",
+)
+# Vendor markup rotates faster than signatures can be updated, so fall back
+# to structure: real challenge pages ship ~20-40KB with almost no links and
+# a suspicious title. A title hit alone is too weak (blog posts quote these
+# phrases); size alone is too weak (big app shells). Together they are a
+# strong signal.
+CHALLENGE_SUSPICIOUS_TITLES: tuple[str, ...] = (
+    "just a moment",
+    "attention required",
+    "access denied",
+    "press & hold",
+)
+CHALLENGE_SIZE_FLOOR_DEFAULT = 20_000
+# Marker returned by detect_challenge_page when only the structural
+# heuristic matched (no explicit vendor signature found in the sample).
+CHALLENGE_HEURISTIC_MATCH = "suspicious-title+size"
+# Upper bound of outerHTML fetched for the probe. Challenges live well
+# under this; capping keeps the evaluate payload small.
+CHALLENGE_SAMPLE_MAX_CHARS = 65_536
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def challenge_detection_enabled() -> bool:
+    """READY_AI_CHALLENGE_DETECT=0/false/off disables probing globally; on by default."""
+    raw = os.environ.get(ENV_CHALLENGE_DETECT)
+    if raw is None or raw.strip() == "":
+        return True
+    return _truthy(raw)
+
+
+def _resolve_challenge_size_floor() -> int:
+    """Resolve the heuristic size floor from the env, warning once if invalid."""
+    raw = os.environ.get(ENV_CHALLENGE_SIZE_FLOOR)
+    if raw is None or raw.strip() == "":
+        return CHALLENGE_SIZE_FLOOR_DEFAULT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            f"Invalid {ENV_CHALLENGE_SIZE_FLOOR}={raw!r}; expected integer. "
+            f"Falling back to default {CHALLENGE_SIZE_FLOOR_DEFAULT}."
+        )
+        return CHALLENGE_SIZE_FLOOR_DEFAULT
+    return max(value, 0)
+
+
+def detect_challenge_page(html: str, *, title: str = "") -> Optional[str]:
+    """Return the matched challenge marker for an HTML sample, else None.
+
+    Pure, case-insensitive, no I/O: matches known WAF signatures first;
+    when none match, applies the documented structural heuristic
+    (suspicious title AND html length >= READY_AI_CHALLENGE_SIZE_FLOOR,
+    default 20 000 chars) and returns `CHALLENGE_HEURISTIC_MATCH`.
+    """
+    if not html:
+        return None
+    haystack = html.lower()
+    for signature in CHALLENGE_SIGNATURES:
+        if signature in haystack:
+            return signature
+    title_lower = (title or "").lower()
+    if len(haystack) >= _resolve_challenge_size_floor():
+        for fragment in CHALLENGE_SUSPICIOUS_TITLES:
+            if fragment in title_lower:
+                return CHALLENGE_HEURISTIC_MATCH
+    return None
 
 
 @dataclass(frozen=True)
@@ -228,25 +312,45 @@ class PageDomain:
             logger.debug(f"setLifecycleEventsEnabled failed: {exc}")
         await register_cursor_script(self._conn)
 
-    async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
+    async def navigate(
+        self,
+        url: str,
+        wait_for_load: bool = True,
+        wait_for_network: bool = True,
+        *,
+        check_challenge: bool = True,
+    ) -> None:
         """
         Navigate to a URL and optionally wait for page load and network idle.
+
+        After the navigation settles, the document is probed for WAF/bot
+        challenge interstitials (Cloudflare, DataDome, ...). A match raises
+        `ChallengePageError` instead of letting downstream state be built
+        from the challenge page. Probe failures are fail-open (navigation
+        never breaks because of them); only a positive match fails loud.
+        Disable per call with `check_challenge=False`, or globally via
+        `READY_AI_CHALLENGE_DETECT=0`.
 
         Args:
             url: Target URL
             wait_for_load: Whether to wait for Page.loadEventFired
             wait_for_network: Whether to wait for network idle (useful for SPAs)
+            check_challenge: Run the challenge/block page detector after settling
+
+        Raises:
+            ChallengePageError: The settled document matches a known WAF
+                challenge signature or the documented structural heuristic.
         """
         # Validate URL scheme - only allow http and https schemes
         from urllib.parse import urlparse
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'):
             raise ValueError(f"Invalid URL scheme: {parsed.scheme}. Only http and https schemes are allowed.")
-        
+
         event_cursor = self.event_cursor
         logger.info(f"Navigating to: {url}")
         await self._conn.send("Page.navigate", {"url": url})
-        
+
         if wait_for_load:
             try:
                 await self._wait_event(
@@ -254,7 +358,7 @@ class PageDomain:
                 )
             except TimeoutError:
                 logger.warning("Page load event timed out, continuing anyway")
-                
+
         if wait_for_network:
             await self.wait_for_network_idle(
                 timeout=10.0, idle_time=0.5, after_sequence=event_cursor
@@ -267,8 +371,50 @@ class PageDomain:
                 )
             except TimeoutError:
                 pass
-            
+
+        if check_challenge and challenge_detection_enabled():
+            await self._raise_if_challenge_page(url)
+
         logger.info("Navigation complete")
+
+    async def _raise_if_challenge_page(self, url: str) -> None:
+        """Probe the settled document for a challenge page; fail loud on match.
+
+        Collects title plus a bounded outerHTML sample in a single
+        evaluate (no raw HTML ever leaves this method). Any probe failure
+        is swallowed — detection must never break existing navigations.
+        """
+        expression = (
+            "(() => ({"
+            f"title: document.title || '', "
+            f"html: (document.documentElement && document.documentElement.outerHTML || '').slice(0, {CHALLENGE_SAMPLE_MAX_CHARS})"
+            "}))()"
+        )
+        try:
+            snapshot = await self._evaluate_value(expression)
+        except Exception as exc:
+            logger.debug(f"Challenge probe failed (fail-open): {exc}")
+            return
+        if not isinstance(snapshot, dict):
+            return
+        html = str(snapshot.get("html") or "")
+        title = str(snapshot.get("title") or "")
+        signature = detect_challenge_page(html, title=title)
+        if signature is None:
+            return
+        safe_url = _sanitize_evidence_url(url)
+        logger.warning(
+            f"Challenge page detected after navigation to {safe_url} "
+            f"(matched: {signature!r}, title={title[:80]!r})"
+        )
+        raise ChallengePageError(
+            f"Navigation to {safe_url} landed on a challenge/block page "
+            f"(matched: {signature!r}, title={title[:80]!r}); "
+            f"refusing to trust page state.",
+            signature=signature,
+            url=safe_url,
+            title=title,
+        )
 
     async def wait_for_navigation_settled(
         self,
