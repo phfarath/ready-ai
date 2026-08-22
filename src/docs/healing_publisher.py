@@ -389,14 +389,14 @@ def _render_pr_body(
     lines.append("")
 
     # Per-step table
-    lines.append("### Healed steps")
-    lines.append("")
-    lines.append("| Step | Title | Changes | Notes |")
-    lines.append("| ---- | ----- | ------- | ----- |")
     step_titles = {
         getattr(r, "step_number", None): getattr(r, "title", "")
         for r in getattr(doc_test_report, "results", [])
     }
+    lines.append("### Healed steps")
+    lines.append("")
+    lines.append("| Step | Title | Changes | Notes |")
+    lines.append("| ---- | ----- | ------- | ----- |")
     for heal in healing_report.steps_healed:
         changes: list[str] = []
         if heal.screenshot_updated:
@@ -414,6 +414,34 @@ def _render_pr_body(
             f"{', '.join(changes)} | {_escape_pipe(notes)} |"
         )
     lines.append("")
+
+    # Steps flagged DRIFT_SUSPECTED by the healing gate (not healed)
+    suspected_entries = [
+        entry
+        for entry in getattr(healing_report, "gate_log", [])
+        if entry.decision == "suspected"
+    ]
+    if suspected_entries:
+        lines.append("### Suspected drift — awaiting human review")
+        lines.append("")
+        lines.append(
+            "These steps showed drift agreement below the required number of "
+            "independent channels and were **not** auto-healed. Please review "
+            "the diffs and update manually if the UI change is intentional."
+        )
+        lines.append("")
+        for entry in suspected_entries:
+            title = _escape_pipe(step_titles.get(entry.step_number, ""))
+            label = f"Step {entry.step_number}"
+            if title:
+                label += f" ({title})"
+            agreeing = ", ".join(entry.channels_agreeing) or "none"
+            conflicting = ", ".join(entry.channels_conflicting) or "none"
+            lines.append(
+                f"- {label} — agreeing channels: {agreeing}; "
+                f"conflicting: {conflicting}."
+            )
+        lines.append("")
 
     if html_report_path is not None:
         lines.append(
