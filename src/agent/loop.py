@@ -68,6 +68,21 @@ KNOWN_SILENT_SUCCESS_ACTIONS: frozenset[str] = frozenset(
     {"scroll_to", "type", "press_key", "navigate"}
 )
 
+# ─── Explicit success wordings (slice-1 harness finding) ────────────────
+# The executor's non-silent actions report success with fixed, explicit
+# wording ("Clicked element: ...", "Found: ..."). The Fase-1 E2E harness
+# proved these could never pass: the classifier below only trusted the
+# silent set, so every `click` ended as "unrecognized action outcome".
+# These prefixes are allowlisted verbatim — anything else still fails
+# closed, and the step's asserts remain the real verifiers.
+KNOWN_SUCCESS_PREFIXES: tuple[str, ...] = (
+    "clicked element",
+    "scrolled ",
+    "found:",
+    "found ",
+    "observing current page state",
+)
+
 # Text-bearing actions whose ``text`` parameter and executor description
 # are redacted at the report boundary (fix B1).
 _TEXT_MASKED_ACTIONS: frozenset[str] = frozenset({"type", "click_text"})
@@ -548,10 +563,12 @@ class AgenticLoop:
         """Classify a dispatch description as passed, failing CLOSED.
 
         Success is only assumed for actions whose executor wording cannot
-        express failure (``KNOWN_SILENT_SUCCESS_ACTIONS``). Every other
-        action must produce a description that matches no denial prefix;
-        unrecognized wording is treated as a failed outcome (see
-        ``_flow_failure_reason``) instead of being guessed as passed.
+        express failure (``KNOWN_SILENT_SUCCESS_ACTIONS``), plus the
+        allowlisted explicit success wordings (``KNOWN_SUCCESS_PREFIXES``,
+        e.g. the executor's "Clicked element: ..." — the Fase-1 harness
+        proved clicks could never pass without this). Every other
+        description matching no denial prefix is fail-CLOSED ("unrecognized
+        action outcome") instead of being guessed as passed.
         """
         if not description:
             return False
@@ -559,7 +576,9 @@ class AgenticLoop:
         for prefix in KNOWN_DENIAL_PREFIXES:
             if lowered.startswith(prefix):
                 return False
-        return action_type in KNOWN_SILENT_SUCCESS_ACTIONS
+        if action_type in KNOWN_SILENT_SUCCESS_ACTIONS:
+            return True
+        return lowered.startswith(KNOWN_SUCCESS_PREFIXES)
 
     @staticmethod
     def _flow_failure_reason(description: str, action_type: str) -> str:

@@ -435,6 +435,28 @@ def test_wait_timeout_classified_as_failed():
     )
 
 
+@pytest.mark.parametrize(
+    "description,action_type",
+    [
+        ("Clicked element: #nav-products", "click"),
+        ("Clicked element via JS fallback: #nav-products", "click"),
+        ("Clicked element by text: 'Products'", "click_text"),
+        ("Scrolled down", "scroll"),
+        ("Found: #spa-status", "wait"),
+        ("Observing current page state", "observe"),
+    ],
+)
+def test_flow_explicit_success_wordings_classified_passed(description, action_type):
+    """Slice-1 harness — executor success wording must pass dispatch.
+
+    The Fase-1 E2E proved `click` could never pass run_flow: the classifier
+    only trusted the silent set, so every click ended as "unrecognized
+    action outcome". Explicit success wordings are allowlisted; the step's
+    asserts remain the real verifiers.
+    """
+    assert AgenticLoop._flow_action_ok(description, action_type) is True
+
+
 # ─── B4 — truthful run-level CDP disconnect abort ───────────────────────
 
 @pytest.mark.asyncio

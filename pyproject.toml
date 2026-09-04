@@ -43,3 +43,4 @@ include = ["src*", "ready_ai*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 cache_dir = "/tmp/ready-ai-pytest-cache"
+markers = ["e2e: real-browser tests requiring Chrome"]
