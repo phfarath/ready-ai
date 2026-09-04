@@ -88,14 +88,15 @@
 
 ### 1.6 Competitive Positioning for ready-ai
 
-ready-ai's unique position: It is the only tool that combines **raw CDP automation** (no WebDriver, no Playwright relay), **LLM-driven agentic planning**, and **self-healing documentation testing** in an open-source package. Scribe and Tango require manual human capture; ready-ai generates docs autonomously. Mintlify/GitBook are publishing platforms, not generation engines. Docuwriter generates from source code, not from live UI interaction.
+> **Update (2026-08-21, innovation scan):** The earlier "only tool" claim here was stale. Guidewright (TurboDocx, open-source, June 2026) also produces end-user documentation by driving the live app — via Chrome DevTools MCP as an installable Agent Skill — and reviews existing guides by re-walking the documented path in the product. Stagehand v3 (February 2026) separately validated direct raw-CDP actuation for AI-native automation. Uniqueness of the *mechanism* can no longer be claimed.
 
-**Key differentiators to emphasize:**
-- Fully autonomous (no human capture needed)
-- Raw CDP (no adapter overhead)
-- Self-healing test runner (re-executes documented steps, compares screenshots)
+Positioning: ready-ai combines **raw CDP automation** (no WebDriver, no Playwright relay), **LLM-driven agentic planning**, and a **self-healing documentation pipeline with versioned manifests, visual/text diffs, batch runs, deploy webhooks and CI regression gates** in one standalone open-source engine. Guidewright ships capture + review as skills on top of external coding-agent hosts, without the versioned regeneration pipeline; Scribe and Tango require manual human capture; Mintlify/GitBook are publishing platforms, not generation engines; Docuwriter generates from source code, not from live UI interaction.
+
+**Key differentiators to emphasize (calibrated language):**
+- Standalone raw-CDP engine (no dependency on a coding-agent host or Node relay)
+- Full self-healing *pipeline* (versioned manifests, drift diffs, webhooks, CI gates) rather than point-in-time capture/review
+- Fully autonomous generation (no human capture needed)
 - Open-source and local-first
-- Visual regression testing built-in
 
 ---
 
