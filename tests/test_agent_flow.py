@@ -1189,3 +1189,279 @@ async def test_dialog_no_dialog_opened_fails(tmp_path, monkeypatch):
     result = await loop.run_flow(flow)
     assert result["status"] == "failed"
     assert "did not open" in result["steps"][0]["failure_reason"]
+
+
+# ─── PH2D - human checkpoint pause/resume (mocked session, no browser) ───
+
+_HUMAN_STEP = {
+    "action": "await_human",
+    "reason": "Complete the SSO login in your own browser",
+    "resume_when": {"selector_visible": "#authed"},
+}
+
+
+def _human_flow():
+    return _flow(
+        [
+            FlowStepSpec(
+                name="Land",
+                actions=[FlowAction(action="observe")],
+            ),
+            FlowStepSpec(
+                name="Human SSO",
+                actions=[FlowAction(**_HUMAN_STEP)],
+            ),
+            FlowStepSpec(
+                name="Verify",
+                actions=[FlowAction(action="observe")],
+                asserts=[
+                    FlowAssertion(type="element_present", selector="#authed")
+                ],
+            ),
+        ]
+    )
+
+
+async def test_await_human_pauses_with_observable_condition(tmp_path, monkeypatch):
+    async def dispatch(payload, *args, **kwargs):
+        if payload.get("action") == "observe":
+            return "Observing current page state"
+        raise AssertionError(f"must not dispatch: {payload!r}")
+
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action", dispatch
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-1")
+    result = await loop.run_flow(_human_flow())
+    assert result["status"] == "paused"
+    assert result["summary"]["steps_paused"] == 1
+    assert result["steps"][0]["status"] == "passed"
+    paused = result["steps"][1]
+    assert paused["status"] == "paused"
+    assert paused["pause"]["reason"] == _HUMAN_STEP["reason"]
+    assert paused["pause"]["resume_when"] == _HUMAN_STEP["resume_when"]
+    assert paused["pause"]["step_index"] == 2
+    assert paused["pause"]["run_id"] == "sso-1"
+    assert result["pause"] == paused["pause"]
+    assert result["steps"][2]["status"] == "skipped"
+    assert "paused at step 2" in result["steps"][2]["failure_reason"]
+    assert loop._state.status == "PAUSED"
+    assert loop._state.current_step_index == 2
+    assert loop._state.pause_reason == _HUMAN_STEP["reason"]
+    assert loop._state.resume_when == _HUMAN_STEP["resume_when"]
+
+
+async def test_await_human_must_be_the_only_action(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(action="observe"),
+                    FlowAction(**_HUMAN_STEP),
+                ]
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "only action" in result["steps"][0]["failure_reason"]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"reason": "  "},
+        {"resume_when": {}},
+        {"resume_when": {"url_contains": ""}},
+        {"resume_when": {"cookie_present": "x"}},
+    ],
+)
+async def test_await_human_malformed_fails_closed(tmp_path, monkeypatch, override):
+    params = {**_HUMAN_STEP, **override}
+    flow = _flow([FlowStepSpec(actions=[FlowAction(**params)])])
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert result["steps"][0]["status"] == "failed"
+
+
+async def test_resume_continues_at_paused_step_without_reexecution(
+    tmp_path, monkeypatch
+):
+    """Pause, persist the checkpoint, resume by run_id: pre-pause steps are
+    never re-executed, the checkpoint step is satisfied (not re-paused)."""
+    calls: list[str] = []
+
+    async def dispatch(payload, *args, **kwargs):
+        calls.append(payload.get("action"))
+        return "Observing current page state"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-2")
+    paused_result = await loop.run_flow(_human_flow())
+    assert paused_result["status"] == "paused"
+    checkpoint = tmp_path / "sso-2_state.json"
+    loop._state.to_file(checkpoint)
+    assert len(calls) == 1  # only the pre-pause observe ran
+
+    # The human acted: #authed is now visible. Resume by run_id.
+    _runtime.evaluate = AsyncMock(return_value=True)
+    _runtime.query_selector = AsyncMock(return_value={"nodeId": 1})
+    loop2, _p2, runtime2, _i2 = _make_loop(tmp_path, run_id="sso-2")
+    from src.agent.state import RunState
+
+    loop2._state = RunState.from_file(checkpoint)
+    loop2.resume_from = str(checkpoint)
+    assert loop2._state is not None and loop2._state.status == "PAUSED"
+    runtime2.evaluate = AsyncMock(return_value=True)
+    runtime2.query_selector = AsyncMock(return_value={"nodeId": 1})
+    result = await loop2.run_flow(_human_flow())
+    assert result["status"] == "passed", result
+    assert result["summary"]["resumed_from"] == str(checkpoint)
+    assert result["steps"][0]["status"] == "skipped"
+    assert "not re-executed" in result["steps"][0]["failure_reason"]
+    resumed_step = result["steps"][1]
+    assert resumed_step["status"] == "passed"
+    assert resumed_step.get("confirmation") == "human-checkpoint-resumed"
+    assert result["steps"][2]["status"] == "passed"
+
+
+async def test_resume_blocked_when_condition_unmet(tmp_path, monkeypatch):
+    async def dispatch(payload, *args, **kwargs):
+        return "Observing current page state"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-3")
+    paused_result = await loop.run_flow(_human_flow())
+    assert paused_result["status"] == "paused"
+    checkpoint = tmp_path / "sso-3_state.json"
+    loop._state.to_file(checkpoint)
+
+    # Nothing changed in the browser: #authed still absent.
+    loop2, _p2, runtime2, _i2 = _make_loop(tmp_path, run_id="sso-3")
+    from src.agent.state import RunState
+
+    loop2._state = RunState.from_file(checkpoint)
+    runtime2.evaluate = AsyncMock(return_value=False)
+    result = await loop2.run_flow(_human_flow())
+    assert result["status"] == "failed", result
+    assert "resume condition not met" in (result["failure_reason"] or "")
+    assert result["steps"][1]["status"] == "skipped"
+
+
+async def test_resume_rejects_foreign_run_id(tmp_path):
+    from src.agent.state import RunState
+
+    state = RunState(run_id="other-run", goal="g", url="https://x.example/")
+    state.status = "PAUSED"
+    state.current_step_index = 1
+    checkpoint = tmp_path / "other-run_state.json"
+    state.to_file(checkpoint)
+    loop = AgenticLoop(
+        goal="run-flow",
+        url="https://app.example.com/start",
+        output_dir=str(tmp_path),
+        run_id="my-run",
+        headless=True,
+        resume_from=str(checkpoint),
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        await loop.run_flow(_human_flow())
+
+
+async def test_resume_rejects_incompatible_index(tmp_path):
+    from src.agent.state import RunState
+
+    state = RunState(run_id="my-run", goal="g", url="https://x.example/")
+    state.status = "PAUSED"
+    state.current_step_index = 99
+    checkpoint = tmp_path / "my-run_state.json"
+    state.to_file(checkpoint)
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="my-run")
+    loop.resume_from = str(checkpoint)
+    loop._state = RunState.from_file(checkpoint)
+    with pytest.raises(ValueError, match="outside"):
+        await loop.run_flow(_human_flow())
+
+
+async def test_dialog_prompt_text_masked_in_reports(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="dialog",
+                        decision="accept",
+                        text="s3cr3t-answer",
+                        then={"action": "click", "selector": "#x"},
+                    )
+                ]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    sub = MagicMock()
+    sub.wait = AsyncMock(return_value={"params": {"type": "prompt"}})
+    sub.close = MagicMock()
+    page.subscribe_dialogs = MagicMock(return_value=sub)
+    page.handle_dialog = AsyncMock()
+    input_domain.click = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    action_report = result["steps"][0]["actions"][0]
+    assert action_report["params"].get("text") == "***"
+    assert "s3cr3t-answer" not in action_report["description"]
+    persisted = json.loads((tmp_path / "flow-test_flow_result.json").read_text())
+    assert "s3cr3t-answer" not in json.dumps(persisted)
+
+
+async def test_checkpoint_and_result_carry_no_secrets(tmp_path, monkeypatch):
+    """DoD4 (unit half): typed credentials never reach checkpoint/result files."""
+    secret = "s3cr3t-pw-9z"
+
+    async def dispatch(payload, *args, **kwargs):
+        if payload.get("action") == "type":
+            return f"Typed text into: {payload.get('selector')}"
+        return "Observing current page state"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[FlowAction(action="type", selector="#pw", text=secret)],
+            ),
+            FlowStepSpec(actions=[FlowAction(**_HUMAN_STEP)]),
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sec-1")
+    loop._save_checkpoint = MagicMock(
+        side_effect=lambda status=None: AgenticLoop._save_checkpoint(loop, status)
+    )
+    result = await loop.run_flow(flow)
+    assert result["status"] == "paused"
+    checkpoint_text = (tmp_path / "sec-1_state.json").read_text(encoding="utf-8")
+    result_text = (tmp_path / "sec-1_flow_result.json").read_text(encoding="utf-8")
+    assert secret not in checkpoint_text
+    assert secret not in result_text
+
+
+async def test_profile_dir_reaches_browser_session(tmp_path):
+    loop = AgenticLoop(
+        goal="run-flow",
+        url="https://app.example.com/start",
+        output_dir=str(tmp_path),
+        run_id="prof-1",
+        headless=True,
+        profile_dir="/profiles/qa",
+    )
+    assert loop._session.profile_dir == "/profiles/qa"
+    assert loop._session._temp_profile_dir is None
+    plain = AgenticLoop(
+        goal="run-flow",
+        url="https://app.example.com/start",
+        output_dir=str(tmp_path),
+        run_id="prof-2",
+        headless=True,
+    )
+    assert plain._session.profile_dir is None

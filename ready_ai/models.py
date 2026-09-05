@@ -61,11 +61,13 @@ class EffectPolicy(str, Enum):
 
 
 # Actions allowed per policy. ``None`` means unlimited (interactive, and
-# forward-compatible with future executor actions).
+# forward-compatible with future executor actions). ``await_human`` is
+# control-plane (it pauses the run and actuates nothing), so it is allowed
+# under every ceiling.
 _POLICY_ALLOWED_ACTIONS: Dict[EffectPolicy, Optional[frozenset[str]]] = {
-    EffectPolicy.OBSERVE: frozenset({"observe", "wait"}),
+    EffectPolicy.OBSERVE: frozenset({"observe", "wait", "await_human"}),
     EffectPolicy.NAVIGATE: frozenset(
-        {"observe", "wait", "navigate", "scroll", "scroll_to"}
+        {"observe", "wait", "navigate", "scroll", "scroll_to", "await_human"}
     ),
     EffectPolicy.INTERACTIVE: None,
 }
@@ -89,11 +91,17 @@ class Profile:
         cookies_file: Path to a cookies JSON file (a reference, not content).
         username: Login username for credential-based auto-login.
         password: Login password (resolved at runtime only).
+        user_data_dir: Explicit persistent Chrome profile directory (a
+            reference, not content). When set, the engine launches Chrome
+            with this profile so SSO logins survive across runs, and never
+            deletes it. When None, each run gets an ephemeral temp profile
+            that is always cleaned up.
     """
 
     cookies_file: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    user_data_dir: Optional[str] = None
 
 
 # ─── Declarative flow models ───────────────────────────────────────────────
@@ -370,13 +378,18 @@ class RunResult(BaseModel):
     run_id: str
     flow: Optional[str] = None
     url: str = ""
-    status: str = Field("passed", description="passed | failed")
+    status: str = Field("passed", description="passed | failed | paused")
     steps: List[RunStep] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
     artifacts: List[str] = Field(
         default_factory=list, description="Result files written inside the output dir"
     )
     failure_reason: Optional[str] = None
+    pause: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Human-checkpoint block (reason, resume_when, checkpoint, "
+        "run_id, step_index) when status is paused; operator-authored, no secrets",
+    )
 
     @classmethod
     def from_flow_result(
@@ -393,4 +406,5 @@ class RunResult(BaseModel):
             summary=_sanitize(data.get("summary") or {}),
             artifacts=_collect_artifacts(data.get("run_id") or "", output_dir),
             failure_reason=data.get("failure_reason"),
+            pause=_sanitize(data.get("pause")),
         )

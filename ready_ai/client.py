@@ -231,6 +231,7 @@ class ReadyAI:
             cookies_file=credentials.cookies_file,
             username=credentials.username,
             password=credentials.password,
+            profile_dir=credentials.user_data_dir,
             run_id=run_id,
         )
         try:
