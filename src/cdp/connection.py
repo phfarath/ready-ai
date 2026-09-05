@@ -231,6 +231,13 @@ class TargetRegistry:
         if self._primary_target_id == target_id:
             self._primary_target_id = next(iter(self._by_target), None)
 
+    def update_url(self, target_id: str, url: str) -> None:
+        """Refresh a registered target's URL (attach-time URLs are often
+        empty because navigation hasn't committed yet)."""
+        info = self._by_target.get(target_id)
+        if info is not None and url:
+            info.url = url
+
     def session_for_target(self, target_id: str) -> Optional[str]:
         info = self._by_target.get(target_id)
         return info.session_id if info else None
@@ -378,6 +385,13 @@ class CDPConnection:
                                     new_session,
                                     type=str(target_info.get("type") or "page"),
                                     url=str(target_info.get("url") or ""),
+                                )
+                                # Attach-time URLs are often empty (navigation
+                                # not yet committed); refresh from the event
+                                # whenever it carries one.
+                                self.targets.update_url(
+                                    str(target_info.get("targetId") or ""),
+                                    str(target_info.get("url") or ""),
                                 )
                                 # Re-enable required CDP domains and re-inject
                                 # the cursor overlay on the new session —
@@ -1095,15 +1109,26 @@ class CDPConnection:
         except Exception as exc:
             logger.debug(f"ensure_targets list failed: {exc}")
             return
+        logger.debug(
+            "ensure_targets listed %d targets: %s",
+            len(listed),
+            [(t.get("type"), (t.get("url") or "")[:60]) for t in listed],
+        )
         for target in listed:
             tid = str(target.get("targetId") or "")
-            if not tid or self.targets.session_for_target(tid) is not None:
+            if not tid:
+                continue
+            url = str(target.get("url") or "")
+            if self.targets.session_for_target(tid) is not None:
+                self.targets.update_url(tid, url)
                 continue
             try:
-                await self.attach_to_target(tid)
+                session_id = await self.attach_to_target(tid)
             except Exception as exc:
                 if self.targets.session_for_target(tid) is None:
                     logger.debug(f"ensure_targets attach {tid[:12]} failed: {exc}")
+                continue
+            self.targets.update_url(tid, url)
 
     @property
     def is_disconnected(self) -> bool:
