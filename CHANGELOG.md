@@ -2,6 +2,17 @@
 
 Format: one entry per release. Tags `vX.Y.Z` cut only from `main` after the phase DoD is green.
 
+## v0.2.0 — 2026-09 — Local E2E harness green in CI (Fase 1)
+
+- `tests/e2e/` + `tests/fixtures/e2e_server.py`: 11 real-browser tests (SPA,
+  Shadow DOM, redirect, same/cross-origin iframes, popup opener, custom
+  dialog, download, Chrome-kill disconnect, truthful sanitized failure).
+- New `e2e` CI job (setup-chrome + warmup); unit job ignores `tests/e2e`.
+- Engine fix found by the harness: explicit executor success wordings
+  (`KNOWN_SUCCESS_PREFIXES`) — declarative `click` can pass `run_flow`.
+- Known pre-existing (tracked, not gating): 3.10 `NotRequired` collection,
+  1× `LLMClient` patch test.
+
 ## Unreleased — engine-first pivot
 
 - `ENGINE-ROADMAP.md`: docs-centric plans frozen; 5 phases with expected outcomes; release train v0.2.0–v0.6.0.
