@@ -120,6 +120,17 @@ document.getElementById('opener-btn').addEventListener('click', () => {
     "/popup": """<!doctype html><html><body>
 <h1 id="popup-title">Popup page</h1>
 </body></html>""",
+    "/popup-real": """<!doctype html><html><body>
+<h1>Real popup opener (window.open — TargetRegistry proving ground)</h1>
+<button id="real-opener">Open real popup</button>
+<div id="opener-status">closed</div>
+<script>
+document.getElementById('real-opener').addEventListener('click', () => {
+  document.getElementById('opener-status').textContent = 'opened';
+  window.open('/popup', '_blank');
+});
+</script>
+</body></html>""",
     "/dialog": """<!doctype html><html><body>
 <h1>Dialog fixture (custom modal — native alert/confirm is T-7 scope)</h1>
 <button id="open-modal">Delete item</button>

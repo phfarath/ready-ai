@@ -46,7 +46,8 @@ class FlowAction(BaseModel):
         ...,
         description=(
             "Executor action type: click, click_text, type, press_key, "
-            "navigate, scroll, scroll_to, wait, observe"
+            "navigate, scroll, scroll_to, wait, observe, wait_for_popup, "
+            "switch_tab, close_tab"
         ),
     )
     selector: Optional[str] = Field(None, description="CSS selector for the action target")
@@ -79,6 +80,13 @@ class FlowAssertion(BaseModel):
     )
     attribute: Optional[str] = Field(None, description="Attribute name for attribute_equals")
     message: Optional[str] = Field(None, description="Optional human-readable failure message")
+    target: Optional[Any] = Field(
+        None,
+        description=(
+            "Tab reference for cross-tab asserts: index, exact targetId, "
+            "or URL substring. None evaluates in the primary tab."
+        ),
+    )
 
 
 class FlowExtraction(BaseModel):

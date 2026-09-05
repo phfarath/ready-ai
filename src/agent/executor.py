@@ -43,9 +43,9 @@ MAX_RETRIES = 3
 #              and, when declared, explicit confirmation.
 # Unknown action types map to None and are denied under every policy
 # (fail closed — mirrors _flow_action_ok's treatment of unknown wording).
-EFFECT_READ_ACTIONS: frozenset[str] = frozenset({"observe", "wait"})
+EFFECT_READ_ACTIONS: frozenset[str] = frozenset({"observe", "wait", "wait_for_popup"})
 EFFECT_NAVIGATE_ACTIONS: frozenset[str] = frozenset(
-    {"navigate", "scroll", "scroll_to"}
+    {"navigate", "scroll", "scroll_to", "switch_tab", "close_tab"}
 )
 # Declared executor actions that interact with the page. Anything else
 # carrying a plain action name is treated as write (guilty until proven
@@ -78,6 +78,29 @@ def action_allowed_under_policy(action_type: str, policy: str) -> bool:
     if level is None:
         return False
     return order[level] <= order[policy]
+
+def _resolve_action_session(
+    action: dict, page: PageDomain,
+) -> tuple[Any | None, str | None]:
+    """Resolve an explicit action ``target`` to a CDP session id.
+
+    Returns (session_id, failure): exactly one is set. Unresolvable
+    references fail closed with the known-targets context.
+    """
+    ref = action.get("target")
+    if ref is None:
+        return None, None
+    try:
+        return page.resolve_target_session(ref), None
+    except RuntimeError as exc:
+        return None, str(exc)
+
+
+# Actions that accept an explicit ``target`` (anything else with a target
+# fails closed — never silently runs on the primary tab).
+_TARGET_SCOPED_ACTIONS: frozenset[str] = frozenset(
+    {"click", "click_text", "switch_tab", "close_tab"}
+)
 
 # JavaScript helper: querySelector that pierces shadow DOM boundaries.
 # Embed with: f"(() => {{ {_PIERCE_JS} const el = pierce(document, {safe_sel}); ... }})()"
@@ -557,6 +580,9 @@ async def _dispatch_action(
     """
     action_type = action.get("action", "observe")
 
+    if action.get("target") is not None and action_type not in _TARGET_SCOPED_ACTIONS:
+        return f"[Failed] action '{action_type}' does not support explicit target"
+
     try:
         if action_type == "click":
             selector = action["selector"]
@@ -577,7 +603,10 @@ async def _dispatch_action(
                     input_domain,
                     runtime,
                 )
-            success = await input_domain.click(selector)
+            session_id, failure = _resolve_action_session(action, page)
+            if failure is not None:
+                return f"[Failed] {failure}"
+            success = await input_domain.click(selector, session_id=session_id)
             if success:
                 return f"Clicked element: {selector}"
             # Fallback: try JS click with shadow DOM pierce
@@ -585,7 +614,8 @@ async def _dispatch_action(
             js_result = await runtime.evaluate(
                 f"(() => {{ {_PIERCE_JS} "
                 f"const el = pierce(document, {safe_sel}); "
-                f"if(el) {{ el.click(); return true; }} return false; }})()"
+                f"if(el) {{ el.click(); return true; }} return false; }})()",
+                session_id=session_id,
             )
             if js_result:
                 return f"Clicked element via JS fallback: {selector}"
@@ -594,6 +624,9 @@ async def _dispatch_action(
         elif action_type == "click_text":
             # Fallback action: click by visible text
             text = action["text"]
+            session_id, failure = _resolve_action_session(action, page)
+            if failure is not None:
+                return f"[Failed] {failure}"
             safe_text = json.dumps(text)
             js = (
                 f"(() => {{ "
@@ -602,7 +635,7 @@ async def _dispatch_action(
                 f"if(el) {{ el.click(); return true; }} return false; "
                 f"}})()"
             )
-            result = await runtime.evaluate(js)
+            result = await runtime.evaluate(js, session_id=session_id)
             if result:
                 return f"Clicked element by text: '{text}'"
             return f"[Failed] No element with text: '{text}'"
@@ -681,6 +714,35 @@ async def _dispatch_action(
 
         elif action_type == "observe":
             return "Observing current page state"
+
+        elif action_type == "wait_for_popup":
+            try:
+                timeout = float(action.get("timeout", 10.0))
+            except (TypeError, ValueError):
+                return "[Failed] wait_for_popup timeout must be numeric"
+            timeout = min(max(timeout, 1.0), 60.0)
+            try:
+                info = await page.wait_for_popup(timeout=timeout)
+            except TimeoutError:
+                return f"[Failed] No popup opened within {timeout:g}s"
+            return f"Popup opened: {info['target_id'][:12]}..."
+
+        elif action_type == "switch_tab":
+            ref = action.get("target")
+            if ref is None:
+                return "[Failed] switch_tab requires 'target'"
+            try:
+                info = await page.switch_to_tab(ref)
+            except RuntimeError as exc:
+                return f"[Failed] {exc}"
+            return f"Switched to tab: {info.get('url') or info['target_id'][:12]}"
+
+        elif action_type == "close_tab":
+            try:
+                info = await page.close_tab(action.get("target"))
+            except RuntimeError as exc:
+                return f"[Failed] {exc}"
+            return f"Closed tab: {info['closed'][:12]}..."
 
         else:
             logger.warning(f"Unknown action type: {action_type}")

@@ -192,6 +192,17 @@ class PageDomain:
         """Cursor captured before an action for post-action evidence."""
         return self._conn.event_cursor
 
+    def resolve_target_session(self, ref) -> str:
+        """Resolve a flow-level tab reference to its CDP session id.
+
+        Raises RuntimeError naming the known targets when unresolvable
+        (fail-closed at dispatch time, never silently primary).
+        """
+        try:
+            return self._conn.targets.resolve(ref).session_id
+        except (KeyError, AttributeError) as exc:
+            raise RuntimeError(str(exc)) from exc
+
     def _is_scoped(self) -> bool:
         return self.context is not None and not self.context.is_empty
 
@@ -227,6 +238,79 @@ class PageDomain:
         except Exception as exc:
             logger.debug(f"setLifecycleEventsEnabled failed: {exc}")
         await register_cursor_script(self._conn)
+
+    # ─── Multi-tab operations (READY-AI-T-PH2B) ──────────────────────
+    #
+    # Every method resolves through the connection's TargetRegistry and
+    # names the context in its errors. Switching is the only path that
+    # changes the primary session — automatic attaches never do.
+
+    async def list_tabs(self) -> list[dict]:
+        """Return attached page targets with registry session mapping."""
+        infos = []
+        for info in self._conn.targets.all():
+            if info.type == "page":
+                infos.append(
+                    {
+                        "target_id": info.target_id,
+                        "session_id": info.session_id,
+                        "url": info.url,
+                    }
+                )
+        return infos
+
+    async def wait_for_popup(
+        self, timeout: float = 10.0, known_ids: "set[str] | None" = None
+    ) -> dict:
+        """Wait for a new page target and attach to it (registers session)."""
+        known = set(known_ids) if known_ids is not None else {
+            t.target_id for t in self._conn.targets.all()
+        }
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            for target in await self._conn.list_targets():
+                tid = str(target.get("targetId") or "")
+                if tid and tid not in known:
+                    session_id = await self._conn.attach_to_target(tid)
+                    self._conn.targets.register(
+                        tid,
+                        session_id,
+                        type=str(target.get("type") or "page"),
+                        url=str(target.get("url") or ""),
+                    )
+                    return {"target_id": tid, "session_id": session_id}
+            await asyncio.sleep(0.25)
+        raise TimeoutError(f"Timed out waiting for popup after {timeout:g}s")
+
+    async def switch_to_tab(self, ref) -> dict:
+        """Make a registered target the primary session (explicit switch)."""
+        try:
+            info = self._conn.targets.resolve(ref)
+        except KeyError as exc:
+            raise RuntimeError(str(exc)) from exc
+        self._conn.switch_session(info.session_id)
+        await self._conn.send("Target.activateTarget", {"targetId": info.target_id})
+        return {"target_id": info.target_id, "url": info.url}
+
+    async def close_tab(self, ref=None) -> dict:
+        """Close a target (default: primary) and fall back the session."""
+        if ref is None:
+            primary = self._conn.targets.primary_target_id
+            if primary is None:
+                raise RuntimeError("no tabs registered")
+            info = self._conn.targets.resolve(primary)
+        else:
+            try:
+                info = self._conn.targets.resolve(ref)
+            except KeyError as exc:
+                raise RuntimeError(str(exc)) from exc
+        await self._conn.close_target(info.target_id)
+        remaining = self._conn.targets.primary_target_id
+        if remaining is not None:
+            session = self._conn.targets.session_for_target(remaining)
+            if session is not None:
+                self._conn.switch_session(session)
+        return {"closed": info.target_id, "active": remaining}
 
     async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
         """
