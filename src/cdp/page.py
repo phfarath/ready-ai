@@ -271,7 +271,19 @@ class PageDomain:
             for target in await self._conn.list_targets():
                 tid = str(target.get("targetId") or "")
                 if tid and tid not in known:
-                    session_id = await self._conn.attach_to_target(tid)
+                    existing = self._conn.targets.session_for_target(tid)
+                    if existing is not None:
+                        # Auto-attach won the race — reuse its session.
+                        return {"target_id": tid, "session_id": existing}
+                    try:
+                        session_id = await self._conn.attach_to_target(tid)
+                    except RuntimeError:
+                        # Auto-attach won the race between getTargets and
+                        # our attach; re-read the registry instead of failing.
+                        existing = self._conn.targets.session_for_target(tid)
+                        if existing is None:
+                            raise
+                        return {"target_id": tid, "session_id": existing}
                     self._conn.targets.register(
                         tid,
                         session_id,
@@ -289,7 +301,12 @@ class PageDomain:
         except KeyError as exc:
             raise RuntimeError(str(exc)) from exc
         self._conn.switch_session(info.session_id)
-        await self._conn.send("Target.activateTarget", {"targetId": info.target_id})
+        try:
+            await self._conn.send("Target.activateTarget", {"targetId": info.target_id})
+        except RuntimeError as exc:
+            # The session switch already happened (the part that matters
+            # headless); activation is best-effort window management.
+            logger.debug(f"Target.activateTarget failed (ignored): {exc}")
         return {"target_id": info.target_id, "url": info.url}
 
     async def close_tab(self, ref=None) -> dict:

@@ -107,7 +107,7 @@ async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path
     dispatch = AsyncMock(return_value="Navigated to: https://app.example.com/checkout")
     monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
 
-    async def fake_evaluate(expression):
+    async def fake_evaluate(expression, session_id=None):
         if "window.location.href" in expression:
             return "https://app.example.com/done"
         if "#receipt" in expression:
@@ -186,7 +186,7 @@ async def test_run_flow_reports_failed_assert_with_expected_and_actual(tmp_path,
         AsyncMock(return_value="Navigated to: https://app.example.com/confirm"),
     )
 
-    async def fake_evaluate(expression):
+    async def fake_evaluate(expression, session_id=None):
         if "window.location.href" in expression:
             return "https://app.example.com/cancelled"
         return None

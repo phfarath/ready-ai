@@ -399,6 +399,13 @@ class AgenticLoop:
                     step_results.append(step_report)
                     if step_report["status"] == "failed":
                         overall_status = "failed"
+                        logger.warning(
+                            "Flow step %s (%s) failed: %s",
+                            step_report["index"],
+                            step_report["name"],
+                            step_report["failure_reason"],
+                        )
+                    elif step_report["status"] == "pending_confirmation" and overall_status == "passed":
                     elif step_report["status"] == "pending_confirmation" and overall_status == "passed":
                         overall_status = "pending_confirmation"
                     if overall_status == "pending_confirmation" and run_failed_reason is None:
