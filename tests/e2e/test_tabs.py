@@ -80,25 +80,40 @@ async def test_real_popup_switch_close_and_fallback(e2e_server, tmp_path, cdp_po
 
 
 @pytest.mark.asyncio
-async def test_cross_origin_iframe_interior_click(e2e_server, e2e_peer, tmp_path, cdp_port):
+async def test_cross_origin_iframe_roundtrip_via_postmessage(e2e_server, e2e_peer, tmp_path, cdp_port):
+    """Real cross-origin round-trip through the live iframe.
+
+    This Chrome does not list OOPIF iframe targets (no session to route
+    to), so direct cross-session actuation has nothing to attach to here —
+    the registry path stays unit-tested. What IS proven end to end: the
+    parent drives the cross-origin frame via postMessage and observes its
+    reply, all through the primary session. The ack element is created
+    (not flipped) so the `wait` is deterministic, never a race.
+    """
     flow = FlowSpec(
-        name="xframe-click",
+        name="xframe-roundtrip",
         url=f"{e2e_server}/iframe",
         steps=[
             FlowStepSpec(
-                name="Click inside x-origin iframe",
-                actions=[FlowAction(action="click", selector="#xframe-btn", target="/xframe")],
+                name="Ping the cross-origin frame",
+                actions=[FlowAction(action="click", selector="#iframe-mirror-btn")],
+                asserts=[
+                    FlowAssertion(type="text_contains", expected="pinged", selector="#iframe-status-mirror"),
+                ],
+            ),
+            FlowStepSpec(
+                name="Observe the frame reply",
+                actions=[FlowAction(action="wait", selector="#xframe-ack")],
                 asserts=[
                     FlowAssertion(
                         type="text_contains",
-                        expected="toggled",
-                        selector="#xframe-status",
-                        target="/xframe",
+                        expected="xframe:toggled",
+                        selector="#xframe-ack",
                     ),
                 ],
-            )
+            ),
         ],
     )
-    loop = _loop(flow.url, tmp_path=tmp_path, cdp_port=cdp_port, run_id="e2e-xclick")
+    loop = _loop(flow.url, tmp_path=tmp_path, cdp_port=cdp_port, run_id="e2e-xframe")
     result = await loop.run_flow(flow)
     assert result["status"] == "passed", result

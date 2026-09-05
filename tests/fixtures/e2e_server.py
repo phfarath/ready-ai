@@ -211,6 +211,12 @@ const xframe = document.getElementById('x-frame');
 window.addEventListener('message', (ev) => {{
   if (typeof ev.data === 'string' && ev.data.startsWith('xframe:')) {{
     document.getElementById('iframe-reply-log').textContent = ev.data;
+    // Ack element: created (not flipped) so flows can `wait` for the
+    // cross-origin round-trip deterministically instead of racing it.
+    const ack = document.createElement('span');
+    ack.id = 'xframe-ack';
+    ack.textContent = ev.data;
+    document.getElementById('iframe-reply-log').appendChild(ack);
   }}
 }});
 document.getElementById('iframe-mirror-btn').addEventListener('click', () => {{

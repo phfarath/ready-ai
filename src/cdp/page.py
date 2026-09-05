@@ -274,6 +274,20 @@ class PageDomain:
             for target in await self._conn.list_targets():
                 tid = str(target.get("targetId") or "")
                 if tid and tid not in known:
+                    # The target exists but its URL may not have committed
+                    # yet (window.open lands on about:blank first). Wait
+                    # best-effort for a real URL within the same budget so
+                    # url-based resolution works right after the wait.
+                    url = str(target.get("url") or "")
+                    while not url or url == "about:blank":
+                        if asyncio.get_running_loop().time() >= deadline:
+                            break
+                        await asyncio.sleep(0.25)
+                        refreshed = {
+                            str(t.get("targetId") or ""): str(t.get("url") or "")
+                            for t in await self._conn.list_targets()
+                        }
+                        url = refreshed.get(tid, url)
                     existing = self._conn.targets.session_for_target(tid)
                     if existing is not None:
                         # Auto-attach won the race — reuse its session.
@@ -291,7 +305,7 @@ class PageDomain:
                         tid,
                         session_id,
                         type=str(target.get("type") or "page"),
-                        url=str(target.get("url") or ""),
+                        url=url,
                     )
                     return {"target_id": tid, "session_id": session_id}
             await asyncio.sleep(0.25)

@@ -1123,7 +1123,7 @@ class CDPConnection:
                 self.targets.update_url(tid, url)
                 continue
             try:
-                session_id = await self.attach_to_target(tid)
+                await self.attach_to_target(tid)
             except Exception as exc:
                 if self.targets.session_for_target(tid) is None:
                     logger.debug(f"ensure_targets attach {tid[:12]} failed: {exc}")
