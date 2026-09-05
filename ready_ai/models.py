@@ -160,6 +160,31 @@ class FlowStep(BaseModel):
     retries: Optional[int] = Field(
         None, ge=0, description="Per-step retry budget; falls back to the flow default"
     )
+    policy: Optional[str] = Field(
+        None, description="Effect ceiling for this step: read | navigate | write (None inherits the flow ceiling)"
+    )
+    confirm: bool = Field(
+        False, description="When true the step reports pending_confirmation until its idempotency key is confirmed"
+    )
+    irreversible: bool = Field(
+        False, description="Real-world side effects; requires confirm=True (fail-closed)"
+    )
+    idempotency_key: Optional[str] = Field(
+        None, description="Stable effect key; a resume never re-executes a confirmed key"
+    )
+
+    @field_validator("policy")
+    @classmethod
+    def _validate_policy(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in ("read", "navigate", "write"):
+            raise ValueError("policy must be one of ['read', 'navigate', 'write']")
+        return value
+
+    @model_validator(mode="after")
+    def _check_irreversible_requires_confirm(self) -> "FlowStep":
+        if self.irreversible and not self.confirm:
+            raise ValueError("irreversible steps require confirm=True (fail-closed)")
+        return self
 
 
 class Flow(BaseModel):

@@ -14,7 +14,7 @@ import time
 import websockets
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Collection, Optional
 
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
@@ -313,7 +313,12 @@ class AgenticLoop:
     # screenshot/annotation component. Each step is reported with its
     # actions (including retry attempts), expectations, and extracted data.
 
-    async def run_flow(self, flow: FlowSpec) -> dict:
+    async def run_flow(
+        self,
+        flow: FlowSpec,
+        *,
+        confirm: Collection[str] | None = None,
+    ) -> dict:
         """
         Execute a declarative run-flow and return a structured JSON result.
 
@@ -350,6 +355,7 @@ class AgenticLoop:
         step_results: list[dict] = []
         overall_status = "passed"
         run_failed_reason: Optional[str] = None
+        confirmations = frozenset(confirm or ())
 
         async with Span(name="flow_run", attributes={"url": self.url, "flow": flow_name}):
             try:
@@ -378,11 +384,22 @@ class AgenticLoop:
 
                 for index, step in enumerate(flow.steps, start=1):
                     step_report = await self._execute_flow_step(
-                        step, index, flow.retries, page, input_domain, runtime
+                        step,
+                        index,
+                        flow.retries,
+                        page,
+                        input_domain,
+                        runtime,
+                        flow_policy=flow.effect_policy,
+                        confirmations=confirmations,
                     )
                     step_results.append(step_report)
-                    if step_report["status"] != "passed":
+                    if step_report["status"] == "failed":
                         overall_status = "failed"
+                    elif step_report["status"] == "pending_confirmation" and overall_status == "passed":
+                        overall_status = "pending_confirmation"
+                    if overall_status == "pending_confirmation" and run_failed_reason is None:
+                        run_failed_reason = step_report["failure_reason"]
                     # A CDP disconnection is run-level and terminal: stop
                     # executing, report the remaining steps as skipped.
                     disconnect_reason = self._disconnect_failure_reason(step_report)
@@ -419,15 +436,82 @@ class AgenticLoop:
         page: PageDomain,
         input_domain: InputDomain,
         runtime: RuntimeDomain,
+        *,
+        flow_policy: str = "write",
+        confirmations: frozenset[str] = frozenset(),
     ) -> dict:
         """Execute one declarative step and build its structured report.
 
-        Actions run first (each with its retry budget). If an action
+        Policy gates run BEFORE any browser actuation, in order:
+          1. idempotent replay — key already in ``state.confirmed_effects``
+             reports passed without executing;
+          2. ceiling — every declared action must sit at or below the step
+             policy (inherited from the flow); violations abort fail-closed;
+          3. confirmation — a ``confirm`` step whose key was not passed via
+             ``run_flow(confirm={...})`` reports pending_confirmation.
+
+        Actions run next (each with its retry budget). If an action
         exhausts its budget the step is aborted and the remaining
         actions/asserts/extractions are not evaluated, so the failure
         reason is unambiguous. Otherwise asserts and extractions run and
         are reported per step.
         """
+        key = step.idempotency_key or f"{self.run_id}:step-{index}"
+        if key in self._state.confirmed_effects:
+            return {
+                "index": index,
+                "name": step.name,
+                "actions": [],
+                "asserts": [],
+                "extracted": [],
+                "attempts": 0,
+                "status": "passed",
+                "failure_reason": "",
+                "skipped_asserts": 0,
+                "skipped_extractions": 0,
+                "idempotency_key": key,
+                "confirmation": "idempotent-replay",
+            }
+
+        ceiling = step.policy or flow_policy
+        for action in step.actions:
+            atype = str(getattr(action, "action", "observe"))
+            if not executor.action_allowed_under_policy(atype, ceiling):
+                return {
+                    "index": index,
+                    "name": step.name,
+                    "actions": [],
+                    "asserts": [],
+                    "extracted": [],
+                    "attempts": 0,
+                    "status": "failed",
+                    "failure_reason": (
+                        f"action '{atype}' exceeds policy ceiling '{ceiling}' "
+                        f"(step {index}); nothing was executed"
+                    ),
+                    "skipped_asserts": len(step.asserts),
+                    "skipped_extractions": len(step.extract),
+                    "idempotency_key": key,
+                }
+
+        if step.confirm and key not in confirmations:
+            return {
+                "index": index,
+                "name": step.name,
+                "actions": [],
+                "asserts": [],
+                "extracted": [],
+                "attempts": 0,
+                "status": "pending_confirmation",
+                "failure_reason": (
+                    f"step {index} requires explicit confirmation "
+                    f"(idempotency_key='{key}'); nothing was executed"
+                ),
+                "skipped_asserts": len(step.asserts),
+                "skipped_extractions": len(step.extract),
+                "idempotency_key": key,
+            }
+
         step_retries = step.retries if step.retries is not None else default_retries
         action_reports: list[dict] = []
         reasons: list[str] = []
@@ -479,7 +563,7 @@ class AgenticLoop:
             if aborted or any(not a["passed"] for a in assert_results)
             else "passed"
         )
-        return {
+        report: dict = {
             "index": index,
             "name": step.name,
             "actions": action_reports,
@@ -490,7 +574,12 @@ class AgenticLoop:
             "failure_reason": "; ".join(dict.fromkeys(reasons)) if reasons else "",
             "skipped_asserts": skipped_asserts,
             "skipped_extractions": skipped_extractions,
+            "idempotency_key": key,
         }
+        if status == "passed" and step.confirm and key not in self._state.confirmed_effects:
+            self._state.confirmed_effects.append(key)
+            self._save_checkpoint()
+        return report
 
     async def _execute_flow_action(
         self,

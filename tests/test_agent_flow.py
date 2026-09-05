@@ -15,7 +15,9 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
+from src.agent import executor as executor_module
 from src.agent.loop import AgenticLoop
 from src.api.models import (
     FlowSpec,
@@ -634,3 +636,194 @@ async def test_run_flow_attribute_equals_empty_expected_missing_actual_fails_clo
     assertion = result["steps"][0]["asserts"][0]
     assert assertion["passed"] is False
     assert "empty expected value" in assertion["message"]
+
+
+# ─── PH2A — effect policy taxonomy ─────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "action_type,expected",
+    [
+        ("observe", "read"),
+        ("wait", "read"),
+        ("navigate", "navigate"),
+        ("scroll", "navigate"),
+        ("scroll_to", "navigate"),
+        ("click", "write"),
+        ("click_text", "write"),
+        ("type", "write"),
+        ("press_key", "write"),
+        ("future_action_xyz", "write"),
+        ("", None),
+        ("[Unknown action: frobnicate]", None),
+    ],
+)
+def test_action_effect_level_taxonomy(action_type, expected):
+    assert executor_module.action_effect_level(action_type) == expected
+
+
+@pytest.mark.parametrize(
+    "action_type,policy,expected",
+    [
+        ("click", "write", True),
+        ("click", "navigate", False),
+        ("click", "read", False),
+        ("navigate", "navigate", True),
+        ("navigate", "read", False),
+        ("observe", "read", True),
+        ("wait", "write", True),
+        ("click", "bogus", False),
+        ("[Unknown action: x]", "write", False),
+    ],
+)
+def test_action_allowed_under_policy(action_type, policy, expected):
+    assert executor_module.action_allowed_under_policy(action_type, policy) is expected
+
+
+def test_irreversible_requires_confirm_engine_model():
+    with pytest.raises(ValidationError):
+        FlowStepSpec(actions=[], irreversible=True)
+    with pytest.raises(ValidationError):
+        FlowStepSpec(actions=[], irreversible=True, confirm=False)
+    ok = FlowStepSpec(actions=[], irreversible=True, confirm=True)
+    assert ok.confirm is True
+
+
+def test_irreversible_requires_confirm_sdk_model():
+    from ready_ai.models import FlowStep as _PublicFlowStep
+
+    with pytest.raises(ValidationError):
+        _PublicFlowStep(actions=[], irreversible=True)
+    ok = _PublicFlowStep(actions=[], irreversible=True, confirm=True)
+    assert ok.confirm is True
+
+
+def test_sdk_effect_policy_plumbs_to_engine_ceiling():
+    from ready_ai import Flow as _PublicFlow
+    from ready_ai import FlowStep as _PublicFlowStep
+    from ready_ai.client import _to_flow_spec
+    from ready_ai.models import EffectPolicy as _Policy
+
+    spec = _to_flow_spec(
+        _PublicFlow(
+            url="https://app.example.com",
+            steps=[_PublicFlowStep()],
+            effect_policy=_Policy.OBSERVE,
+        ),
+        run_id="x",
+        headless=True,
+        model="m",
+    )
+    assert spec.effect_policy == "read"
+
+
+# ─── PH2A — gates (mocked session, no browser) ─────────────────────────
+
+async def test_step_policy_ceiling_denies_without_dispatch(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="No clicks under read",
+                policy="read",
+                actions=[FlowAction(action="click", selector="#x")],
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    step = result["steps"][0]
+    assert step["status"] == "failed"
+    assert "ceiling 'read'" in step["failure_reason"]
+    assert "nothing was executed" in step["failure_reason"]
+    dispatch.assert_not_called()
+
+
+async def test_flow_effect_policy_enforced(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(name="Click", actions=[FlowAction(action="click", selector="#x")])],
+    )
+    flow.effect_policy = "navigate"
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    assert "ceiling 'navigate'" in result["steps"][0]["failure_reason"]
+    dispatch.assert_not_called()
+
+
+async def test_confirm_step_reports_pending_without_dispatch(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Danger",
+                confirm=True,
+                actions=[FlowAction(action="click", selector="#x")],
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "pending_confirmation"
+    step = result["steps"][0]
+    assert step["status"] == "pending_confirmation"
+    assert step["idempotency_key"] == "flow-test:step-1"
+    assert "nothing was executed" in step["failure_reason"]
+    dispatch.assert_not_called()
+
+
+async def test_confirm_resume_executes_and_records_key(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Danger",
+                confirm=True,
+                actions=[FlowAction(action="click", selector="#x")],
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    dispatch = AsyncMock(return_value="Clicked element: #x")
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+
+    result = await loop.run_flow(flow, confirm={"flow-test:step-1"})
+
+    assert result["status"] == "passed"
+    assert result["steps"][0]["status"] == "passed"
+    assert "flow-test:step-1" in loop._state.confirmed_effects
+    dispatch.assert_called_once()
+
+
+async def test_idempotent_replay_skips_execution(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                name="Danger",
+                confirm=True,
+                actions=[FlowAction(action="click", selector="#x")],
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    loop._state.confirmed_effects.append("flow-test:step-1")
+    dispatch = AsyncMock(side_effect=AssertionError("must not re-execute"))
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+
+    result = await loop.run_flow(flow, confirm={"flow-test:step-1"})
+
+    assert result["status"] == "passed"
+    step = result["steps"][0]
+    assert step["status"] == "passed"
+    assert step["confirmation"] == "idempotent-replay"
+    assert step["actions"] == []
+    dispatch.assert_not_called()

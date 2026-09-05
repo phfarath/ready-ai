@@ -108,6 +108,10 @@ class RunState:
     # Recovery info
     last_known_url: Optional[str] = None
 
+    # Effect policy ledger (READY-AI-T-PH2A): idempotency keys of steps
+    # whose confirmed effects already ran. A resume never re-executes them.
+    confirmed_effects: list[str] = field(default_factory=list)
+
     def to_file(self, path: str | Path) -> None:
         """Serialize state to a JSON file."""
         try:

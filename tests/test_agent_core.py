@@ -84,6 +84,15 @@ class TestStatePersistence:
         assert result is None
         assert "Failed to load checkpoint" in caplog.text
 
+    def test_run_state_confirmed_effects_roundtrip(self, tmp_path: Path):
+        state = RunState(run_id="r", goal="g", url="https://example.com")
+        state.confirmed_effects.append("r:step-1")
+        path = tmp_path / "state.json"
+        state.to_file(path)
+        restored = RunState.from_file(path)
+        assert restored is not None
+        assert restored.confirmed_effects == ["r:step-1"]
+
 
 # ─── planner.py tests ──────────────────────────────────────────────────────
 
