@@ -143,6 +143,24 @@ document.getElementById('modal-dismiss').addEventListener('click', () => {
 });
 </script>
 </body></html>""",
+    "/downloads": """<!doctype html><html><body>
+<h1>Downloads fixture</h1>
+<a id="dl-link" href="/files/report.csv" download>Download report</a>
+</body></html>""",
+    "/login": """<!doctype html><html><body>
+<h1>Login fixture (no backend — fields only)</h1>
+<input id="login-email" name="email" autocomplete="email" />
+<input id="login-pass" name="password" type="password" autocomplete="current-password" />
+<button id="login-submit">Sign in</button>
+</body></html>""",
+}
+
+# Binary-ish payloads served with explicit headers (not in _ROUTES).
+_FILES = {
+    "/files/report.csv": (
+        "text/csv; charset=utf-8",
+        'id,name\n1,alice\n2,bob\n',
+    ),
 }
 
 # Redirects must bypass the static map (302, no body).
@@ -191,6 +209,19 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", _REDIRECTS[path])
             self.end_headers()
+            return
+        if path in _FILES:
+            content_type, text = _FILES[path]
+            raw = text.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{path.rsplit("/", 1)[-1]}"',
+            )
+            self.end_headers()
+            self.wfile.write(raw)
             return
         if path == "/iframe":
             body = _iframe_html(getattr(self.server, "peer_base", ""))
