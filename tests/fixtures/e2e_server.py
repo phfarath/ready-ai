@@ -155,9 +155,9 @@ def _iframe_html(peer_base: str) -> str:
     """Parent page: same-origin iframe + cross-origin iframe + sync mirror.
 
     The mirror button sets ``#iframe-status-mirror`` synchronously (what the
-    flow asserts) and *also* postMessages the cross-origin frame, whose reply
-    handler updates the same mirror — the reply path is informational only,
-    so the test never depends on postMessage round-trip timing.
+    flow asserts) and *also* postMessages the cross-origin frame. The reply
+    lands in a separate ``#iframe-reply-log`` div on purpose: sharing the
+    mirror would race the assert (reply arriving first flips the text).
     """
     return f"""<!doctype html><html><body>
 <h1>Iframe fixture</h1>
@@ -165,11 +165,12 @@ def _iframe_html(peer_base: str) -> str:
 <iframe id="x-frame" src="{peer_base}/xframe"></iframe>
 <button id="iframe-mirror-btn">Ping xframe</button>
 <div id="iframe-status-mirror">idle</div>
+<div id="iframe-reply-log">none</div>
 <script>
 const xframe = document.getElementById('x-frame');
 window.addEventListener('message', (ev) => {{
   if (typeof ev.data === 'string' && ev.data.startsWith('xframe:')) {{
-    document.getElementById('iframe-status-mirror').textContent = 'xframe-replied';
+    document.getElementById('iframe-reply-log').textContent = ev.data;
   }}
 }});
 document.getElementById('iframe-mirror-btn').addEventListener('click', () => {{
