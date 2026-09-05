@@ -406,7 +406,6 @@ class AgenticLoop:
                             step_report["failure_reason"],
                         )
                     elif step_report["status"] == "pending_confirmation" and overall_status == "passed":
-                    elif step_report["status"] == "pending_confirmation" and overall_status == "passed":
                         overall_status = "pending_confirmation"
                     if overall_status == "pending_confirmation" and run_failed_reason is None:
                         run_failed_reason = step_report["failure_reason"]
