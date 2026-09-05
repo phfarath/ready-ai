@@ -47,7 +47,7 @@ class FlowAction(BaseModel):
         description=(
             "Executor action type: click, click_text, type, press_key, "
             "navigate, scroll, scroll_to, wait, observe, wait_for_popup, "
-            "switch_tab, close_tab"
+            "switch_tab, close_tab, upload, download, dialog"
         ),
     )
     selector: Optional[str] = Field(None, description="CSS selector for the action target")

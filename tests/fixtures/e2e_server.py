@@ -175,6 +175,37 @@ document.getElementById('inc-btn').addEventListener('click', () => {
 });
 </script>
 </body></html>""",
+    "/upload": """<!doctype html><html><body>
+<h1>Upload fixture (no backend — change event only)</h1>
+<input type="file" id="file-input" />
+<span id="upload-status">none</span>
+<script>
+document.getElementById('file-input').addEventListener('change', (ev) => {
+  const f = ev.target.files[0];
+  document.getElementById('upload-status').textContent = f ? f.name : 'none';
+});
+</script>
+</body></html>""",
+    "/dialog-native": """<!doctype html><html><body>
+<h1>Native dialog fixture (alert/confirm/prompt)</h1>
+<button id="alert-btn">Alert</button>
+<button id="confirm-btn">Confirm</button>
+<button id="prompt-btn">Prompt</button>
+<div id="dlg-result">pending</div>
+<script>
+document.getElementById('alert-btn').addEventListener('click', () => {
+  alert('hello alert');
+  document.getElementById('dlg-result').textContent = 'alerted';
+});
+document.getElementById('confirm-btn').addEventListener('click', () => {
+  document.getElementById('dlg-result').textContent = String(confirm('sure?'));
+});
+document.getElementById('prompt-btn').addEventListener('click', () => {
+  const v = prompt('name?');
+  document.getElementById('dlg-result').textContent = v === null ? 'null' : v;
+});
+</script>
+</body></html>""",
 }
 
 # Binary-ish payloads served with explicit headers (not in _ROUTES).

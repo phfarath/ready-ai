@@ -12,6 +12,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import mimetypes
+import os
 import re
 import websockets
 from dataclasses import dataclass, field
@@ -51,7 +53,7 @@ EFFECT_NAVIGATE_ACTIONS: frozenset[str] = frozenset(
 # carrying a plain action name is treated as write (guilty until proven
 # innocent); bracketed/empty names are unknown and denied everywhere.
 EFFECT_WRITE_ACTIONS: frozenset[str] = frozenset(
-    {"click", "click_text", "type", "press_key"}
+    {"click", "click_text", "type", "press_key", "upload", "download", "dialog"}
 )
 STEP_POLICIES: tuple[str, ...] = ("read", "navigate", "write")
 
@@ -101,6 +103,13 @@ async def _resolve_action_session(
 _TARGET_SCOPED_ACTIONS: frozenset[str] = frozenset(
     {"click", "click_text", "switch_tab", "close_tab"}
 )
+
+
+def _dispatch_failed(description: str) -> bool:
+    """True when an executor description reports failure (denial wording)."""
+    return (description or "").lower().startswith(
+        ("[failed]", "[error]", "[unknown", "timeout ")
+    )
 
 # JavaScript helper: querySelector that pierces shadow DOM boundaries.
 # Embed with: f"(() => {{ {_PIERCE_JS} const el = pierce(document, {safe_sel}); ... }})()"
@@ -743,6 +752,131 @@ async def _dispatch_action(
             except RuntimeError as exc:
                 return f"[Failed] {exc}"
             return f"Closed tab: {info['closed'][:12]}..."
+
+        elif action_type == "upload":
+            selector = action.get("selector")
+            if not selector:
+                return "[Failed] upload requires 'selector'"
+            raw_paths = action.get("paths", action.get("path"))
+            if isinstance(raw_paths, str):
+                raw_paths = [raw_paths]
+            if not raw_paths:
+                return "[Failed] upload requires 'path' or 'paths'"
+            roots = action.get("roots") or []
+            if not isinstance(roots, list) or not roots:
+                return "[Failed] upload requires explicit 'roots' allowlist"
+            allowed = [os.path.realpath(r) for r in roots if isinstance(r, str)]
+            resolved: list[str] = []
+            for candidate in raw_paths:
+                if not isinstance(candidate, str):
+                    return "[Failed] upload paths must be strings"
+                real = os.path.realpath(candidate)
+                if not os.path.isfile(real):
+                    name = os.path.basename(candidate) or "unnamed"
+                    return f"[Failed] upload file not found: {name}"
+                if not any(
+                    real == root or real.startswith(root + os.sep) for root in allowed
+                ):
+                    name = os.path.basename(real) or "unnamed"
+                    return f"[Failed] upload path outside allowlist: {name}"
+                resolved.append(real)
+            session_id, failure = await _resolve_action_session(action, page)
+            if failure is not None:
+                return f"[Failed] {failure}"
+            if not await input_domain.set_files(selector, resolved, session_id=session_id):
+                return f"[Failed] File input not found: {selector}"
+            count = len(resolved)
+            return f"Uploaded {count} file(s) to {selector}"
+
+        elif action_type == "download":
+            selector = action.get("selector")
+            url = action.get("url")
+            if not selector and not url:
+                return "[Failed] download requires 'selector' or 'url'"
+            try:
+                timeout = float(action.get("timeout", 15.0))
+            except (TypeError, ValueError):
+                return "[Failed] download timeout must be numeric"
+            timeout = min(max(timeout, 1.0), 60.0)
+            expected_name = action.get("filename")
+            if selector:
+                session_id, failure = await _resolve_action_session(action, page)
+                if failure is not None:
+                    return f"[Failed] {failure}"
+                if not await input_domain.click(selector, session_id=session_id):
+                    return f"[Failed] Element not found: {selector}"
+            else:
+                await page.navigate(url, wait_for_load=False, wait_for_network=False)
+            item = await page.wait_for_download(
+                filename=expected_name, timeout=timeout
+            )
+            if item is None:
+                return "[Failed] download did not start within timeout"
+            filename = str(item.details.get("filename") or "file")
+            download_dir = getattr(page, "download_dir", None)
+            if not download_dir:
+                return f"Downloaded {filename} (unverified: no download dir)"
+            candidate = os.path.join(download_dir, os.path.basename(filename))
+            deadline = asyncio.get_running_loop().time() + 10.0
+            while not os.path.isfile(candidate):
+                if asyncio.get_running_loop().time() >= deadline:
+                    base = os.path.basename(filename)
+                    return f"[Failed] download started but file missing: {base}"
+                await asyncio.sleep(0.25)
+            size = os.path.getsize(candidate)
+            if size <= 0:
+                return f"[Failed] download is empty: {os.path.basename(filename)}"
+            max_bytes = action.get("max_bytes")
+            if max_bytes is not None:
+                try:
+                    limit = int(max_bytes)
+                except (TypeError, ValueError):
+                    return "[Failed] download max_bytes must be numeric"
+                if size > limit:
+                    return f"[Failed] download exceeds max_bytes ({size}>{limit})"
+            expected_mime = action.get("mime")
+            if expected_mime:
+                guessed, _ = mimetypes.guess_type(filename)
+                if guessed != expected_mime:
+                    return f"[Failed] download mime mismatch: {guessed} != {expected_mime}"
+            return f"Downloaded {filename} ({size}B)"
+
+        elif action_type == "dialog":
+            decision = action.get("decision")
+            if decision not in ("accept", "dismiss"):
+                return "[Failed] dialog decision must be 'accept' or 'dismiss'"
+            inner = action.get("then")
+            if not isinstance(inner, dict) or not inner.get("action"):
+                return "[Failed] dialog requires a nested 'then' action"
+            if inner.get("action") == "dialog":
+                return "[Failed] nested dialogs are not supported"
+            try:
+                timeout = float(action.get("timeout", 10.0))
+            except (TypeError, ValueError):
+                return "[Failed] dialog timeout must be numeric"
+            timeout = min(max(timeout, 1.0), 30.0)
+            subscription = page.subscribe_dialogs()
+            try:
+                inner_task = asyncio.create_task(
+                    _dispatch_action(inner, page, input_domain, runtime)
+                )
+                try:
+                    event = await subscription.wait(timeout)
+                except TimeoutError:
+                    inner_desc = await inner_task
+                    if _dispatch_failed(inner_desc):
+                        return inner_desc
+                    return "[Failed] expected dialog did not open"
+                params = event.get("params") or {}
+                dtype = str(params.get("type") or "dialog")
+                await page.handle_dialog(
+                    decision == "accept", action.get("text")
+                )
+                inner_desc = await inner_task
+                past = "accepted" if decision == "accept" else "dismissed"
+                return f"Dialog {past} ({dtype}): {inner_desc}"
+            finally:
+                subscription.close()
 
         else:
             logger.warning(f"Unknown action type: {action_type}")
