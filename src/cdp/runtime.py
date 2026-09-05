@@ -35,12 +35,16 @@ class RuntimeDomain:
     def __init__(self, conn: CDPConnection):
         self._conn = conn
 
-    async def evaluate(self, expression: str) -> Any:
+    async def evaluate(
+        self, expression: str, session_id: Optional[str] = None
+    ) -> Any:
         """
         Evaluate a JavaScript expression and return its value.
 
         Args:
             expression: JS expression string
+            session_id: Explicit CDP session (tab/popup/OOPIF). None uses
+                the connection default (primary tab).
 
         Returns:
             The evaluated value (primitive types only via CDP serialization)
@@ -52,6 +56,7 @@ class RuntimeDomain:
                 "returnByValue": True,
                 "awaitPromise": True,
             },
+            session_id=session_id,
         )
 
         remote_obj = result.get("result", {})
@@ -66,12 +71,15 @@ class RuntimeDomain:
 
         return remote_obj.get("description", str(remote_obj))
 
-    async def query_selector(self, selector: str) -> Optional[str]:
+    async def query_selector(
+        self, selector: str, session_id: Optional[str] = None
+    ) -> Optional[str]:
         """
         Find an element by CSS selector and return its objectId.
 
         Args:
             selector: CSS selector
+            session_id: Explicit CDP session (tab/popup/OOPIF).
 
         Returns:
             Remote object ID, or None if not found
@@ -82,30 +90,39 @@ class RuntimeDomain:
                 "expression": f"document.querySelector({json.dumps(selector)})",
                 "returnByValue": False,
             },
+            session_id=session_id,
         )
         remote_obj = result.get("result", {})
         if remote_obj.get("subtype") == "null" or remote_obj.get("type") == "undefined":
             return None
         return remote_obj.get("objectId")
 
-    async def get_element_text(self, selector: str) -> str:
+    async def get_element_text(
+        self, selector: str, session_id: Optional[str] = None
+    ) -> str:
         """
         Get the innerText of an element.
 
         Args:
             selector: CSS selector
+            session_id: Explicit CDP session (tab/popup/OOPIF).
 
         Returns:
             The element's text content, or empty string if not found
         """
         result = await self.evaluate(
-            f"document.querySelector({json.dumps(selector)})?.innerText || ''"
+            f"document.querySelector({json.dumps(selector)})?.innerText || ''",
+            session_id=session_id,
         )
         return str(result) if result else ""
 
-    async def get_visible_text(self) -> str:
+    async def get_visible_text(
+        self, session_id: Optional[str] = None
+    ) -> str:
         """Get all visible text on the page (body.innerText)."""
-        result = await self.evaluate("document.body?.innerText || ''")
+        result = await self.evaluate(
+            "document.body?.innerText || ''", session_id=session_id
+        )
         return str(result) if result else ""
 
     async def get_state_fingerprint(self) -> str:
@@ -152,7 +169,9 @@ class RuntimeDomain:
         result = await self.evaluate(js)
         return str(result) if result else ""
 
-    async def get_element_attributes(self, selector: str) -> dict:
+    async def get_element_attributes(
+        self, selector: str, session_id: Optional[str] = None
+    ) -> dict:
         """Get all attributes of an element as a dict."""
         safe_sel = json.dumps(selector)
         js = f"""
@@ -166,8 +185,22 @@ class RuntimeDomain:
             return attrs;
         }})()
         """
-        result = await self.evaluate(js)
+        result = await self.evaluate(js, session_id=session_id)
         return result if isinstance(result, dict) else {}
+
+    async def resolve_target_session(self, ref) -> str:
+        """Resolve a flow-level tab reference to its CDP session id.
+
+        Refreshes the registry from the browser first so out-of-process
+        frames resolve even when their attach event hasn't arrived.
+        Raises RuntimeError naming the known targets when unresolvable
+        (fail-closed at dispatch/assert time, never silently primary).
+        """
+        await self._conn.ensure_targets()
+        try:
+            return self._conn.targets.resolve(ref).session_id
+        except (KeyError, AttributeError) as exc:
+            raise RuntimeError(str(exc)) from exc
 
     async def get_interactive_elements(self, raw: Optional[bool] = None) -> str:
         """

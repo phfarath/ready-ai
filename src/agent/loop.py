@@ -81,6 +81,9 @@ KNOWN_SUCCESS_PREFIXES: tuple[str, ...] = (
     "found:",
     "found ",
     "observing current page state",
+    "popup opened",
+    "switched to tab",
+    "closed tab",
 )
 
 # Text-bearing actions whose ``text`` parameter and executor description
@@ -396,6 +399,12 @@ class AgenticLoop:
                     step_results.append(step_report)
                     if step_report["status"] == "failed":
                         overall_status = "failed"
+                        logger.warning(
+                            "Flow step %s (%s) failed: %s",
+                            step_report["index"],
+                            step_report["name"],
+                            step_report["failure_reason"],
+                        )
                     elif step_report["status"] == "pending_confirmation" and overall_status == "passed":
                         overall_status = "pending_confirmation"
                     if overall_status == "pending_confirmation" and run_failed_reason is None:
@@ -539,7 +548,27 @@ class AgenticLoop:
         skipped_extractions = 0
         if not aborted:
             for assertion in step.asserts:
-                result = await self._evaluate_flow_assertion(assertion, runtime)
+                target_session: Optional[str] = None
+                target_ref = getattr(assertion, "target", None)
+                if target_ref is not None:
+                    try:
+                        target_session = await runtime.resolve_target_session(target_ref)
+                    except RuntimeError as exc:
+                        assert_results.append(
+                            {
+                                "type": assertion.type,
+                                "selector": assertion.selector,
+                                "expected": assertion.expected,
+                                "actual": None,
+                                "passed": False,
+                                "message": str(exc),
+                            }
+                        )
+                        reasons.append(str(exc))
+                        continue
+                result = await self._evaluate_flow_assertion(
+                    assertion, runtime, target_session=target_session
+                )
                 assert_results.append(result)
                 if not result["passed"]:
                     reasons.append(result["message"] or f"assert '{result['type']}' failed")
@@ -758,8 +787,10 @@ class AgenticLoop:
         self,
         assertion: FlowAssertion,
         runtime: RuntimeDomain,
+        *,
+        target_session: Optional[str] = None,
     ) -> dict:
-        """Evaluate one declarative expectation against the live page."""
+        """Evaluate one declarative expectation, optionally in another tab."""
         atype = assertion.type
         selector = assertion.selector
         expected = assertion.expected
@@ -772,7 +803,9 @@ class AgenticLoop:
         guard_message = ""
         try:
             if atype in ("url_contains", "url_equals", "not_url_contains"):
-                actual = await runtime.evaluate("window.location.href")
+                actual = await runtime.evaluate(
+                    "window.location.href", session_id=target_session
+                )
                 actual_s = str(actual or "")
                 exp_s = str(expected or "")
                 if atype == "url_contains":
@@ -789,7 +822,9 @@ class AgenticLoop:
                 if not selector:
                     passed = False
                 else:
-                    actual = await runtime.query_selector(selector)
+                    actual = await runtime.query_selector(
+                        selector, session_id=target_session
+                    )
                     found = actual is not None
                     passed = found if atype == "element_present" else not found
             elif atype == "element_visible":
@@ -804,13 +839,15 @@ class AgenticLoop:
                         f"const s = window.getComputedStyle(el); "
                         f"return s.visibility !== 'hidden' && s.display !== 'none'; }})()"
                     )
-                    actual = await runtime.evaluate(js)
+                    actual = await runtime.evaluate(js, session_id=target_session)
                     passed = bool(actual)
             elif atype in ("text_contains", "text_equals"):
                 if selector:
-                    actual = await runtime.get_element_text(selector)
+                    actual = await runtime.get_element_text(
+                        selector, session_id=target_session
+                    )
                 else:
-                    actual = await runtime.get_visible_text()
+                    actual = await runtime.get_visible_text(session_id=target_session)
                 actual_s = str(actual or "")
                 if atype == "text_contains":
                     passed = str(expected or "") in actual_s
@@ -824,7 +861,9 @@ class AgenticLoop:
                 if not selector or not assertion.attribute:
                     passed = False
                 else:
-                    attrs = await runtime.get_element_attributes(selector)
+                    attrs = await runtime.get_element_attributes(
+                        selector, session_id=target_session
+                    )
                     actual = attrs.get(assertion.attribute)
                     if (expected is None or str(expected).strip() == "") and actual is None:
                         passed = False

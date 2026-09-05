@@ -48,7 +48,9 @@ class InputDomain:
         """
         await self._conn.send("Runtime.evaluate", {"expression": js})
 
-    async def click(self, selector: str, delay: float = 0.1) -> bool:
+    async def click(
+        self, selector: str, delay: float = 0.1, session_id: Optional[str] = None
+    ) -> bool:
         """
         Click an element by CSS selector.
 
@@ -63,13 +65,14 @@ class InputDomain:
             True if clicked successfully, False if element not found
         """
         # Resolve the DOM node
-        doc = await self._conn.send("DOM.getDocument")
+        doc = await self._conn.send("DOM.getDocument", session_id=session_id)
         root_id = doc["root"]["nodeId"]
 
         try:
             result = await self._conn.send(
                 "DOM.querySelector",
                 {"nodeId": root_id, "selector": selector},
+                session_id=session_id,
             )
         except RuntimeError:
             logger.warning(f"querySelector failed for: {selector}")
@@ -82,7 +85,9 @@ class InputDomain:
 
         # Get the element's box model
         try:
-            box = await self._conn.send("DOM.getBoxModel", {"nodeId": node_id})
+            box = await self._conn.send(
+                "DOM.getBoxModel", {"nodeId": node_id}, session_id=session_id
+            )
         except RuntimeError:
             logger.warning(f"getBoxModel failed for: {selector}")
             return False
@@ -108,6 +113,7 @@ class InputDomain:
                 "button": "left",
                 "clickCount": 1,
             },
+            session_id=session_id,
         )
 
         await self.show_click_effect()
@@ -123,6 +129,7 @@ class InputDomain:
                 "button": "left",
                 "clickCount": 1,
             },
+            session_id=session_id,
         )
 
         return True

@@ -130,6 +130,9 @@ class FlowAssertion(BaseModel):
     selector: Optional[str] = Field(None, description="CSS selector for element/text asserts")
     attribute: Optional[str] = Field(None, description="Attribute name for attribute_equals")
     message: Optional[str] = Field(None, description="Optional human-readable failure message")
+    target: Optional[Any] = Field(
+        None, description="Tab reference: index, exact targetId, or URL substring"
+    )
 
 
 class FlowExtraction(BaseModel):

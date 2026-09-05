@@ -185,6 +185,110 @@ class CDPEventSubscription:
         self.close()
 
 
+@dataclass
+class TargetInfo:
+    """One attached browser target (tab, popup, or out-of-process iframe)."""
+
+    target_id: str
+    session_id: str
+    type: str = "page"
+    url: str = ""
+
+
+class TargetRegistry:
+    """Explicit registry of attached targets — never an implicit global.
+
+    Before this registry, the recv loop replaced the single active session
+    on EVERY page attach, so a ``window.open`` popup silently hijacked all
+    subsequent commands (proven by the Fase-1 slice-2 harness). Now every
+    attach is recorded and the primary session only changes through the
+    explicit ``switch_session`` path (user-initiated tab switch).
+    """
+
+    def __init__(self) -> None:
+        self._by_target: dict[str, TargetInfo] = {}
+        self._by_session: dict[str, str] = {}
+        self._primary_target_id: Optional[str] = None
+
+    def register(
+        self,
+        target_id: str,
+        session_id: str,
+        type: str = "page",
+        url: str = "",
+    ) -> TargetInfo:
+        info = TargetInfo(target_id=target_id, session_id=session_id, type=type, url=url)
+        self._by_target[target_id] = info
+        self._by_session[session_id] = target_id
+        if self._primary_target_id is None:
+            self._primary_target_id = target_id
+        return info
+
+    def unregister_target(self, target_id: str) -> None:
+        info = self._by_target.pop(target_id, None)
+        if info is not None:
+            self._by_session.pop(info.session_id, None)
+        if self._primary_target_id == target_id:
+            self._primary_target_id = next(iter(self._by_target), None)
+
+    def update_url(self, target_id: str, url: str) -> None:
+        """Refresh a registered target's URL (attach-time URLs are often
+        empty because navigation hasn't committed yet)."""
+        info = self._by_target.get(target_id)
+        if info is not None and url:
+            info.url = url
+
+    def session_for_target(self, target_id: str) -> Optional[str]:
+        info = self._by_target.get(target_id)
+        return info.session_id if info else None
+
+    def target_for_session(self, session_id: str) -> Optional[str]:
+        return self._by_session.get(session_id)
+
+    def all(self) -> list[TargetInfo]:
+        return list(self._by_target.values())
+
+    def target_ids(self) -> list[str]:
+        return list(self._by_target)
+
+    @property
+    def primary_target_id(self) -> Optional[str]:
+        return self._primary_target_id
+
+    def set_primary(self, target_id: str) -> TargetInfo:
+        info = self._by_target[target_id]
+        self._primary_target_id = target_id
+        return info
+
+    def resolve(self, ref: Any) -> TargetInfo:
+        """Resolve a flow-level target reference to a registered target.
+
+        Accepts an integer index (attach order), an exact targetId, or a
+        URL substring. Unknown references raise ``KeyError`` listing the
+        known targets so failures identify the context.
+        """
+        targets = self.all()
+        known = ", ".join(
+            f"[{i}] {t.type} {t.url or t.target_id[:8]}" for i, t in enumerate(targets)
+        )
+        if isinstance(ref, int):
+            try:
+                return targets[ref]
+            except IndexError:
+                raise KeyError(f"tab index {ref} out of range (targets: {known or 'none'})") from None
+        if isinstance(ref, str):
+            for info in targets:
+                if info.target_id == ref:
+                    return info
+            matches = [t for t in targets if ref in (t.url or "")]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise KeyError(f"tab {ref!r} is ambiguous (targets: {known})")
+            raise KeyError(f"unknown tab {ref!r} (targets: {known or 'none'})")
+        raise KeyError(f"invalid tab reference {ref!r} (targets: {known or 'none'})")
+
+
 class CDPConnection:
     """Low-level CDP WebSocket connection with auto-incrementing IDs."""
 
@@ -192,6 +296,9 @@ class CDPConnection:
         self._ws: Optional[ClientConnection] = None
         self._msg_id: int = 0
         self._session_id: Optional[str] = None
+        # Primary/default session: set once at attach, changed ONLY through
+        # switch_session(). Later attaches register without replacing it.
+        self.targets = TargetRegistry()
         self._pending: dict[int, asyncio.Future] = {}
         self._events: asyncio.Queue = asyncio.Queue()
         # `_events` remains a legacy compatibility queue. New code consumes
@@ -260,14 +367,32 @@ class CDPConnection:
                     self._pending[msg_id].set_result(msg)
                     del self._pending[msg_id]
                 elif "method" in msg:
-                    # Monitor Target auto-attach to heal dead sessions
+                    # Monitor Target auto-attach: record every attached target
+                    # (pages AND out-of-process frames) without touching the
+                    # primary session — explicit switch only.
                     if msg["method"] == "Target.attachedToTarget":
                         target_info = msg.get("params", {}).get("targetInfo", {})
-                        if target_info.get("type") == "page":
-                            new_session = msg.get("params", {}).get("sessionId")
-                            if new_session:
+                        new_session = msg.get("params", {}).get("sessionId")
+                        if target_info.get("targetId") and new_session:
                                 logger.debug(f"Auto-attached to new page target: {target_info.get('targetId')}, session: {new_session}")
-                                self._session_id = new_session
+                                # Record the attach WITHOUT hijacking the
+                                # primary session (TargetRegistry owns the
+                                # explicit switch path). Re-enable domains on
+                                # the new session so it is usable when the
+                                # caller switches to it.
+                                self.targets.register(
+                                    str(target_info.get("targetId") or ""),
+                                    new_session,
+                                    type=str(target_info.get("type") or "page"),
+                                    url=str(target_info.get("url") or ""),
+                                )
+                                # Attach-time URLs are often empty (navigation
+                                # not yet committed); refresh from the event
+                                # whenever it carries one.
+                                self.targets.update_url(
+                                    str(target_info.get("targetId") or ""),
+                                    str(target_info.get("url") or ""),
+                                )
                                 # Re-enable required CDP domains and re-inject
                                 # the cursor overlay on the new session —
                                 # without this, Page.loadEventFired never fires
@@ -906,6 +1031,12 @@ class CDPConnection:
         )
         self._session_id = result["sessionId"]
         logger.info(f"Attached with sessionId: {self._session_id}")
+        self.targets.register(
+            target_id,
+            self._session_id,
+            type="page",
+            url=str(page_targets[0].get("url") or ""),
+        )
         
         # Turn on auto-attach to handle cross-origin process swaps (healing)
         await self.send(
@@ -923,6 +1054,81 @@ class CDPConnection:
     @property
     def session_id(self) -> Optional[str]:
         return self._session_id
+
+    def switch_session(self, session_id: str) -> str:
+        """Explicitly route subsequent default sends to another session.
+
+        The ONLY sanctioned mutation path for the primary session —
+        automatic attaches register without replacing it.
+        Returns the target_id the session belongs to.
+        """
+        target_id = self.targets.target_for_session(session_id)
+        if target_id is None:
+            raise KeyError(f"unknown session {session_id!r} (not in registry)")
+        self.targets.set_primary(target_id)
+        self._session_id = session_id
+        logger.info(f"Switched primary session to target: {target_id}")
+        return target_id
+
+    async def list_targets(self) -> list[dict[str, Any]]:
+        """Return raw page/iframe target infos from the browser."""
+        targets = await self.send("Target.getTargets")
+        return [
+            t
+            for t in targets.get("targetInfos", [])
+            if t.get("type") in ("page", "iframe")
+        ]
+
+    async def attach_to_target(self, target_id: str) -> str:
+        """Attach to a known target and register its session."""
+        result = await self.send(
+            "Target.attachToTarget",
+            {"targetId": target_id, "flatten": True},
+        )
+        session_id = result["sessionId"]
+        self.targets.register(target_id, session_id)
+        return session_id
+
+    async def close_target(self, target_id: str) -> bool:
+        """Close a target and drop it from the registry."""
+        result = await self.send("Target.closeTarget", {"targetId": target_id})
+        self.targets.unregister_target(target_id)
+        return bool(result.get("success", True))
+
+    async def ensure_targets(self) -> None:
+        """Attach to any listed page/iframe target missing from the registry.
+
+        Auto-attach usually beats us here (recv loop registers on arrival),
+        but out-of-process frames can be listed before their attach event is
+        processed — or arrive with no event at all. Called on demand before
+        resolving an explicit target reference so resolution never depends
+        on event timing.
+        """
+        try:
+            listed = await self.list_targets()
+        except Exception as exc:
+            logger.debug(f"ensure_targets list failed: {exc}")
+            return
+        logger.debug(
+            "ensure_targets listed %d targets: %s",
+            len(listed),
+            [(t.get("type"), (t.get("url") or "")[:60]) for t in listed],
+        )
+        for target in listed:
+            tid = str(target.get("targetId") or "")
+            if not tid:
+                continue
+            url = str(target.get("url") or "")
+            if self.targets.session_for_target(tid) is not None:
+                self.targets.update_url(tid, url)
+                continue
+            try:
+                await self.attach_to_target(tid)
+            except Exception as exc:
+                if self.targets.session_for_target(tid) is None:
+                    logger.debug(f"ensure_targets attach {tid[:12]} failed: {exc}")
+                continue
+            self.targets.update_url(tid, url)
 
     @property
     def is_disconnected(self) -> bool:

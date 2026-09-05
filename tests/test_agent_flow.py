@@ -107,7 +107,7 @@ async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path
     dispatch = AsyncMock(return_value="Navigated to: https://app.example.com/checkout")
     monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
 
-    async def fake_evaluate(expression):
+    async def fake_evaluate(expression, session_id=None):
         if "window.location.href" in expression:
             return "https://app.example.com/done"
         if "#receipt" in expression:
@@ -186,7 +186,7 @@ async def test_run_flow_reports_failed_assert_with_expected_and_actual(tmp_path,
         AsyncMock(return_value="Navigated to: https://app.example.com/confirm"),
     )
 
-    async def fake_evaluate(expression):
+    async def fake_evaluate(expression, session_id=None):
         if "window.location.href" in expression:
             return "https://app.example.com/cancelled"
         return None
@@ -827,3 +827,146 @@ async def test_idempotent_replay_skips_execution(tmp_path, monkeypatch):
     assert step["confirmation"] == "idempotent-replay"
     assert step["actions"] == []
     dispatch.assert_not_called()
+
+
+# ─── PH2B — tab actions (mocked page, no browser) ──────────────────────
+
+@pytest.mark.parametrize(
+    "action_type,expected",
+    [
+        ("wait_for_popup", "read"),
+        ("switch_tab", "navigate"),
+        ("close_tab", "navigate"),
+    ],
+)
+def test_tab_actions_taxonomy(action_type, expected):
+    assert executor_module.action_effect_level(action_type) == expected
+
+
+@pytest.mark.parametrize(
+    "description,action_type",
+    [
+        ("Popup opened: abc123...", "wait_for_popup"),
+        ("Switched to tab: https://x/popup", "switch_tab"),
+        ("Closed tab: abc123...", "close_tab"),
+    ],
+)
+def test_tab_action_wordings_classified_passed(description, action_type):
+    assert AgenticLoop._flow_action_ok(description, action_type) is True
+
+
+async def test_wait_for_popup_success(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="wait_for_popup")])]
+    )
+    loop, page, _runtime, _input = _make_loop(tmp_path)
+    page.wait_for_popup = AsyncMock(
+        return_value={"target_id": "t-popup", "session_id": "s-popup"}
+    )
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    assert result["steps"][0]["actions"][0]["description"].startswith("Popup opened")
+
+
+async def test_wait_for_popup_timeout_fails(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="wait_for_popup")])]
+    )
+    loop, page, _runtime, _input = _make_loop(tmp_path)
+    page.wait_for_popup = AsyncMock(side_effect=TimeoutError("timed out"))
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "No popup opened" in result["steps"][0]["failure_reason"]
+
+
+async def test_switch_tab_requires_target(tmp_path, monkeypatch):
+    flow = _flow([FlowStepSpec(actions=[FlowAction(action="switch_tab")])])
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "requires 'target'" in result["steps"][0]["failure_reason"]
+
+
+async def test_switch_tab_unknown_names_context(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="switch_tab", target="ghost")])]
+    )
+    loop, page, _runtime, _input = _make_loop(tmp_path)
+    page.switch_to_tab = AsyncMock(side_effect=RuntimeError("unknown tab 'ghost' (targets: none)"))
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "unknown tab 'ghost'" in result["steps"][0]["failure_reason"]
+
+
+async def test_switch_tab_success(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="switch_tab", target="/popup")])]
+    )
+    loop, page, _runtime, _input = _make_loop(tmp_path)
+    page.switch_to_tab = AsyncMock(
+        return_value={"target_id": "t-popup", "url": "https://x/popup"}
+    )
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    page.switch_to_tab.assert_awaited_once_with("/popup")
+
+
+async def test_close_tab_success(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="close_tab", target="/popup")])]
+    )
+    loop, page, _runtime, _input = _make_loop(tmp_path)
+    page.close_tab = AsyncMock(return_value={"closed": "t-popup", "active": "t-main"})
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+
+
+async def test_click_with_target_routes_session(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[FlowAction(action="click", selector="#x", target="/popup")]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    page.resolve_target_session = AsyncMock(return_value="sess-popup")
+    input_domain.click = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    input_domain.click.assert_awaited_once_with("#x", session_id="sess-popup")
+
+
+async def test_click_with_unknown_target_fails_closed(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[FlowAction(action="click", selector="#x", target="ghost")]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    page.resolve_target_session = AsyncMock(
+        side_effect=RuntimeError("unknown tab 'ghost' (targets: none)")
+    )
+    input_domain.click = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "unknown tab 'ghost'" in result["steps"][0]["failure_reason"]
+    input_domain.click.assert_not_called()
+
+
+async def test_type_with_target_fails_closed(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(action="type", selector="#x", text="hi", target="/popup")
+                ]
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "does not support explicit target" in result["steps"][0]["failure_reason"]
