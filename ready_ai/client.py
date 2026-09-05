@@ -18,11 +18,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Mapping, Optional
+from typing import Collection, Mapping, Optional
 
 from src.agent.loop import AgenticLoop
 
-from .models import BrowserOptions, Flow, Profile, RunResult
+from .models import BrowserOptions, EffectPolicy, Flow, Profile, RunResult
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +80,18 @@ def _to_flow_spec(
                 for extraction in step.extract
             ],
             retries=step.retries,
+            policy=step.policy,
+            confirm=step.confirm,
+            irreversible=step.irreversible,
+            idempotency_key=step.idempotency_key,
         )
         for step in flow.steps
     ]
+    _policy_map = {
+        EffectPolicy.OBSERVE: "read",
+        EffectPolicy.NAVIGATE: "navigate",
+        EffectPolicy.INTERACTIVE: "write",
+    }
     return _FlowSpec(
         name=flow.name,
         url=flow.url,
@@ -95,6 +104,7 @@ def _to_flow_spec(
         cookies_file=cookies_file,
         username=username,
         password=password,
+        effect_policy=_policy_map[flow.effect_policy],
     )
 
 
@@ -182,7 +192,11 @@ class ReadyAI:
         return None
 
     async def run_flow(
-        self, flow: Flow, *, browser: Optional[BrowserOptions] = None
+        self,
+        flow: Flow,
+        *,
+        browser: Optional[BrowserOptions] = None,
+        confirm: Collection[str] | None = None,
     ) -> RunResult:
         """Execute a declarative flow and return a sanitized ``RunResult``.
 
@@ -190,6 +204,8 @@ class ReadyAI:
         no documentation rendering). ``flow.timeout_s`` caps the whole
         run; exceeding it raises ``RunTimeoutError``. Profile credentials
         are resolved from this instance's allowlist registry only.
+        Pass ``confirm`` with the idempotency keys of steps declared with
+        ``confirm=True`` to authorize their execution.
         """
         browser = self._merge_browser(browser)
         credentials = self._resolve_profile(browser.profile)
@@ -218,7 +234,9 @@ class ReadyAI:
             run_id=run_id,
         )
         try:
-            data = await asyncio.wait_for(loop.run_flow(flow_spec), timeout=flow.timeout_s)
+            data = await asyncio.wait_for(
+                loop.run_flow(flow_spec, confirm=confirm), timeout=flow.timeout_s
+            )
         except asyncio.TimeoutError as exc:
             raise RunTimeoutError(
                 f"flow {flow.name or run_id!r} exceeded its "

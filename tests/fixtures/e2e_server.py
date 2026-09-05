@@ -153,6 +153,17 @@ document.getElementById('modal-dismiss').addEventListener('click', () => {
 <input id="login-pass" name="password" type="password" autocomplete="current-password" />
 <button id="login-submit">Sign in</button>
 </body></html>""",
+    "/counter": """<!doctype html><html><body>
+<h1>Counter fixture (idempotency witness)</h1>
+<button id="inc-btn">Increment</button>
+<div id="count">0</div>
+<script>
+document.getElementById('inc-btn').addEventListener('click', () => {
+  const el = document.getElementById('count');
+  el.textContent = String(Number(el.textContent) + 1);
+});
+</script>
+</body></html>""",
 }
 
 # Binary-ish payloads served with explicit headers (not in _ROUTES).

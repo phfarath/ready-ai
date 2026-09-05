@@ -32,6 +32,53 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 
+# ─── Effect policy taxonomy (READY-AI-T-PH2A) ──────────────────────────
+#
+# Every executor action maps to one effect level:
+#   read     — observes only (observe, wait). Cannot change app state.
+#   navigate — read plus browser navigation/scrolling. Moves the session,
+#              never mutates application data.
+#   write    — interacts with the page (click, type, keys...). May trigger
+#              application side effects; gated by step/flow policy ceilings
+#              and, when declared, explicit confirmation.
+# Unknown action types map to None and are denied under every policy
+# (fail closed — mirrors _flow_action_ok's treatment of unknown wording).
+EFFECT_READ_ACTIONS: frozenset[str] = frozenset({"observe", "wait"})
+EFFECT_NAVIGATE_ACTIONS: frozenset[str] = frozenset(
+    {"navigate", "scroll", "scroll_to"}
+)
+# Declared executor actions that interact with the page. Anything else
+# carrying a plain action name is treated as write (guilty until proven
+# innocent); bracketed/empty names are unknown and denied everywhere.
+EFFECT_WRITE_ACTIONS: frozenset[str] = frozenset(
+    {"click", "click_text", "type", "press_key"}
+)
+STEP_POLICIES: tuple[str, ...] = ("read", "navigate", "write")
+
+
+def action_effect_level(action_type: str) -> str | None:
+    """Return the effect level of an action type, or None when unknown."""
+    if action_type in EFFECT_READ_ACTIONS:
+        return "read"
+    if action_type in EFFECT_NAVIGATE_ACTIONS:
+        return "navigate"
+    if action_type in EFFECT_WRITE_ACTIONS:
+        return "write"
+    if isinstance(action_type, str) and action_type and not action_type.startswith("["):
+        return "write"
+    return None
+
+
+def action_allowed_under_policy(action_type: str, policy: str) -> bool:
+    """Fail-closed ceiling check: action level must be at or below policy."""
+    order = {name: rank for rank, name in enumerate(STEP_POLICIES)}
+    if policy not in order:
+        return False
+    level = action_effect_level(action_type)
+    if level is None:
+        return False
+    return order[level] <= order[policy]
+
 # JavaScript helper: querySelector that pierces shadow DOM boundaries.
 # Embed with: f"(() => {{ {_PIERCE_JS} const el = pierce(document, {safe_sel}); ... }})()"
 _PIERCE_JS = (

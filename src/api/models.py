@@ -1,5 +1,7 @@
 from typing import Any, Optional, List
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+STEP_POLICIES: tuple[str, ...] = ("read", "navigate", "write")
 
 class RunRequest(BaseModel):
     run_id: Optional[str] = Field(
@@ -110,6 +112,49 @@ class FlowStepSpec(BaseModel):
         ge=0,
         description="Per-step retry budget; falls back to the flow default",
     )
+    policy: Optional[str] = Field(
+        None,
+        description=(
+            "Effect ceiling for this step: read | navigate | write. "
+            "None inherits the flow ceiling."
+        ),
+    )
+    confirm: bool = Field(
+        False,
+        description=(
+            "When true the step never executes until its idempotency key "
+            "is passed via run_flow(confirm={...}); it reports "
+            "pending_confirmation instead."
+        ),
+    )
+    irreversible: bool = Field(
+        False,
+        description=(
+            "Marks a write with real-world side effects. Requires "
+            "confirm=True (fail-closed at validation)."
+        ),
+    )
+    idempotency_key: Optional[str] = Field(
+        None,
+        description=(
+            "Stable key for this step's effect. Defaults to "
+            "'{run_id}:step-{index}' at execution. A resume never "
+            "re-executes an already-confirmed key."
+        ),
+    )
+
+    @field_validator("policy")
+    @classmethod
+    def _validate_policy(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in STEP_POLICIES:
+            raise ValueError(f"policy must be one of {list(STEP_POLICIES)}")
+        return value
+
+    @model_validator(mode="after")
+    def _check_irreversible_requires_confirm(self) -> "FlowStepSpec":
+        if self.irreversible and not self.confirm:
+            raise ValueError("irreversible steps require confirm=True (fail-closed)")
+        return self
 
 
 class FlowSpec(BaseModel):
@@ -129,6 +174,20 @@ class FlowSpec(BaseModel):
     password: Optional[str] = Field(None, description="Password for auto-login")
     output: Optional[str] = Field(None, description="Output directory for the result JSON")
     model: str = Field("gpt-4o-mini", description="LLM model (used only for credential login)")
+    effect_policy: str = Field(
+        "write",
+        description=(
+            "Flow-wide effect ceiling: read | navigate | write. Steps may "
+            "only narrow it via their own policy (fail-closed at execution)."
+        ),
+    )
+
+    @field_validator("effect_policy")
+    @classmethod
+    def _validate_effect_policy(cls, value: str) -> str:
+        if value not in STEP_POLICIES:
+            raise ValueError(f"effect_policy must be one of {list(STEP_POLICIES)}")
+        return value
 
 
 # ─── Run-Flow Result Models (READY-AI-T-4) ────────────────────────────
