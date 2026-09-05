@@ -84,6 +84,10 @@ KNOWN_SUCCESS_PREFIXES: tuple[str, ...] = (
     "popup opened",
     "switched to tab",
     "closed tab",
+    "uploaded ",
+    "downloaded ",
+    "dialog accepted",
+    "dialog dismissed",
 )
 
 # Text-bearing actions whose ``text`` parameter and executor description
@@ -371,6 +375,15 @@ class AgenticLoop:
 
                 await page.enable()
                 logger.info("═══ Run-flow '%s' — navigating to: %s", flow_name, self.url)
+                try:
+                    download_dir = str(Path(self.output_dir).resolve())
+                    await self._session.conn.send(
+                        "Browser.setDownloadBehavior",
+                        {"behavior": "allow", "downloadPath": download_dir},
+                    )
+                    page.download_dir = download_dir
+                except Exception as exc:
+                    logger.debug(f"Download behavior setup failed (downloads may not land): {exc}")
                 await page.navigate(self.url)
 
                 if self._session.cookies_file:

@@ -134,6 +134,44 @@ class InputDomain:
 
         return True
 
+    async def set_files(
+        self, selector: str, files: list[str], session_id: Optional[str] = None
+    ) -> bool:
+        """
+        Set the files of an <input type=file> element (upload).
+
+        Args:
+            selector: CSS selector of the file input
+            files: Absolute local paths (already allowlist-validated by the
+                caller — this layer performs no policy checks)
+            session_id: Explicit CDP session. None uses the default.
+
+        Returns:
+            True when the files were attached, False when the element
+            was not found
+        """
+        doc = await self._conn.send("DOM.getDocument", session_id=session_id)
+        root_id = doc["root"]["nodeId"]
+        try:
+            result = await self._conn.send(
+                "DOM.querySelector",
+                {"nodeId": root_id, "selector": selector},
+                session_id=session_id,
+            )
+        except RuntimeError:
+            logger.warning(f"querySelector failed for: {selector}")
+            return False
+        node_id = result.get("nodeId", 0)
+        if node_id == 0:
+            logger.warning(f"File input not found: {selector}")
+            return False
+        await self._conn.send(
+            "DOM.setFileInputFiles",
+            {"files": files, "nodeId": node_id},
+            session_id=session_id,
+        )
+        return True
+
     async def type_text(
         self, text: str, delay: float = 0.05, selector: Optional[str] = None
     ) -> None:

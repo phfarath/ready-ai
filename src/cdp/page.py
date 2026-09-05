@@ -346,6 +346,25 @@ class PageDomain:
                 self._conn.switch_session(session)
         return {"closed": info.target_id, "active": remaining}
 
+    def subscribe_dialogs(self):
+        """Subscribe to Page.javascriptDialogOpening events.
+
+        The caller pulls exactly one event and must close the subscription.
+        Used by the executor's explicit `dialog` action — there is no
+        ambient auto-handling: an unhandled dialog blocks the page and the
+        action reports it honestly.
+        """
+        return self._conn.subscribe_events(event_name="Page.javascriptDialogOpening")
+
+    async def handle_dialog(
+        self, accept: bool, prompt_text: Optional[str] = None
+    ) -> None:
+        """Accept or dismiss the currently open JavaScript dialog."""
+        params: dict = {"accept": accept}
+        if prompt_text is not None:
+            params["promptText"] = prompt_text
+        await self._conn.send("Page.handleJavaScriptDialog", params)
+
     async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
         """
         Navigate to a URL and optionally wait for page load and network idle.

@@ -970,3 +970,222 @@ async def test_type_with_target_fails_closed(tmp_path, monkeypatch):
     result = await loop.run_flow(flow)
     assert result["status"] == "failed"
     assert "does not support explicit target" in result["steps"][0]["failure_reason"]
+
+
+# ─── PH2C — files and dialogs (mocked session, no browser) ────────────
+
+@pytest.mark.parametrize(
+    "action_type,expected",
+    [
+        ("upload", "write"),
+        ("download", "write"),
+        ("dialog", "write"),
+    ],
+)
+def test_files_dialogs_taxonomy(action_type, expected):
+    assert executor_module.action_effect_level(action_type) == expected
+
+
+@pytest.mark.parametrize(
+    "description,action_type",
+    [
+        ("Uploaded 2 file(s) to #f", "upload"),
+        ("Downloaded r.csv (10B)", "download"),
+        ("Dialog accepted (confirm): Clicked element: #x", "dialog"),
+        ("Dialog dismissed (alert): Clicked element: #x", "dialog"),
+    ],
+)
+def test_files_dialogs_wordings_classified_passed(description, action_type):
+    assert AgenticLoop._flow_action_ok(description, action_type) is True
+
+
+async def test_upload_rejects_outside_allowlist(tmp_path, monkeypatch):
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x")
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="upload",
+                        selector="#f",
+                        paths=[str(outside)],
+                        roots=[str(tmp_path / "allowed")],
+                    )
+                ]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    input_domain.set_files = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "outside allowlist" in result["steps"][0]["failure_reason"]
+    input_domain.set_files.assert_not_called()
+
+
+async def test_upload_requires_roots(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="upload", selector="#f", paths=["/a"])])]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "allowlist" in result["steps"][0]["failure_reason"]
+
+
+async def test_upload_missing_file(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="upload",
+                        selector="#f",
+                        paths=[str(tmp_path / "nope.txt")],
+                        roots=[str(tmp_path)],
+                    )
+                ]
+            )
+        ]
+    )
+    loop, _page, _runtime, _input = _make_loop(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "not found" in result["steps"][0]["failure_reason"]
+
+
+async def test_upload_success_masks_path(tmp_path, monkeypatch):
+    target = tmp_path / "doc.txt"
+    target.write_text("data")
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="upload",
+                        selector="#f",
+                        paths=[str(target)],
+                        roots=[str(tmp_path)],
+                    )
+                ]
+            )
+        ]
+    )
+    loop, _page, _runtime, input_domain = _make_loop(tmp_path)
+    input_domain.set_files = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    desc = result["steps"][0]["actions"][0]["description"]
+    assert desc == "Uploaded 1 file(s) to #f"
+    assert str(target) not in desc
+
+
+async def test_download_no_start_fails(tmp_path, monkeypatch):
+    flow = _flow(
+        [FlowStepSpec(actions=[FlowAction(action="download", selector="#dl")])]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    input_domain.click = AsyncMock(return_value=True)
+    page.wait_for_download = AsyncMock(return_value=None)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "did not start" in result["steps"][0]["failure_reason"]
+
+
+async def test_download_verifies_file(tmp_path, monkeypatch):
+    landed = tmp_path / "r.csv"
+    landed.write_text("a,b\n1,2\n")
+    evidence = MagicMock()
+    evidence.details = {"filename": "r.csv"}
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(action="download", selector="#dl", filename="r.csv")
+                ]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    input_domain.click = AsyncMock(return_value=True)
+    page.wait_for_download = AsyncMock(return_value=evidence)
+    page.download_dir = str(tmp_path)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    assert "Downloaded r.csv (" in result["steps"][0]["actions"][0]["description"]
+
+
+async def test_dialog_rejects_bad_decision(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="dialog",
+                        decision="maybe",
+                        then={"action": "click", "selector": "#x"},
+                    )
+                ]
+            )
+        ]
+    )
+    loop, page, _runtime, _input = _make_loop(tmp_path)
+    page.subscribe_dialogs = MagicMock()
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "must be 'accept' or 'dismiss'" in result["steps"][0]["failure_reason"]
+    page.subscribe_dialogs.assert_not_called()
+
+
+async def test_dialog_accept_flow(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="dialog",
+                        decision="accept",
+                        then={"action": "click", "selector": "#x"},
+                    )
+                ]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    sub = MagicMock()
+    sub.wait = AsyncMock(return_value={"params": {"type": "confirm"}})
+    sub.close = MagicMock()
+    page.subscribe_dialogs = MagicMock(return_value=sub)
+    page.handle_dialog = AsyncMock()
+    input_domain.click = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "passed"
+    desc = result["steps"][0]["actions"][0]["description"]
+    assert desc.startswith("Dialog accepted (confirm)")
+    page.handle_dialog.assert_awaited_once_with(True, None)
+
+
+async def test_dialog_no_dialog_opened_fails(tmp_path, monkeypatch):
+    flow = _flow(
+        [
+            FlowStepSpec(
+                actions=[
+                    FlowAction(
+                        action="dialog",
+                        decision="dismiss",
+                        then={"action": "click", "selector": "#x"},
+                    )
+                ]
+            )
+        ]
+    )
+    loop, page, _runtime, input_domain = _make_loop(tmp_path)
+    sub = MagicMock()
+    sub.wait = AsyncMock(side_effect=TimeoutError("timed out"))
+    sub.close = MagicMock()
+    page.subscribe_dialogs = MagicMock(return_value=sub)
+    input_domain.click = AsyncMock(return_value=True)
+    result = await loop.run_flow(flow)
+    assert result["status"] == "failed"
+    assert "did not open" in result["steps"][0]["failure_reason"]

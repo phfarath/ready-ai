@@ -132,6 +132,20 @@ You must output EXACTLY ONE valid JSON object with one of these action types:
 9. No action needed (observation/verification step):
    {"action": "observe"}
 
+10. Upload files (paths must sit under explicit "roots"):
+   {"action": "upload", "selector": "CSS_SELECTOR", "paths": ["/abs/file"], "roots": ["/abs/allowed"]}
+
+11. Download (clicks a link or navigates, then verifies the file):
+   {"action": "download", "selector": "CSS_SELECTOR"}
+
+12. Handle a JS dialog explicitly, then run the nested trigger:
+   {"action": "dialog", "decision": "accept", "then": {"action": "click", "selector": "CSS_SELECTOR"}}
+
+13. Multi-tab (target is an index, targetId, or URL substring):
+   {"action": "wait_for_popup"}
+   {"action": "switch_tab", "target": "/popup"}
+   {"action": "close_tab", "target": "/popup"}
+
 SELECTOR PRIORITY (use the most stable selector available):
 1. [aria-label="..."] or [role="..."] combined with text — MOST STABLE
 2. [data-testid="..."] or [data-cy="..."] — test attributes
@@ -162,6 +176,10 @@ Available action types:
 7. {"action": "scroll_to", "selector": "CSS_SELECTOR"} — scroll element into view
 8. {"action": "wait", "selector": "CSS_SELECTOR"}
 9. {"action": "observe"} — no action
+10. {"action": "upload", "selector": "CSS_SELECTOR", "paths": ["/abs/file"], "roots": ["/abs/allowed"]}
+11. {"action": "download", "selector": "CSS_SELECTOR"}
+12. {"action": "dialog", "decision": "accept", "then": {"action": "click", "selector": "CSS_SELECTOR"}}
+13. {"action": "wait_for_popup"} / {"action": "switch_tab", "target": "/popup"} / {"action": "close_tab", "target": "/popup"}
 
 RETRY STRATEGIES (try in order):
 1. Use a completely different selector (try aria-label, role, data-testid, or text content)
@@ -239,6 +257,10 @@ Available action types:
 7. {{"action": "scroll_to", "selector": "CSS_SELECTOR"}}
 8. {{"action": "wait", "selector": "CSS_SELECTOR"}}
 9. {{"action": "observe"}}
+10. {{"action": "upload", "selector": "CSS_SELECTOR", "paths": ["/abs/file"], "roots": ["/abs/allowed"]}}
+11. {{"action": "download", "selector": "CSS_SELECTOR"}}
+12. {{"action": "dialog", "decision": "accept", "then": {{"action": "click", "selector": "CSS_SELECTOR"}}}}
+13. {{"action": "wait_for_popup"}} / {{"action": "switch_tab", "target": "/popup"}} / {{"action": "close_tab", "target": "/popup"}}
 
 SELECTOR PRIORITY (use the most stable selector available):
 1. [aria-label="..."] or [role="..."] — MOST STABLE
