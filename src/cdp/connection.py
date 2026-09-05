@@ -1081,6 +1081,30 @@ class CDPConnection:
         self.targets.unregister_target(target_id)
         return bool(result.get("success", True))
 
+    async def ensure_targets(self) -> None:
+        """Attach to any listed page/iframe target missing from the registry.
+
+        Auto-attach usually beats us here (recv loop registers on arrival),
+        but out-of-process frames can be listed before their attach event is
+        processed — or arrive with no event at all. Called on demand before
+        resolving an explicit target reference so resolution never depends
+        on event timing.
+        """
+        try:
+            listed = await self.list_targets()
+        except Exception as exc:
+            logger.debug(f"ensure_targets list failed: {exc}")
+            return
+        for target in listed:
+            tid = str(target.get("targetId") or "")
+            if not tid or self.targets.session_for_target(tid) is not None:
+                continue
+            try:
+                await self.attach_to_target(tid)
+            except Exception as exc:
+                if self.targets.session_for_target(tid) is None:
+                    logger.debug(f"ensure_targets attach {tid[:12]} failed: {exc}")
+
     @property
     def is_disconnected(self) -> bool:
         """True when the FSM is in a terminal-ish state.

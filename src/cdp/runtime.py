@@ -188,12 +188,15 @@ class RuntimeDomain:
         result = await self.evaluate(js, session_id=session_id)
         return result if isinstance(result, dict) else {}
 
-    def resolve_target_session(self, ref) -> str:
+    async def resolve_target_session(self, ref) -> str:
         """Resolve a flow-level tab reference to its CDP session id.
 
+        Refreshes the registry from the browser first so out-of-process
+        frames resolve even when their attach event hasn't arrived.
         Raises RuntimeError naming the known targets when unresolvable
         (fail-closed at dispatch/assert time, never silently primary).
         """
+        await self._conn.ensure_targets()
         try:
             return self._conn.targets.resolve(ref).session_id
         except (KeyError, AttributeError) as exc:

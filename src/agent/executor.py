@@ -79,7 +79,7 @@ def action_allowed_under_policy(action_type: str, policy: str) -> bool:
         return False
     return order[level] <= order[policy]
 
-def _resolve_action_session(
+async def _resolve_action_session(
     action: dict, page: PageDomain,
 ) -> tuple[Any | None, str | None]:
     """Resolve an explicit action ``target`` to a CDP session id.
@@ -91,7 +91,7 @@ def _resolve_action_session(
     if ref is None:
         return None, None
     try:
-        return page.resolve_target_session(ref), None
+        return await page.resolve_target_session(ref), None
     except RuntimeError as exc:
         return None, str(exc)
 
@@ -603,7 +603,7 @@ async def _dispatch_action(
                     input_domain,
                     runtime,
                 )
-            session_id, failure = _resolve_action_session(action, page)
+            session_id, failure = await _resolve_action_session(action, page)
             if failure is not None:
                 return f"[Failed] {failure}"
             success = await input_domain.click(selector, session_id=session_id)
@@ -624,7 +624,7 @@ async def _dispatch_action(
         elif action_type == "click_text":
             # Fallback action: click by visible text
             text = action["text"]
-            session_id, failure = _resolve_action_session(action, page)
+            session_id, failure = await _resolve_action_session(action, page)
             if failure is not None:
                 return f"[Failed] {failure}"
             safe_text = json.dumps(text)

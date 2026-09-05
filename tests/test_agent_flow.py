@@ -930,7 +930,7 @@ async def test_click_with_target_routes_session(tmp_path, monkeypatch):
         ]
     )
     loop, page, _runtime, input_domain = _make_loop(tmp_path)
-    page.resolve_target_session = MagicMock(return_value="sess-popup")
+    page.resolve_target_session = AsyncMock(return_value="sess-popup")
     input_domain.click = AsyncMock(return_value=True)
     result = await loop.run_flow(flow)
     assert result["status"] == "passed"
@@ -946,7 +946,7 @@ async def test_click_with_unknown_target_fails_closed(tmp_path, monkeypatch):
         ]
     )
     loop, page, _runtime, input_domain = _make_loop(tmp_path)
-    page.resolve_target_session = MagicMock(
+    page.resolve_target_session = AsyncMock(
         side_effect=RuntimeError("unknown tab 'ghost' (targets: none)")
     )
     input_domain.click = AsyncMock(return_value=True)

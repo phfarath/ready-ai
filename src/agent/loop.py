@@ -552,7 +552,7 @@ class AgenticLoop:
                 target_ref = getattr(assertion, "target", None)
                 if target_ref is not None:
                     try:
-                        target_session = runtime.resolve_target_session(target_ref)
+                        target_session = await runtime.resolve_target_session(target_ref)
                     except RuntimeError as exc:
                         assert_results.append(
                             {
