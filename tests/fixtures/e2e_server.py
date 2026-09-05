@@ -76,7 +76,109 @@ _ROUTES = {
     "/spa": SPA_HTML,
     "/spa/products": SPA_HTML,
     "/shadow": SHADOW_HTML,
+    "/landing": """<!doctype html><html><body>
+<h1>Landing</h1>
+<div id="landing-status">Welcome</div>
+</body></html>""",
+    "/inner": """<!doctype html><html><body>
+<button id="inner-btn">inner action</button>
+<span id="inner-status">idle</span>
+<script>
+document.getElementById('inner-btn').addEventListener('click', () => {
+  document.getElementById('inner-status').textContent = 'done';
+});
+</script>
+</body></html>""",
+    "/xframe": """<!doctype html><html><body>
+<button id="xframe-btn">xframe action</button>
+<span id="xframe-status">idle</span>
+<script>
+window.addEventListener('message', (ev) => {
+  if (ev.data === 'toggle') {
+    const s = document.getElementById('xframe-status');
+    s.textContent = s.textContent === 'idle' ? 'toggled' : 'idle';
+    parent.postMessage('xframe:' + s.textContent, '*');
+  }
+});
+</script>
+</body></html>""",
+    "/popup-opener": """<!doctype html><html><body>
+<h1>Popup opener</h1>
+<button id="opener-btn">Open popup</button>
+<div id="popup-status">closed</div>
+<script>
+// NOTE: no window.open here on purpose. A real window.open hijacks the
+// engine session (recv-loop replaces _session_id on every
+// Target.attachedToTarget page event) — that is T-6 TargetRegistry work.
+// The opener half is exercised here; /popup is driven via direct
+// navigation in the same flow.
+document.getElementById('opener-btn').addEventListener('click', () => {
+  document.getElementById('popup-status').textContent = 'opened';
+});
+</script>
+</body></html>""",
+    "/popup": """<!doctype html><html><body>
+<h1 id="popup-title">Popup page</h1>
+</body></html>""",
+    "/dialog": """<!doctype html><html><body>
+<h1>Dialog fixture (custom modal — native alert/confirm is T-7 scope)</h1>
+<button id="open-modal">Delete item</button>
+<div id="modal" style="display:none">
+  <p>Are you sure?</p>
+  <button id="modal-accept">Accept</button>
+  <button id="modal-dismiss">Dismiss</button>
+</div>
+<div id="dialog-result">pending</div>
+<script>
+document.getElementById('open-modal').addEventListener('click', () => {
+  document.getElementById('modal').style.display = 'block';
+});
+document.getElementById('modal-accept').addEventListener('click', () => {
+  document.getElementById('modal').style.display = 'none';
+  document.getElementById('dialog-result').textContent = 'accepted';
+});
+document.getElementById('modal-dismiss').addEventListener('click', () => {
+  document.getElementById('modal').style.display = 'none';
+  document.getElementById('dialog-result').textContent = 'dismissed';
+});
+</script>
+</body></html>""",
 }
+
+# Redirects must bypass the static map (302, no body).
+_REDIRECTS = {
+    "/redirect": "/landing",
+}
+
+
+def _iframe_html(peer_base: str) -> str:
+    """Parent page: same-origin iframe + cross-origin iframe + sync mirror.
+
+    The mirror button sets ``#iframe-status-mirror`` synchronously (what the
+    flow asserts) and *also* postMessages the cross-origin frame. The reply
+    lands in a separate ``#iframe-reply-log`` div on purpose: sharing the
+    mirror would race the assert (reply arriving first flips the text).
+    """
+    return f"""<!doctype html><html><body>
+<h1>Iframe fixture</h1>
+<iframe id="same-frame" src="/inner"></iframe>
+<iframe id="x-frame" src="{peer_base}/xframe"></iframe>
+<button id="iframe-mirror-btn">Ping xframe</button>
+<div id="iframe-status-mirror">idle</div>
+<div id="iframe-reply-log">none</div>
+<script>
+const xframe = document.getElementById('x-frame');
+window.addEventListener('message', (ev) => {{
+  if (typeof ev.data === 'string' && ev.data.startsWith('xframe:')) {{
+    document.getElementById('iframe-reply-log').textContent = ev.data;
+  }}
+}});
+document.getElementById('iframe-mirror-btn').addEventListener('click', () => {{
+  document.getElementById('iframe-status-mirror').textContent = 'pinged';
+  xframe.contentWindow.postMessage('toggle', '*');
+}});
+</script>
+</body></html>"""
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -85,7 +187,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        body = _ROUTES.get(path)
+        if path in _REDIRECTS:
+            self.send_response(302)
+            self.send_header("Location", _REDIRECTS[path])
+            self.end_headers()
+            return
+        if path == "/iframe":
+            body = _iframe_html(getattr(self.server, "peer_base", ""))
+        else:
+            body = _ROUTES.get(path)
         if body is None:
             self.send_response(404)
             self.end_headers()
@@ -99,8 +209,13 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def start_server(host: str = "127.0.0.1", port: int = 0) -> tuple[ThreadingHTTPServer, threading.Thread, str]:
-    """Start the fixture server on a free port. Returns (server, thread, base_url)."""
+    """Start the fixture server on a free port. Returns (server, thread, base_url).
+
+    ``server.peer_base`` is a writable slot for the cross-origin peer URL
+    (used only by ``/iframe``); conftest wires the two servers together.
+    """
     server = ThreadingHTTPServer((host, port), _Handler)
+    server.peer_base = ""  # type: ignore[attr-defined]
     base_url = f"http://{host}:{server.server_port}"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
