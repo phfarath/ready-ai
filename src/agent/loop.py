@@ -383,6 +383,7 @@ class AgenticLoop:
         # without ever touching the browser.
         start_index = 1
         resumed_from: Optional[str] = None
+        resuming = False
         if self._state.status == "PAUSED":
             if self._state.run_id != self.run_id:
                 raise ValueError(
@@ -399,6 +400,11 @@ class AgenticLoop:
                 )
             start_index = paused_at
             resumed_from = self.resume_from
+            # The checkpoint itself is the resume signal (not the
+            # resume_from path, which is only provenance for the summary):
+            # any run carrying a PAUSED state for its own run_id continues
+            # at the paused step instead of restarting.
+            resuming = True
 
         async with Span(name="flow_run", attributes={"url": self.url, "flow": flow_name}):
             try:
@@ -438,7 +444,7 @@ class AgenticLoop:
                 # checkpoint (validated above). Earlier steps already passed
                 # in the pre-pause run and are reported as skipped — never
                 # re-executed.
-                if resumed_from is not None:
+                if resuming:
                     for skipped in range(1, start_index):
                         prior = flow.steps[skipped - 1]
                         step_results.append(
@@ -475,7 +481,7 @@ class AgenticLoop:
                     # On resume the paused step runs only after the human
                     # observably satisfied the pause condition; otherwise
                     # the run fails closed instead of running blind.
-                    if index == start_index and resumed_from is not None:
+                    if index == start_index and resuming:
                         ok, reason = await self._check_resume_condition(
                             dict(self._state.resume_when or {}), runtime
                         )
@@ -501,7 +507,7 @@ class AgenticLoop:
                     )
                     if (
                         index == start_index
-                        and resumed_from is not None
+                        and resuming
                         and step_report.get("status") == "paused"
                     ):
                         # The human acted between runs (condition verified

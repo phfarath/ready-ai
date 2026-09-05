@@ -480,8 +480,8 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
         username=args.username or flow.username,
         password=args.password or flow.password,
         run_id=run_id,
-        profile_dir=args.profile_dir,
-        resume_from=args.resume_from,
+        profile_dir=getattr(args, "profile_dir", None),
+        resume_from=getattr(args, "resume_from", None),
     )
 
     try:
