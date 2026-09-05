@@ -234,9 +234,11 @@ class ReadyAI:
             run_id=run_id,
         )
         try:
-            data = await asyncio.wait_for(
-                loop.run_flow(flow_spec, confirm=confirm), timeout=flow.timeout_s
-            )
+            if confirm is None:
+                coro = loop.run_flow(flow_spec)
+            else:
+                coro = loop.run_flow(flow_spec, confirm=confirm)
+            data = await asyncio.wait_for(coro, timeout=flow.timeout_s)
         except asyncio.TimeoutError as exc:
             raise RunTimeoutError(
                 f"flow {flow.name or run_id!r} exceeded its "
