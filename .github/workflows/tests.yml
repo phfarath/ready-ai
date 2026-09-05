@@ -63,6 +63,9 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      - name: "Warm up Chrome (first launch on cold runners exceeds the 10s WS budget)"
+        run: python3 -c "import asyncio, sys; sys.path.insert(0, '.'); from src.cdp.browser import launch_chrome, get_ws_url; p = launch_chrome(port=9333, headless=True, no_sandbox=True); asyncio.run(get_ws_url(9333, retries=30, delay=1.0)); p.terminate(); p.wait(timeout=15); print('chrome-warm')"
+
       - name: "Run real-browser E2E (slice 1 - SPA and Shadow DOM)"
         env:
           CHROME_NO_SANDBOX: "1"
