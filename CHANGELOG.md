@@ -2,6 +2,20 @@
 
 Format: one entry per release. Tags `vX.Y.Z` cut only from `main` after the phase DoD is green.
 
+## v0.3.0 — 2026-09 — Precise, safe core (Fase 2)
+
+- Effect policy + confirmation gates: `read/navigate/write` ceilings, `confirm`
+  steps with idempotency keys, `pending_confirmation` instead of silent runs.
+- Explicit target/session contexts: real pop-up tabs, cross-origin actuation
+  without state crossing (`TargetRegistry`, `wait_for_popup`/`switch_tab`/`close_tab`).
+- Files + dialogs: allowlisted upload (paths masked), verified download
+  (event/name/size/MIME), explicit native-dialog action with nested trigger.
+- Human checkpoint: `await_human` pauses before any actuation with an observable
+  resume condition; resume by `run_id` never re-executes; persistent profiles
+  via `Profile.user_data_dir`; temp profiles always cleaned up (M12).
+- Known pre-existing (tracked, not gating): 3.10 `NotRequired` collection,
+  1× `LLMClient` patch test.
+
 ## v0.2.0 — 2026-09 — Local E2E harness green in CI (Fase 1)
 
 - `tests/e2e/` + `tests/fixtures/e2e_server.py`: 11 real-browser tests (SPA,
