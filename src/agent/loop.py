@@ -339,6 +339,7 @@ class AgenticLoop:
         flow: FlowSpec,
         *,
         confirm: Collection[str] | None = None,
+        allow_llm: bool = True,
     ) -> dict:
         """
         Execute a declarative run-flow and return a structured JSON result.
@@ -358,6 +359,11 @@ class AgenticLoop:
         cascading noise; remaining actions/asserts/extractions of that
         step are reported via ``skipped_asserts``/``skipped_extractions``
         instead of being silently dropped.
+
+        With ``allow_llm=False`` (replay mode, READY-AI-T-PH3A) the run is
+        guaranteed zero-LLM: credential auto-login is refused before the
+        browser even launches, so replay can only rely on cookies or a
+        persistent profile.
 
         A CDP disconnection (surfacing as a "CDP connection lost during
         action" failure) is run-level and terminal: the remaining steps
@@ -384,6 +390,16 @@ class AgenticLoop:
         start_index = 1
         resumed_from: Optional[str] = None
         resuming = False
+        # READY-AI-T-PH3A: replay mode is zero-LLM by construction —
+        # credential auto-login needs an LLM form fill, so it is refused
+        # here, before Chrome launches.
+        if not allow_llm and (
+            self._session.username and self._session.password
+        ):
+            raise ValueError(
+                "replay (allow_llm=False) cannot perform credential "
+                "auto-login; use a persistent profile or cookies instead"
+            )
         if self._state.status == "PAUSED":
             if self._state.run_id != self.run_id:
                 raise ValueError(
@@ -803,6 +819,10 @@ class AgenticLoop:
         pause_report = self._human_checkpoint_report(step, index, key)
         if pause_report is not None:
             return pause_report
+        # READY-AI-T-PH3A: capture the pre-step DOM fingerprint for the
+        # replay manifest. Never raises (unique sentinel on CDP failure),
+        # one cheap evaluate per step, attached to every report shape.
+        fingerprint_pre = await recovery.dom_fingerprint(runtime)
         if key in self._state.confirmed_effects:
             return {
                 "index": index,
@@ -817,6 +837,7 @@ class AgenticLoop:
                 "skipped_extractions": 0,
                 "idempotency_key": key,
                 "confirmation": "idempotent-replay",
+                "fingerprint_pre": fingerprint_pre,
             }
 
         ceiling = step.policy or flow_policy
@@ -838,6 +859,7 @@ class AgenticLoop:
                     "skipped_asserts": len(step.asserts),
                     "skipped_extractions": len(step.extract),
                     "idempotency_key": key,
+                    "fingerprint_pre": fingerprint_pre,
                 }
 
         if step.confirm and key not in confirmations:
@@ -856,6 +878,7 @@ class AgenticLoop:
                 "skipped_asserts": len(step.asserts),
                 "skipped_extractions": len(step.extract),
                 "idempotency_key": key,
+                "fingerprint_pre": fingerprint_pre,
             }
 
         step_retries = step.retries if step.retries is not None else default_retries
@@ -941,6 +964,7 @@ class AgenticLoop:
             "skipped_asserts": skipped_asserts,
             "skipped_extractions": skipped_extractions,
             "idempotency_key": key,
+            "fingerprint_pre": fingerprint_pre,
         }
         if status == "passed" and step.confirm and key not in self._state.confirmed_effects:
             self._state.confirmed_effects.append(key)
