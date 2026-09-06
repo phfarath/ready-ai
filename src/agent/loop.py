@@ -14,6 +14,7 @@ import time
 import websockets
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Collection, Optional
 
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
@@ -91,8 +92,19 @@ KNOWN_SUCCESS_PREFIXES: tuple[str, ...] = (
 )
 
 # Text-bearing actions whose ``text`` parameter and executor description
-# are redacted at the report boundary (fix B1).
-_TEXT_MASKED_ACTIONS: frozenset[str] = frozenset({"type", "click_text"})
+# are redacted at the report boundary (fix B1). ``dialog`` carries prompt
+# input text, which is operator-supplied and stays out of reports.
+_TEXT_MASKED_ACTIONS: frozenset[str] = frozenset({"type", "click_text", "dialog"})
+
+# ─── Human checkpoint (READY-AI-T-PH2D-SESSIONS) ──────────────────────────
+# ``await_human`` is control-plane, not browser actuation: the flow author
+# declares where the machine must stop (SSO/MFA, TOTP, human approval)
+# instead of the engine trying to detect — or automate — the challenge.
+# The step holding it must contain ONLY that action; the run pauses before
+# any actuation of the step, so resuming at the same index is exactly-once.
+HUMAN_CHECKPOINT_ACTION = "await_human"
+# Observable resume-condition keys; anything else fails closed.
+RESUME_CONDITION_KEYS: tuple[str, ...] = ("url_contains", "selector_visible")
 
 
 class AgenticLoop:
@@ -119,6 +131,7 @@ class AgenticLoop:
         cookies_file: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        profile_dir: Optional[str] = None,
         title: Optional[str] = None,
         language: Optional[str] = None,
         run_id: str = "local_run",
@@ -150,6 +163,7 @@ class AgenticLoop:
             cookies_file=cookies_file,
             username=username,
             password=password,
+            profile_dir=profile_dir,
         )
         self._cursor = CursorAnimator()
         self._last_url: Optional[str] = None
@@ -364,6 +378,34 @@ class AgenticLoop:
         run_failed_reason: Optional[str] = None
         confirmations = frozenset(confirm or ())
 
+        # READY-AI-T-PH2D: validate a paused checkpoint BEFORE launching
+        # Chrome — a foreign run_id or an out-of-range index fails closed
+        # without ever touching the browser.
+        start_index = 1
+        resumed_from: Optional[str] = None
+        resuming = False
+        if self._state.status == "PAUSED":
+            if self._state.run_id != self.run_id:
+                raise ValueError(
+                    f"paused checkpoint run_id={self._state.run_id!r} "
+                    f"does not match run_id={self.run_id!r}; refusing "
+                    "to resume another run's checkpoint"
+                )
+            paused_at = int(self._state.current_step_index or 0)
+            if paused_at < 1 or paused_at > len(flow.steps):
+                raise ValueError(
+                    f"paused checkpoint index {paused_at} is outside "
+                    f"the declared {len(flow.steps)} step(s); refusing "
+                    "to resume an incompatible flow"
+                )
+            start_index = paused_at
+            resumed_from = self.resume_from
+            # The checkpoint itself is the resume signal (not the
+            # resume_from path, which is only provenance for the summary):
+            # any run carrying a PAUSED state for its own run_id continues
+            # at the paused step instead of restarting.
+            resuming = True
+
         async with Span(name="flow_run", attributes={"url": self.url, "flow": flow_name}):
             try:
                 async with Span(name="browser_setup"):
@@ -398,7 +440,61 @@ class AgenticLoop:
                 except Exception as exc:
                     logger.debug(f"Flow start network-idle wait failed/timed out: {exc}")
 
+                # READY-AI-T-PH2D: resume a run paused at a human
+                # checkpoint (validated above). Earlier steps already passed
+                # in the pre-pause run and are reported as skipped — never
+                # re-executed.
+                if resuming:
+                    for skipped in range(1, start_index):
+                        prior = flow.steps[skipped - 1]
+                        step_results.append(
+                            {
+                                "index": skipped,
+                                "name": prior.name,
+                                "actions": [],
+                                "asserts": [],
+                                "extracted": [],
+                                "attempts": 0,
+                                "status": "skipped",
+                                "failure_reason": (
+                                    "completed before the human checkpoint "
+                                    f"(run_id={self.run_id}); not re-executed"
+                                ),
+                                "skipped_asserts": len(prior.asserts),
+                                "skipped_extractions": len(prior.extract),
+                                "idempotency_key": (
+                                    prior.idempotency_key
+                                    or f"{self.run_id}:step-{skipped}"
+                                ),
+                            }
+                        )
+                    logger.info(
+                        "═══ Resuming paused run '%s' at step %s/%s",
+                        self.run_id,
+                        start_index,
+                        len(flow.steps),
+                    )
+
                 for index, step in enumerate(flow.steps, start=1):
+                    if index < start_index:
+                        continue
+                    # On resume the paused step runs only after the human
+                    # observably satisfied the pause condition; otherwise
+                    # the run fails closed instead of running blind.
+                    if index == start_index and resuming:
+                        ok, reason = await self._check_resume_condition(
+                            dict(self._state.resume_when or {}), runtime
+                        )
+                        if not ok:
+                            overall_status = "failed"
+                            run_failed_reason = reason
+                            logger.warning(
+                                "Flow resume blocked at step %s: %s", index, reason
+                            )
+                            self._mark_remaining_steps_skipped(
+                                step_results, flow, index - 1
+                            )
+                            break
                     step_report = await self._execute_flow_step(
                         step,
                         index,
@@ -409,7 +505,75 @@ class AgenticLoop:
                         flow_policy=flow.effect_policy,
                         confirmations=confirmations,
                     )
+                    if (
+                        index == start_index
+                        and resuming
+                        and step_report.get("status") == "paused"
+                    ):
+                        # The human acted between runs (condition verified
+                        # above): the checkpoint step is satisfied, not
+                        # re-paused. Exactly-once holds because the pause
+                        # fired before any actuation of this step.
+                        pause = dict(step_report.get("pause") or {})
+                        step_report = {
+                            **step_report,
+                            "status": "passed",
+                            "failure_reason": "",
+                            "confirmation": "human-checkpoint-resumed",
+                            "actions": [
+                                {
+                                    "action": HUMAN_CHECKPOINT_ACTION,
+                                    "params": {
+                                        "reason": pause.get("reason", ""),
+                                        "resume_when": pause.get(
+                                            "resume_when", {}
+                                        ),
+                                    },
+                                    "description": (
+                                        "Human checkpoint satisfied on resume: "
+                                        f"{pause.get('reason', '')}"
+                                    ),
+                                    "attempts": 1,
+                                    "passed": True,
+                                    "failure_reason": "",
+                                }
+                            ],
+                        }
+                        step_report.pop("pause", None)
                     step_results.append(step_report)
+                    if step_report["status"] == "paused":
+                        if overall_status == "passed":
+                            overall_status = "paused"
+                        pause = dict(step_report.get("pause") or {})
+                        run_failed_reason = (
+                            f"paused at step {index} awaiting human: "
+                            f"{pause.get('reason', '')}"
+                        )
+                        logger.warning(
+                            "Flow paused at step %s (%s): %s",
+                            step_report["index"],
+                            step_report["name"],
+                            pause.get("reason", ""),
+                        )
+                        self._state.current_step_index = index
+                        self._state.pause_reason = str(pause.get("reason", ""))
+                        self._state.resume_when = dict(
+                            pause.get("resume_when") or {}
+                        )
+                        self._save_checkpoint(
+                            "PAUSED" if overall_status == "paused" else "FAILED"
+                        )
+                        self._mark_remaining_steps_skipped(
+                            step_results, flow, index
+                        )
+                        # Rewrite the auto-generated skip reasons so the
+                        # result states the pause instead of a disconnect.
+                        for skipped_report in step_results[index:]:
+                            skipped_report["failure_reason"] = (
+                                f"paused at step {index} awaiting human; "
+                                "never executed"
+                            )
+                        break
                     if step_report["status"] == "failed":
                         overall_status = "failed"
                         logger.warning(
@@ -430,11 +594,27 @@ class AgenticLoop:
                         self._mark_remaining_steps_skipped(step_results, flow, index)
                         break
 
-                self._state.status = "FINISHED" if overall_status == "passed" else "FAILED"
+                if overall_status == "passed":
+                    self._state.status = "FINISHED"
+                elif overall_status == "paused":
+                    self._state.status = "PAUSED"
+                else:
+                    self._state.status = "FAILED"
                 self._save_checkpoint()
 
+                pause_block: Optional[dict] = None
+                for step_report in step_results:
+                    if step_report.get("status") == "paused" and step_report.get("pause"):
+                        pause_block = dict(step_report["pause"])
+                        break
                 result = self._build_flow_result(
-                    flow, flow_name, overall_status, step_results, run_failed_reason
+                    flow,
+                    flow_name,
+                    overall_status,
+                    step_results,
+                    run_failed_reason,
+                    pause=pause_block,
+                    resumed_from=resumed_from,
                 )
                 self._persist_flow_result(result)
                 self._save_flow_metrics(run_ctx, flow_name, overall_status, step_results)
@@ -449,6 +629,147 @@ class AgenticLoop:
                 raise
             finally:
                 await self._session.teardown()
+
+    def _human_checkpoint_report(self, step, index: int, key: str) -> Optional[dict]:
+        """Handle the ``await_human`` control-plane action, if present.
+
+        Returns a ``paused`` step report when the step declares a human
+        checkpoint, a ``failed`` report when the declaration is malformed
+        (not the only action, empty reason/condition, unknown condition
+        key), or None when the step holds no checkpoint.
+
+        Runs BEFORE the idempotency/policy/confirmation gates: pausing
+        actuates nothing in the browser, so no ceiling applies — and the
+        pause fires before any actuation of the step, which is what makes
+        resuming at the same index exactly-once.
+        """
+        actions = list(getattr(step, "actions", []) or [])
+        positions = [
+            pos
+            for pos, action in enumerate(actions)
+            if str(getattr(action, "action", "")) == HUMAN_CHECKPOINT_ACTION
+        ]
+        if not positions:
+            return None
+        base = {
+            "index": index,
+            "name": step.name,
+            "actions": [],
+            "asserts": [],
+            "extracted": [],
+            "attempts": 0,
+            "skipped_asserts": len(step.asserts),
+            "skipped_extractions": len(step.extract),
+            "idempotency_key": key,
+        }
+        if len(actions) != 1:
+            return {
+                **base,
+                "status": "failed",
+                "failure_reason": (
+                    f"step {index}: '{HUMAN_CHECKPOINT_ACTION}' must be the "
+                    "only action in its step; nothing was executed"
+                ),
+            }
+        payload = {
+            k: v
+            for k, v in {
+                **(getattr(actions[0], "model_dump", lambda **kw: {})(
+                    exclude_unset=True
+                )),
+                **(getattr(actions[0], "model_extra", None) or {}),
+            }.items()
+            if v is not None
+        }
+        reason = payload.get("reason")
+        resume_when = payload.get("resume_when")
+        if not isinstance(reason, str) or not reason.strip():
+            return {
+                **base,
+                "status": "failed",
+                "failure_reason": (
+                    f"step {index}: '{HUMAN_CHECKPOINT_ACTION}' requires a "
+                    "non-empty 'reason'; nothing was executed"
+                ),
+            }
+        if not isinstance(resume_when, dict) or not resume_when:
+            return {
+                **base,
+                "status": "failed",
+                "failure_reason": (
+                    f"step {index}: '{HUMAN_CHECKPOINT_ACTION}' requires a "
+                    "non-empty 'resume_when' condition; nothing was executed"
+                ),
+            }
+        unknown = sorted(set(resume_when) - set(RESUME_CONDITION_KEYS))
+        if unknown:
+            return {
+                **base,
+                "status": "failed",
+                "failure_reason": (
+                    f"step {index}: unknown resume condition(s) "
+                    f"{unknown}; allowed: {list(RESUME_CONDITION_KEYS)}"
+                ),
+            }
+        empty = sorted(
+            name for name, value in resume_when.items()
+            if not isinstance(value, str) or not value.strip()
+        )
+        if empty:
+            return {
+                **base,
+                "status": "failed",
+                "failure_reason": (
+                    f"step {index}: resume condition(s) {empty} must be "
+                    "non-empty strings; nothing was executed"
+                ),
+            }
+        return {
+            **base,
+            "status": "paused",
+            "failure_reason": "",
+            "pause": {
+                "reason": reason.strip(),
+                "resume_when": dict(resume_when),
+                "run_id": self.run_id,
+                "step_index": index,
+                "checkpoint": str(self._state_path),
+            },
+        }
+
+    async def _check_resume_condition(
+        self, resume_when: dict, runtime: RuntimeDomain
+    ) -> tuple[bool, str]:
+        """Verify the human actually satisfied the pause condition.
+
+        Checked once on resume, before the paused step executes: every
+        declared condition must hold, otherwise the run fails closed with
+        "resume condition not met" instead of running blind.
+        """
+        unmet: list[str] = []
+        for name, expected in resume_when.items():
+            if name == "url_contains":
+                assertion = SimpleNamespace(
+                    type="url_contains",
+                    selector=None,
+                    expected=expected,
+                    message="",
+                )
+            elif name == "selector_visible":
+                assertion = SimpleNamespace(
+                    type="element_visible",
+                    selector=expected,
+                    expected="",
+                    message="",
+                )
+            else:  # pragma: no cover — rejected at pause time.
+                return False, f"unknown resume condition {name!r}"
+            outcome = await self._evaluate_flow_assertion(assertion, runtime)
+            if not outcome["passed"]:
+                unmet.append(f"{name}={expected!r}")
+        if unmet:
+            return False, f"resume condition not met: {', '.join(unmet)}"
+        return True, ""
 
     async def _execute_flow_step(
         self,
@@ -479,6 +800,9 @@ class AgenticLoop:
         are reported per step.
         """
         key = step.idempotency_key or f"{self.run_id}:step-{index}"
+        pause_report = self._human_checkpoint_report(step, index, key)
+        if pause_report is not None:
+            return pause_report
         if key in self._state.confirmed_effects:
             return {
                 "index": index,
@@ -954,6 +1278,8 @@ class AgenticLoop:
         status: str,
         step_results: list[dict],
         failure_reason: Optional[str] = None,
+        pause: Optional[dict] = None,
+        resumed_from: Optional[str] = None,
     ) -> dict:
         """Assemble the structured JSON result with a run summary."""
         summary = {
@@ -961,6 +1287,7 @@ class AgenticLoop:
             "steps_passed": sum(1 for s in step_results if s["status"] == "passed"),
             "steps_failed": sum(1 for s in step_results if s["status"] == "failed"),
             "steps_skipped": sum(1 for s in step_results if s["status"] == "skipped"),
+            "steps_paused": sum(1 for s in step_results if s["status"] == "paused"),
             "actions_total": sum(len(s["actions"]) for s in step_results),
             "actions_failed": sum(
                 1 for s in step_results for a in s["actions"] if not a["passed"]
@@ -982,6 +1309,7 @@ class AgenticLoop:
             "skipped_extractions_total": sum(
                 int(s["skipped_extractions"]) for s in step_results
             ),
+            "resumed_from": resumed_from,
         }
         return {
             "run_id": self.run_id,
@@ -991,6 +1319,7 @@ class AgenticLoop:
             "steps": step_results,
             "summary": summary,
             "failure_reason": failure_reason,
+            "pause": pause,
         }
 
     def _persist_flow_result(self, result: dict) -> None:

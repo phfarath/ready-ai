@@ -258,9 +258,43 @@ document.getElementById('iframe-mirror-btn').addEventListener('click', () => {{
 </body></html>"""
 
 
+def _sso_html(armed: bool) -> str:
+    """SSO challenge fixture: unauthenticated until the test (playing the
+    human) arms the IdP via POST /sso/arm. The engine never automates the
+    challenge — it pauses at ``await_human`` and resumes after arming."""
+    if armed:
+        return """<!doctype html><html><body>
+<h1>SSO fixture</h1>
+<div id="authed">SSO complete — welcome</div>
+</body></html>"""
+    return """<!doctype html><html><body>
+<h1>SSO fixture</h1>
+<div id="sso-challenge">Redirected to identity provider — complete login in your browser</div>
+<button id="sso-done">I completed the login</button>
+</body></html>"""
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # silence test output
         pass
+
+    def do_POST(self):
+        # Human-simulation endpoints for the SSO checkpoint E2E: the test
+        # plays the human by arming the IdP state between pause and resume.
+        path = self.path.split("?", 1)[0]
+        if path in ("/sso/arm", "/sso/reset"):
+            self.server.sso_armed = path == "/sso/arm"  # type: ignore[attr-defined]
+            raw = b'{"armed": %s}' % (
+                b"true" if self.server.sso_armed else b"false"  # type: ignore[attr-defined]
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        self.send_response(404)
+        self.end_headers()
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -284,6 +318,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/iframe":
             body = _iframe_html(getattr(self.server, "peer_base", ""))
+        elif path == "/sso":
+            body = _sso_html(getattr(self.server, "sso_armed", False))
         else:
             body = _ROUTES.get(path)
         if body is None:

@@ -112,6 +112,15 @@ class RunState:
     # whose confirmed effects already ran. A resume never re-executes them.
     confirmed_effects: list[str] = field(default_factory=list)
 
+    # Human checkpoint (READY-AI-T-PH2D-SESSIONS): a paused run-flow records
+    # WHY it stopped and WHAT the human must satisfy before resuming.
+    # `current_step_index` doubles as the 1-based resume index for flow
+    # mode (the doc pipeline never shares a run with run_flow, so the
+    # field is unambiguous per run). Only operator-authored text lives
+    # here — never cookies, credentials, or typed values.
+    pause_reason: str = ""
+    resume_when: dict[str, Any] = field(default_factory=dict)
+
     def to_file(self, path: str | Path) -> None:
         """Serialize state to a JSON file."""
         try:

@@ -11,8 +11,10 @@ import atexit
 import json
 import logging
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -124,12 +126,17 @@ class BrowserSession:
         cookies_file: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        profile_dir: Optional[str] = None,
     ) -> None:
         self.port = port
         self.headless = headless
         self.cookies_file = cookies_file
         self.username = username
         self.password = password
+        # Explicit persistent Chrome profile (SSO logins survive across
+        # runs). None = ephemeral temp profile owned by this session.
+        self.profile_dir = profile_dir
+        self._temp_profile_dir: Optional[str] = None
 
         self._chrome_proc = None
         self._conn: Optional[CDPConnection] = None
@@ -206,9 +213,17 @@ class BrowserSession:
         """Launch Chrome and establish CDP connection."""
         logger.info("Launching Chrome...")
         try:
+            # READY-AI-T-PH2D (M12): own the temp profile directory instead
+            # of letting launch_chrome create an untracked one — teardown
+            # removes exactly what we created, never an explicit dir.
+            user_data_dir = self.profile_dir
+            if user_data_dir is None:
+                user_data_dir = tempfile.mkdtemp(prefix="ready-ai-chrome-")
+                self._temp_profile_dir = user_data_dir
             self._chrome_proc = launch_chrome(
                 port=self.port,
                 headless=self.headless,
+                user_data_dir=user_data_dir,
             )
             if self._chrome_proc and self._chrome_proc.pid:
                 _register_chrome_pid(self._chrome_proc.pid)
@@ -264,6 +279,14 @@ class BrowserSession:
                 self._chrome_proc = None
                 self._conn = None
             logger.info("Chrome process terminated")
+
+        # READY-AI-T-PH2D (M12): temp profiles are always cleaned up —
+        # including when setup failed before a process existed. An
+        # explicit persistent dir is never touched.
+        temp_dir, self._temp_profile_dir = self._temp_profile_dir, None
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            logger.debug(f"Removed temp Chrome profile: {temp_dir}")
 
     async def inject_cookies(self) -> None:
         """Inject cookies from a JSON file for session authentication."""

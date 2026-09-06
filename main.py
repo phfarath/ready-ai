@@ -162,6 +162,15 @@ def _build_parser() -> argparse.ArgumentParser:
     flow_parser.add_argument("--username", default=None, help="Username for auto-login")
     flow_parser.add_argument("--password", default=None, help="Password for auto-login")
     flow_parser.add_argument("--run-id", default=None, help="Run identifier for result output")
+    flow_parser.add_argument(
+        "--profile-dir", default=None,
+        help="Persistent Chrome profile directory (SSO logins survive; never deleted). "
+        "Omit for an ephemeral temp profile (always cleaned up).",
+    )
+    flow_parser.add_argument(
+        "--resume-from", default=None,
+        help="Resume a run paused at a human checkpoint (path to *_state.json)",
+    )
     flow_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
     # --- EXPORT Command ---
@@ -471,6 +480,8 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
         username=args.username or flow.username,
         password=args.password or flow.password,
         run_id=run_id,
+        profile_dir=getattr(args, "profile_dir", None),
+        resume_from=getattr(args, "resume_from", None),
     )
 
     try:
@@ -491,6 +502,15 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
             summary["steps_passed"],
             summary["steps_total"],
         )
+    elif result["status"] == "paused":
+        pause = result.get("pause") or {}
+        logger.warning(
+            "⏸️  Run-flow paused at step %s awaiting human: %s (resume: --resume-from %s)",
+            (pause.get("step_index")),
+            pause.get("reason"),
+            pause.get("checkpoint"),
+        )
+        sys.exit(2)
     else:
         logger.warning(
             "❌ Run-flow failed (%s/%s steps; %s action(s), %s assert(s))",
