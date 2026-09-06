@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 from typing import Collection, Mapping, Optional
 
 from src.agent.loop import AgenticLoop
@@ -244,5 +245,56 @@ class ReadyAI:
             raise RunTimeoutError(
                 f"flow {flow.name or run_id!r} exceeded its "
                 f"timeout_s={flow.timeout_s:g}s budget"
+            ) from exc
+        return RunResult.from_flow_result(data, output_dir=output_dir)
+
+    async def replay_manifest(
+        self,
+        manifest: str | Path | Mapping,
+        *,
+        browser: Optional[BrowserOptions] = None,
+        confirm: Collection[str] | None = None,
+    ) -> RunResult:
+        """Replay a compiled manifest with zero LLM involvement.
+
+        ``manifest`` is a ``*_replay_manifest.json`` path or an already
+        loaded manifest mapping. The manifest rebuilds the exact declared
+        flow, which runs with ``allow_llm=False``: credential auto-login
+        is refused, so replay relies on cookies or a persistent profile.
+        Pass ``confirm`` for steps the manifest declares with
+        ``confirm=True``, same as :meth:`run_flow`.
+        """
+        from src.agent.replay import manifest_to_flow_spec, read_manifest
+
+        loaded = read_manifest(manifest) if isinstance(manifest, (str, Path)) else manifest
+        flow_spec = manifest_to_flow_spec(loaded)
+        browser = self._merge_browser(browser)
+        credentials = self._resolve_profile(browser.profile)
+        if credentials.username and credentials.password:
+            raise ValueError(
+                "replay cannot use credential auto-login (zero-LLM); use a "
+                "persistent profile or cookies instead"
+            )
+        output_dir = self.output_dir
+        run_id = f"{flow_spec.run_id or 'replay'}-{uuid.uuid4().hex[:8]}"
+        loop = AgenticLoop(
+            goal=flow_spec.name or "replay",
+            url=flow_spec.url,
+            model=self.model,
+            output_dir=output_dir,
+            port=browser.port,
+            headless=browser.headless,
+            cookies_file=credentials.cookies_file,
+            run_id=run_id,
+        )
+        try:
+            if confirm is None:
+                coro = loop.run_flow(flow_spec, allow_llm=False)
+            else:
+                coro = loop.run_flow(flow_spec, allow_llm=False, confirm=confirm)
+            data = await asyncio.wait_for(coro, timeout=300.0)
+        except asyncio.TimeoutError as exc:
+            raise RunTimeoutError(
+                f"replay {run_id!r} exceeded its 300.0s budget"
             ) from exc
         return RunResult.from_flow_result(data, output_dir=output_dir)

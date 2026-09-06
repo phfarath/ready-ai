@@ -171,6 +171,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--resume-from", default=None,
         help="Resume a run paused at a human checkpoint (path to *_state.json)",
     )
+    flow_parser.add_argument(
+        "--replay-manifest", default=None,
+        help="Replay a compiled manifest (zero-LLM) instead of a flow file "
+        "(path to *_replay_manifest.json). --config is still required for "
+        "output/model defaults but its steps are ignored.",
+    )
+    flow_parser.add_argument(
+        "--emit-manifest", action="store_true", default=False,
+        help="Compile a replay manifest from the run when it passes "
+        "(written next to the result JSON).",
+    )
     flow_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose debug logging")
 
     # --- EXPORT Command ---
@@ -466,8 +477,28 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("🏃 ready-ai — Declarative Run-Flow")
 
-    flow = load_flow_config(args.config)
-    run_id = args.run_id or flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
+    # READY-AI-T-PH3A: replay mode runs a compiled manifest with zero LLM.
+    replay_path = getattr(args, "replay_manifest", None)
+    emit_manifest = bool(getattr(args, "emit_manifest", False))
+    if replay_path and emit_manifest:
+        logger.error("❌ --replay-manifest and --emit-manifest are mutually exclusive")
+        sys.exit(1)
+    if replay_path:
+        from src.agent.replay import manifest_to_flow_spec, read_manifest
+
+        try:
+            flow = manifest_to_flow_spec(read_manifest(replay_path))
+        except ValueError as exc:
+            logger.error("❌ Invalid replay manifest: %s", exc)
+            sys.exit(1)
+        run_id = (
+            args.run_id or f"{Path(replay_path).stem.replace('_replay_manifest', '')}-replay"
+        )
+        allow_llm = False
+    else:
+        flow = load_flow_config(args.config)
+        run_id = args.run_id or flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
+        allow_llm = True
 
     loop = AgenticLoop(
         goal=flow.name or "run-flow",
@@ -485,7 +516,10 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
     )
 
     try:
-        result = await loop.run_flow(flow)
+        if allow_llm:
+            result = await loop.run_flow(flow)
+        else:
+            result = await loop.run_flow(flow, allow_llm=False)
     except KeyboardInterrupt:
         logger.info("⚠️  Interrupted by user")
         sys.exit(1)
@@ -494,6 +528,25 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(json.dumps(result, indent=2, default=str))
+
+    if emit_manifest:
+        from src.agent.replay import compile_manifest, write_manifest
+
+        if result["status"] != "passed":
+            logger.error(
+                "❌ --emit-manifest refused: run status is %r, only passed "
+                "flows compile into replay manifests",
+                result["status"],
+            )
+            sys.exit(1)
+        try:
+            manifest_path = write_manifest(
+                compile_manifest(flow, result), args.output, run_id
+            )
+        except ValueError as exc:
+            logger.error("❌ Could not compile replay manifest: %s", exc)
+            sys.exit(1)
+        logger.info("📦 Replay manifest: %s", manifest_path)
 
     summary = result["summary"]
     if result["status"] == "passed":
