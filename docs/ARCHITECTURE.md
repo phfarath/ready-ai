@@ -61,12 +61,16 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
 - `planner.py` — LLM step planning from sanitized DOM (`_parse_steps`).
 - `executor.py` — `execute_step()` with retry budget: `click`, `click_text` (safe
   fallback when the selector misses), `type` (text masked in reports), `press_key`,
-  `navigate`, `scroll`, `scroll_to`, `wait`, `observe`; download expectations evaluated
-  per step. Post-action verification turns visual change into asserted outcome.
+  `navigate`, `scroll`, `scroll_to`, `wait`, `observe`, tab actions
+  (`wait_for_popup`/`switch_tab`/`close_tab`), `upload` (allowlist, paths masked),
+  `download` (event/name/size/MIME verified), `dialog` (explicit, nested trigger);
+  download expectations evaluated per step. Post-action verification turns visual
+  change into asserted outcome.
 - `browser_session.py` — Chrome lifecycle (`setup`/`teardown`/`recover`), cookie
-  injection, credential auto-login for simple forms. Known limits: teardown is not
-  crash-proof on Windows zombie trees (needs `psutil` tree-kill, Fase 2); recovery
-  re-injects cookies but skips credential re-login.
+  injection, credential auto-login for simple forms, persistent `profile_dir`
+  (never deleted) with session-owned temp profiles (always cleaned up, M12);
+  recovery re-injects cookies and re-attempts credential login when available.
+  Remaining limit: no `psutil` process-tree kill on Windows zombie trees.
 - `recovery.py` — `recover_failed_step()`, `recover_locally()`, SPA-drift replan.
 - `critic.py` — completeness review with re-execution rounds (`--max-critic-rounds`).
 - `dom_utils.py` — `dom_fingerprint()` for cheap change detection (feeds the Fase 3
@@ -108,9 +112,9 @@ else `DRIFT_SUSPECTED`) → `healing_publisher` (reviewable PR body) → `report
 
 1. Validation is the first gate (`ready_ai.models` + `Flow` policy ceiling).
 2. Execution is the second (`executor` post-action verification, idempotency keys per
-   step — Fase 2).
+   step — shipped v0.3.0).
 3. Irreversible actions (publish, delete, pay, send) require explicit caller
-   confirmation and evidence in the result — no inference from screen text (Fase 2,
-   `READY-AI-T-PH2-PRECISE-CORE`).
+   confirmation and evidence in the result — no inference from screen text (shipped
+   v0.3.0, `READY-AI-T-PH2-PRECISE-CORE`).
 4. Checkpoints persist progress, never secrets; MFA/SSO pauses for a human and resumes
    on an observable condition.

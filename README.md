@@ -45,10 +45,13 @@ Precision here means: the same flow passes 50/50 on a clean tree and fails loudl
 | Verifiable outcomes (`RunResult` per-step status/asserts/extract) | ✅ shipped (v0.1.0) |
 | Semantic locators with safe-action fallback | ✅ shipped (v0.1.0) |
 | Multi-causal healing gate (2 channels must agree, else `DRIFT_SUSPECTED`) | ✅ shipped (v0.1.0) |
-| Local E2E matrix: SPA, Shadow DOM, cross-origin iframe, pop-up, redirect, download, dialog, CDP drop | 🚧 Fase 1 (`READY-AI-T-PH1-E2E-HARNESS`) |
+| Local E2E matrix: SPA, Shadow DOM, cross-origin iframe, pop-up, redirect, download, dialog, CDP drop | ✅ shipped (v0.2.0) |
+| Effect policy + confirmation gates (ceilings, idempotency, `pending_confirmation`) | ✅ shipped (v0.3.0) |
+| Explicit tab/session contexts, allowlisted upload, verified download, explicit dialogs | ✅ shipped (v0.3.0) |
+| Human checkpoint (`await_human` pause/resume) + persistent profiles, temp cleanup | ✅ shipped (v0.3.0) |
 | Mutation scorecard (detection rate / false-positive rate per channel) | 🚧 Fase 4 (`READY-AI-T-PH4-DIAG-SCORE`) |
 
-Known limits today: OAuth/SSO-only login, MFA/TOTP (human checkpoint only), heavy multi-tab flows, cross-origin iframe coverage — all tracked in Fase 2.
+Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; zero-token replay is Fase 3.
 
 ## What this is / is not
 
