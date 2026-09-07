@@ -49,9 +49,10 @@ Precision here means: the same flow passes 50/50 on a clean tree and fails loudl
 | Effect policy + confirmation gates (ceilings, idempotency, `pending_confirmation`) | ✅ shipped (v0.3.0) |
 | Explicit tab/session contexts, allowlisted upload, verified download, explicit dialogs | ✅ shipped (v0.3.0) |
 | Human checkpoint (`await_human` pause/resume) + persistent profiles, temp cleanup | ✅ shipped (v0.3.0) |
+| Zero-token replay: manifest compile + drift gate + bounded fallback (cost metric in flight) | 🚧 v0.4.0 |
 | Mutation scorecard (detection rate / false-positive rate per channel) | 🚧 Fase 4 (`READY-AI-T-PH4-DIAG-SCORE`) |
 
-Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; zero-token replay is Fase 3.
+Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; zero-token replay ships in v0.4.0 (manifest + drift gate verified, cost metric in flight).
 
 ## What this is / is not
 
@@ -86,6 +87,13 @@ CLI (flows and docs consumers):
 ready-ai run --goal "Smoke the checkout" --url "https://app.example.com" --headless
 ready-ai batch --config example-batch.yaml
 ready-ai api --port 8000 --host 127.0.0.1
+```
+
+Zero-token replay (flows and SDK consumers):
+
+```bash
+ready-ai run-flow --config flow.yaml --emit-manifest
+ready-ai run-flow --config flow.yaml --replay-manifest ./output/<run-id>_replay_manifest.json
 ```
 
 Authenticated runs: prefer a cookies JSON array file (`--cookies-file`, `profiles={...}`); username/password auto-login exists for simple forms only. Never commit `.env`, cookies, or generated output.

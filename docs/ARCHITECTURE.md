@@ -25,7 +25,13 @@ The only import surface consumers need. `src.*` is an implementation detail.
   string or `Profile`), `validate_config()` pre-flight, `run_flow()` (async) with a
   whole-run `timeout_s` budget raising `RunTimeoutError`. Translates public models onto
   the engine's `FlowSpec` (`src/api/models.py`); credentials only ever travel as
-  resolved registry references.
+  resolved registry references. `replay_manifest()` replays a compiled
+  `*_replay_manifest.json` with `allow_llm=False` (zero LLM; credential auto-login
+  refused, cookies/persistent profile only).
+- `ready_ai/replay.py` — SDK-side replay interpretation (no engine imports): per-step
+  fingerprint comparison against the manifest and before/after cost summaries from
+  the observability `run_summary` shape (replay leg is zero, heal cost tracked
+  separately).
 
 ## 2. CDP layer — `src/cdp/`
 
@@ -57,7 +63,15 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
   checkpoints (`state.py`) resumable by `run_id`, crash recovery budget (`MAX_CRASHES`
   via `browser_session.recover()`), and **run-flow mode** (`run_flow()`) executing a
   declarative `FlowSpec` with no screenshots and no docs rendering. ~590 lines:
-  the god-object split is tracked for later, not for the pivot.
+  the god-object split is tracked for later, not for the pivot. In replay mode
+  (`allow_llm=False` + `expected_fingerprints`) each step's live pre-step fingerprint
+  is compared against the manifest BEFORE any action executes: divergence reports
+  failed-with-drift (`DRIFT_SUSPECTED`) without actuating.
+- `replay.py` — deterministic replay manifests: `compile_manifest()` (only verified
+  `passed` runs; credential flows refused), `manifest_to_flow_spec()`,
+  `read/write_manifest()`, and `run_replay()` — zero-LLM pass with the drift gate
+  plus one bounded trust-live agentic re-run on drift/failure; the result always
+  carries a `replay` block (mode, drift, fallback) so divergence stays observable.
 - `planner.py` — LLM step planning from sanitized DOM (`_parse_steps`).
 - `executor.py` — `execute_step()` with retry budget: `click`, `click_text` (safe
   fallback when the selector misses), `type` (text masked in reports), `press_key`,

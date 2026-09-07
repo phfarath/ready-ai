@@ -16,6 +16,7 @@ consumers:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -254,20 +255,34 @@ class ReadyAI:
         *,
         browser: Optional[BrowserOptions] = None,
         confirm: Collection[str] | None = None,
+        fallback_agentic: bool = False,
+        max_fallback_runs: int = 1,
     ) -> RunResult:
-        """Replay a compiled manifest with zero LLM involvement.
+        """Replay a compiled manifest and return the observed result.
 
         ``manifest`` is a ``*_replay_manifest.json`` path or an already
-        loaded manifest mapping. The manifest rebuilds the exact declared
-        flow, which runs with ``allow_llm=False``: credential auto-login
-        is refused, so replay relies on cookies or a persistent profile.
-        Pass ``confirm`` for steps the manifest declares with
-        ``confirm=True``, same as :meth:`run_flow`.
-        """
-        from src.agent.replay import manifest_to_flow_spec, read_manifest
+        loaded manifest mapping. The replay runs the exact declared flow
+        with ``allow_llm=False``: credential auto-login is refused, so
+        replay relies on cookies or a persistent profile. Each step's live
+        fingerprint is compared against the authoring-run fingerprint
+        captured in the manifest (PH3B drift gate): a divergence reports
+        the step with ``DRIFT_SUSPECTED`` instead of actuating silently.
 
-        loaded = read_manifest(manifest) if isinstance(manifest, (str, Path)) else manifest
-        flow_spec = manifest_to_flow_spec(loaded)
+        With ``fallback_agentic=True`` a drifted or failed replay escalates
+        to the bounded agentic heal path — up to ``max_fallback_runs``
+        re-runs with the LLM available. The result carries a ``replay``
+        block (mode, first_status, drift, fallback) and, whenever the
+        ``*_flow_metrics.json`` artifacts are present, a ``cost`` ledger
+        (before/after, PH3C ``zero_token``). Pass ``confirm`` for steps the
+        manifest declares with ``confirm=True``.
+        """
+        from src.agent.replay import read_manifest, run_replay
+
+        loaded = (
+            read_manifest(manifest)
+            if isinstance(manifest, (str, Path))
+            else manifest
+        )
         browser = self._merge_browser(browser)
         credentials = self._resolve_profile(browser.profile)
         if credentials.username and credentials.password:
@@ -276,10 +291,10 @@ class ReadyAI:
                 "persistent profile or cookies instead"
             )
         output_dir = self.output_dir
-        run_id = f"{flow_spec.run_id or 'replay'}-{uuid.uuid4().hex[:8]}"
+        run_id = f"replay-{uuid.uuid4().hex[:8]}"
         loop = AgenticLoop(
-            goal=flow_spec.name or "replay",
-            url=flow_spec.url,
+            goal="replay",
+            url=loaded.get("url") or "",
             model=self.model,
             output_dir=output_dir,
             port=browser.port,
@@ -288,13 +303,51 @@ class ReadyAI:
             run_id=run_id,
         )
         try:
-            if confirm is None:
-                coro = loop.run_flow(flow_spec, allow_llm=False)
-            else:
-                coro = loop.run_flow(flow_spec, allow_llm=False, confirm=confirm)
-            data = await asyncio.wait_for(coro, timeout=300.0)
+            data = await asyncio.wait_for(
+                run_replay(
+                    manifest=loaded,
+                    loop=loop,
+                    allow_fallback=fallback_agentic,
+                    max_fallback_runs=max_fallback_runs,
+                    confirm=confirm,
+                ),
+                timeout=300.0,
+            )
         except asyncio.TimeoutError as exc:
             raise RunTimeoutError(
                 f"replay {run_id!r} exceeded its 300.0s budget"
             ) from exc
-        return RunResult.from_flow_result(data, output_dir=output_dir)
+        cost = self._replay_cost_ledger(
+            loaded.get("source_run_id"), run_id, output_dir
+        )
+        return RunResult.from_flow_result(data, output_dir=output_dir, cost=cost)
+
+    def _replay_cost_ledger(
+        self,
+        source_run_id: Optional[str],
+        run_id: str,
+        output_dir: str | Path,
+    ) -> dict:
+        """Best-effort before/after cost ledger (PH3C) from metrics artifacts.
+
+        Reads ``{run_id}_flow_metrics.json`` (replay) and
+        ``{source_run_id}_flow_metrics.json`` (authoring) from the output
+        dir when they exist, then summarizes before/after via the SDK cost
+        model. Missing artifacts degrade to zeros — never raise.
+        """
+        from ready_ai.replay import summarize_replay_cost
+
+        def _read_metrics(rid: Optional[str]):
+            if not rid:
+                return None
+            candidate = Path(output_dir) / f"{rid}_flow_metrics.json"
+            if not candidate.is_file():
+                return None
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+
+        return summarize_replay_cost(
+            _read_metrics(source_run_id), _read_metrics(run_id)
+        )

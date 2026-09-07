@@ -23,7 +23,7 @@ from ..docs.output import save_docs
 from ..cdp.connection_state import ConnectionState, RECONNECT_HEAL_WAIT_S
 from ..cdp.exceptions import CircuitOpenError, WebSocketDisconnected
 from ..observability import Span, init_run_context, get_metrics, log_event
-from . import planner, executor, critic, recovery
+from . import planner, executor, critic, recovery, replay
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
 from .state import RunState, DocStepState
@@ -340,6 +340,7 @@ class AgenticLoop:
         *,
         confirm: Collection[str] | None = None,
         allow_llm: bool = True,
+        expected_fingerprints: Collection[str] | None = None,
     ) -> dict:
         """
         Execute a declarative run-flow and return a structured JSON result.
@@ -364,6 +365,13 @@ class AgenticLoop:
         guaranteed zero-LLM: credential auto-login is refused before the
         browser even launches, so replay can only rely on cookies or a
         persistent profile.
+
+        With ``expected_fingerprints`` (replay mode, READY-AI-T-PH3B) each
+        step's live pre-step fingerprint is compared against the
+        authoring-run fingerprint from the manifest BEFORE any action
+        executes: a divergence reports the step as failed-with-drift
+        (``DRIFT_SUSPECTED``) without actuating, so the caller can fall
+        back to the agentic path instead of healing silently.
 
         A CDP disconnection (surfacing as a "CDP connection lost during
         action" failure) is run-level and terminal: the remaining steps
@@ -491,6 +499,11 @@ class AgenticLoop:
                         len(flow.steps),
                     )
 
+                # READY-AI-T-PH3B: authoring-run fingerprints for the replay
+                # drift gate (None on plain/agentic runs without a manifest).
+                expected_list = (
+                    list(expected_fingerprints) if expected_fingerprints else None
+                )
                 for index, step in enumerate(flow.steps, start=1):
                     if index < start_index:
                         continue
@@ -520,6 +533,12 @@ class AgenticLoop:
                         runtime,
                         flow_policy=flow.effect_policy,
                         confirmations=confirmations,
+                        expected_fingerprint=(
+                            expected_list[index - 1]
+                            if expected_list is not None
+                            and index - 1 < len(expected_list)
+                            else None
+                        ),
                     )
                     if (
                         index == start_index
@@ -798,15 +817,20 @@ class AgenticLoop:
         *,
         flow_policy: str = "write",
         confirmations: frozenset[str] = frozenset(),
+        expected_fingerprint: Optional[str] = None,
     ) -> dict:
         """Execute one declarative step and build its structured report.
 
         Policy gates run BEFORE any browser actuation, in order:
           1. idempotent replay — key already in ``state.confirmed_effects``
              reports passed without executing;
-          2. ceiling — every declared action must sit at or below the step
+          2. replay drift gate (READY-AI-T-PH3B) — when
+             ``expected_fingerprint`` carries the manifest's authoring-run
+             fingerprint, a diverged live fingerprint reports
+             failed-with-drift (``DRIFT_SUSPECTED``) without executing;
+          3. ceiling — every declared action must sit at or below the step
              policy (inherited from the flow); violations abort fail-closed;
-          3. confirmation — a ``confirm`` step whose key was not passed via
+          4. confirmation — a ``confirm`` step whose key was not passed via
              ``run_flow(confirm={...})`` reports pending_confirmation.
 
         Actions run next (each with its retry budget). If an action
@@ -839,6 +863,29 @@ class AgenticLoop:
                 "confirmation": "idempotent-replay",
                 "fingerprint_pre": fingerprint_pre,
             }
+        # READY-AI-T-PH3B: pre-actuation drift gate — a diverged page never
+        # gets actuated on; the step reports failed-with-drift instead.
+        if expected_fingerprint is not None:
+            drift_report = replay.drifted_step_report(
+                index=index,
+                name=step.name,
+                key=key,
+                expected=expected_fingerprint,
+                actual=fingerprint_pre,
+                asserts_count=len(step.asserts),
+                extract_count=len(step.extract),
+            )
+            if drift_report is not None:
+                metrics = get_metrics()
+                if metrics:
+                    metrics.increment("replay.drift_suspected")
+                log_event(
+                    "replay_drift_suspected",
+                    step=int(index),
+                    expected=expected_fingerprint,
+                    actual=fingerprint_pre,
+                )
+                return drift_report
 
         ceiling = step.policy or flow_policy
         for action in step.actions:
