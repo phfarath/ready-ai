@@ -49,10 +49,10 @@ Precision here means: the same flow passes 50/50 on a clean tree and fails loudl
 | Effect policy + confirmation gates (ceilings, idempotency, `pending_confirmation`) | ✅ shipped (v0.3.0) |
 | Explicit tab/session contexts, allowlisted upload, verified download, explicit dialogs | ✅ shipped (v0.3.0) |
 | Human checkpoint (`await_human` pause/resume) + persistent profiles, temp cleanup | ✅ shipped (v0.3.0) |
-| Zero-token replay: manifest compile + drift gate + bounded fallback (cost metric in flight) | 🚧 v0.4.0 |
+| Zero-token replay: manifest compile + drift gate + bounded fallback + before/after cost | ✅ shipped (v0.4.0) |
 | Mutation scorecard (detection rate / false-positive rate per channel) | 🚧 Fase 4 (`READY-AI-T-PH4-DIAG-SCORE`) |
 
-Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; zero-token replay ships in v0.4.0 (manifest + drift gate verified, cost metric in flight).
+Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; zero-token replay shipped in v0.4.0.
 
 ## What this is / is not
 

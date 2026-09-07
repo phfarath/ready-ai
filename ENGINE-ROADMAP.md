@@ -29,13 +29,13 @@
 - Resultado: `ReadyAI.run()` / `run_sync()` com streaming de eventos, cancelamento cooperativo e exceções públicas tipadas.
 - Resultado: wheel com `py.typed`, tipos na superfície pública, SemVer e CI instalando o wheel em ambiente limpo nas versões Python suportadas.
 
-## Trem de releases (atual: v0.3.0 → 5 releases, uma por fase)
+## Trem de releases (atual: v0.4.0 → 5 releases, uma por fase)
 
 | Release | Fase / Card Cortex | Conteúdo | Status |
 |---------|--------------------|----------|--------|
 | v0.2.0 | Fase 1 / `READY-AI-T-PH1-E2E-HARNESS` | Harness E2E local verde em CI | ✅ shipped |
 | v0.3.0 | Fase 2 / `READY-AI-T-PH2-PRECISE-CORE` | Núcleo preciso e seguro | ✅ shipped |
-| v0.4.0 | Fase 3 / `READY-AI-T-PH3-ZERO-TOKEN-REPLAY` | Replay determinístico zero-token | 🚧 next |
+| v0.4.0 | Fase 3 / `READY-AI-T-PH3-ZERO-TOKEN-REPLAY` | Replay determinístico zero-token | ✅ shipped |
 | v0.5.0 | Fase 4 / `READY-AI-T-PH4-DIAG-SCORE` | Flight recorder + healer scorecard | ⏳ |
 | v0.6.0 | Fase 5 / `READY-AI-T-PH5-PUBLIC-SDK` | SDK público distribuível | ⏳ |
 
