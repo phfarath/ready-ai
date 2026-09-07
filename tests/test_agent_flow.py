@@ -285,7 +285,7 @@ async def test_run_flow_never_instantiates_doc_renderer(tmp_path, monkeypatch):
     runtime.query_selector.return_value = "object-id-1"  # #app exists
 
     with patch("src.agent.loop.DocRenderer") as doc_renderer_cls, patch(
-        "src.agent.loop.LLMClient"
+        "src.llm.client.LLMClient"
     ) as llm_cls:
         doc_renderer_cls.side_effect = AssertionError(
             "DocRenderer must never be instantiated in run-flow mode"

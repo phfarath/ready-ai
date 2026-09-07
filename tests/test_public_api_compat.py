@@ -6,6 +6,7 @@ existing CLI keep working during the transition.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -37,11 +38,17 @@ def test_src_flow_models_still_validate():
 
 def test_cli_help_still_works():
     """DoD 4 — the existing CLI survives the SDK (subcommand help)."""
+    env = dict(os.environ)
+    # The CLI banner renders an emoji; force UTF-8 on the child so the
+    # captured help decodes on platforms whose default encoding is cp1252.
+    env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         [sys.executable, "-m", "main", "--help"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env=env,
         timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
