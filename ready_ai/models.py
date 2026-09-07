@@ -385,6 +385,21 @@ class RunResult(BaseModel):
         default_factory=list, description="Result files written inside the output dir"
     )
     failure_reason: Optional[str] = None
+    replay: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Replay block (mode, first_status, drift, fallback) when the "
+            "run replayed a manifest (PH3B); None for plain run-flow runs"
+        ),
+    )
+    cost: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Before/after replay cost ledger (PH3C): before, after, "
+            "saved_usd, zero_token. Present on manifest replays when the "
+            "metrics artifacts exist; None otherwise"
+        ),
+    )
     pause: Optional[Dict[str, Any]] = Field(
         None,
         description="Human-checkpoint block (reason, resume_when, checkpoint, "
@@ -393,9 +408,20 @@ class RunResult(BaseModel):
 
     @classmethod
     def from_flow_result(
-        cls, data: Mapping[str, Any], output_dir: str | Path
+        cls,
+        data: Mapping[str, Any],
+        output_dir: str | Path,
+        *,
+        replay: Optional[dict[str, Any]] = None,
+        cost: Optional[dict[str, Any]] = None,
     ) -> "RunResult":
-        """Build a sanitized public result from an engine flow result dict."""
+        """Build a sanitized public result from an engine flow result dict.
+
+        ``replay``/``cost`` default to the engine payloads already present
+        in ``data`` (``data["replay"]``) and None respectively, so plain
+        run-flow results carry no ledger while manifest replays can attach
+        both blocks explicitly.
+        """
         steps = [RunStep(**_sanitize(step)) for step in data.get("steps", [])]
         return cls(
             run_id=str(data.get("run_id") or ""),
@@ -407,4 +433,6 @@ class RunResult(BaseModel):
             artifacts=_collect_artifacts(data.get("run_id") or "", output_dir),
             failure_reason=data.get("failure_reason"),
             pause=_sanitize(data.get("pause")),
+            replay=replay if replay is not None else _sanitize(data.get("replay")),
+            cost=cost,
         )
