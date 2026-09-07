@@ -2,6 +2,24 @@
 
 Format: one entry per release. Tags `vX.Y.Z` cut only from `main` after the phase DoD is green.
 
+## v0.4.0 — 2026-09 — Zero-token deterministic replay (Fase 3)
+
+- Manifest compile: verified (`passed`) runs compile to versioned
+  `*_replay_manifest.json` (actions + asserts + fingerprints + idempotency
+  keys); credential flows refused, manifests carry no secrets of their own.
+- Zero-LLM replay: `run_flow(allow_llm=False)`, CLI
+  `run-flow --emit-manifest/--replay-manifest`, SDK `ReadyAI.replay_manifest()`.
+- Drift gate + bounded fallback: per-step fingerprint compared against the
+  manifest BEFORE acting (`DRIFT_SUSPECTED`, never silent heal); divergence
+  or failed step triggers one trust-live agentic re-run, recorded in the
+  `replay` result block (mode, drift, fallback).
+- Before/after cost: authoring (LLM) vs replay (zero) from the existing
+  observability counters, heal cost tracked separately.
+- E2E matrix 23/24 green incl. replay suites; unit replay scope 40/40.
+- Known pre-existing (tracked, not gating): chrome-kill disconnect timing on
+  cold Chrome (Windows; CI warms up), 1× `LLMClient` patch test, cp1252
+  emoji encoding in 2 CLI/docs tests on Windows.
+
 ## v0.3.0 — 2026-09 — Precise, safe core (Fase 2)
 
 - Effect policy + confirmation gates: `read/navigate/write` ceilings, `confirm`

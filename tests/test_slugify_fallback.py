@@ -63,7 +63,9 @@ class TestSlugifyExportIntegration:
     def _write_doc(self, run_dir, title):
         run_dir.mkdir(parents=True, exist_ok=True)
         docs_md = run_dir / "docs.md"
-        docs_md.write_text(f"# {title}\n\nSome content.\n")
+        docs_md.write_text(
+            f"# {title}\n\nSome content.\n", encoding="utf-8"
+        )
         (run_dir / "screenshots").mkdir(parents=True, exist_ok=True)
         return docs_md
 
