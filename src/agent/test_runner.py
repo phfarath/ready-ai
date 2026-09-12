@@ -22,6 +22,7 @@ from ..cdp.connection import CDPConnection
 from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
+from ..docs.output import render_llm_calls_section
 from ..docs.parser import parse_doc
 from ..docs.report_html import render_html_report
 from ..docs.terminal_output import ProgressPrinter
@@ -30,6 +31,7 @@ from ..llm.client import LLMClient
 from . import executor
 from .browser_session import _register_chrome_pid, _unregister_chrome_pid
 from .dom_utils import dom_fingerprint as _dom_fingerprint
+from .loop import LLMCallStats, _instrument_llm
 from .state import DocStepState, RunState
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,7 @@ class DocTestReport:
     steps_outdated: list[int] = field(default_factory=list)
     steps_broken: list[int] = field(default_factory=list)
     healing_report: Optional["object"] = None  # HealingReport after auto-heal
+    llm_calls: Optional[dict[str, int]] = None  # READY-AI-T-US2: phase → count
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -135,6 +138,7 @@ class DocTestRunner:
 
         self._chrome_proc = None
         self._conn: Optional[CDPConnection] = None
+        self._llm_stats: Optional[LLMCallStats] = None  # READY-AI-T-US2
 
     async def run(self) -> DocTestReport:
         """Execute the documentation test and return a DocTestReport."""
@@ -174,7 +178,10 @@ class DocTestRunner:
             page = PageDomain(self._conn)
             input_domain = InputDomain(self._conn)
             runtime = RuntimeDomain(self._conn)
-            llm = LLMClient(model=self.model)
+            # READY-AI-T-US2: count LLM calls per phase (healer counts flow
+            # through this same proxy — DocAutoHealer receives it untouched).
+            self._llm_stats = LLMCallStats()
+            llm = _instrument_llm(LLMClient(model=self.model), self._llm_stats)
 
             await page.enable()
 
@@ -251,9 +258,13 @@ class DocTestRunner:
             await self._send_notifications(report, output_path)
 
             # 10. Save report
+            report.llm_calls = self._llm_stats.as_dict()
+            logger.info("LLM calls by phase: %s", self._llm_stats)
             report.to_file(output_path / "test_report.json")
+            summary_text = report.summary()
+            summary_text += "\n" + render_llm_calls_section(report.llm_calls) + "\n"
             (output_path / "test_summary.txt").write_text(
-                report.summary(), encoding="utf-8"
+                summary_text, encoding="utf-8"
             )
             render_html_report(report, output_path / "test_report.html")
             logger.info(f"Test report saved to {output_path}")
