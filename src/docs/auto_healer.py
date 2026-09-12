@@ -9,11 +9,19 @@ the healer can:
 4. Recover broken selectors via LLM
 
 This transforms the system from "detection" to "auto-correction".
+
+Healing gate: screenshot/annotation healing only runs when ≥2 drift
+channels of distinct causal natures agree (visual render change +
+structural DOM change). Single-channel drift is reclassified as
+DRIFT_SUSPECTED for human review instead of being healed.
 """
+
+from __future__ import annotations
 
 import base64
 import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -25,6 +33,9 @@ if TYPE_CHECKING:
     from ..llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_HEAL_GATE_MIN_CHANNELS = 2
+HEAL_GATE_MIN_CHANNELS_ENV = "READY_AI_HEAL_GATE_MIN_CHANNELS"
 
 
 @dataclass
@@ -40,10 +51,91 @@ class HealResult:
 
 
 @dataclass
+class DriftGateDecision:
+    """Outcome of the multi-channel drift gate for a single step."""
+    eligible: bool
+    channels_agreeing: list[str] = field(default_factory=list)
+    channels_conflicting: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DriftGateLogEntry:
+    """Per-step record of the healing gate decision."""
+    step_number: int
+    decision: str  # "healed" | "suspected"
+    channels_agreeing: list[str] = field(default_factory=list)
+    channels_conflicting: list[str] = field(default_factory=list)
+
+
+def _resolve_min_channels(min_channels: int | None) -> int:
+    """Resolve the minimum number of agreeing drift channels required.
+
+    An explicit ``min_channels`` argument takes precedence. Otherwise the
+    ``READY_AI_HEAL_GATE_MIN_CHANNELS`` environment variable is read
+    (default 2). Invalid values fall back to the default; values below 1
+    clamp to 1 so the gate never requires zero agreement.
+    """
+    if min_channels is not None:
+        return max(1, min_channels)
+    raw = os.environ.get(HEAL_GATE_MIN_CHANNELS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_HEAL_GATE_MIN_CHANNELS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_HEAL_GATE_MIN_CHANNELS
+    return max(1, value)
+
+
+def evaluate_drift_gate(
+    visual_similarity: float,
+    threshold: float,
+    dom_changed: bool,
+    *,
+    min_channels: int | None = None,
+) -> DriftGateDecision:
+    """Decide whether observed drift justifies auto-healing a step.
+
+    Two independent causal channels must agree before auto-heal runs:
+
+    - ``"visual"``: rendered pixels differ from baseline
+      (``visual_similarity < threshold``).
+    - ``"structural"``: DOM fingerprint changed vs baseline
+      (``dom_changed`` is True).
+
+    With fewer than ``min_channels`` channels agreeing (e.g., only one
+    fired), the caller should reclassify the step as DRIFT_SUSPECTED for
+    human review instead of healing it.
+
+    Configuration: env var ``READY_AI_HEAL_GATE_MIN_CHANNELS`` sets the
+    minimum number of agreeing channels (default 2). Invalid values fall
+    back to the default; values below 1 clamp to 1.
+    """
+    agreeing: list[str] = []
+    conflicting: list[str] = []
+    if visual_similarity < threshold:
+        agreeing.append("visual")
+    else:
+        conflicting.append("visual")
+    if dom_changed:
+        agreeing.append("structural")
+    else:
+        conflicting.append("structural")
+
+    limit = _resolve_min_channels(min_channels)
+    return DriftGateDecision(
+        eligible=len(agreeing) >= limit,
+        channels_agreeing=agreeing,
+        channels_conflicting=conflicting,
+    )
+
+
+@dataclass
 class HealingReport:
     """Summary of all healing actions taken."""
     steps_healed: list[HealResult] = field(default_factory=list)
     doc_rewritten: bool = False
+    gate_log: list[DriftGateLogEntry] = field(default_factory=list)
 
     @property
     def total_healed(self) -> int:
@@ -51,6 +143,11 @@ class HealingReport:
             1 for r in self.steps_healed
             if r.screenshot_updated or r.annotation_updated or r.selector_recovered
         )
+
+    @property
+    def steps_suspected(self) -> list[int]:
+        """Step numbers flagged DRIFT_SUSPECTED by the gate (not healed)."""
+        return [e.step_number for e in self.gate_log if e.decision == "suspected"]
 
 
 _ANNOTATOR_PROMPT = """You are a technical writer creating user documentation. Given a screenshot of a SaaS application and the step being documented, write a clear, concise annotation.
@@ -95,13 +192,49 @@ class DocAutoHealer:
         self,
         report: "DocTestReport",
     ) -> HealingReport:
-        """Heal all drifted steps in a test report."""
+        """Heal drifted steps that pass the multi-channel drift gate.
+
+        Each DRIFT step is evaluated by ``evaluate_drift_gate`` before any
+        healing happens. Steps confirmed by ≥2 independent channels are
+        healed; single-channel drift is reclassified as ``DRIFT_SUSPECTED``
+        on the result (docs.md untouched) and recorded in ``gate_log``.
+        """
         healing = HealingReport()
 
         for result in report.results:
-            if result.status == "DRIFT" and result.new_screenshot_path:
+            if result.status != "DRIFT" or not result.new_screenshot_path:
+                continue
+
+            decision = evaluate_drift_gate(
+                result.visual_similarity,
+                report.threshold,
+                result.dom_changed,
+            )
+
+            if decision.eligible:
                 heal_result = await self.heal_step(result)
                 healing.steps_healed.append(heal_result)
+                logger.info(
+                    f"  Step {result.step_number}: gate healed "
+                    f"(agreeing={decision.channels_agreeing})"
+                )
+            else:
+                result.status = "DRIFT_SUSPECTED"
+                logger.info(
+                    f"  Step {result.step_number}: single-channel drift "
+                    f"(agreeing={decision.channels_agreeing}, "
+                    f"conflicting={decision.channels_conflicting}) — "
+                    f"flagged DRIFT_SUSPECTED for human review"
+                )
+
+            healing.gate_log.append(
+                DriftGateLogEntry(
+                    step_number=result.step_number,
+                    decision="healed" if decision.eligible else "suspected",
+                    channels_agreeing=decision.channels_agreeing,
+                    channels_conflicting=decision.channels_conflicting,
+                )
+            )
 
         # Rewrite docs.md if any changes were made
         if healing.total_healed > 0:
@@ -112,7 +245,15 @@ class DocAutoHealer:
         return healing
 
     async def heal_step(self, result: "StepTestResult") -> HealResult:
-        """Heal a single drifted step: update screenshot and annotation."""
+        """Heal a single drifted step: update screenshot and annotation.
+
+        Guardrail (assertion-lock): this method ONLY replaces the baseline
+        screenshot file and the free-text annotation between the screenshot
+        line and the technical-details block in docs.md. The step's expected
+        outcome, recorded action/assertion text, and step structure are never
+        modified. Selector recovery (``recover_selector``) is a separate,
+        gate-exempt path verified upstream by re-execution.
+        """
         heal = HealResult(step_number=result.step_number)
 
         try:

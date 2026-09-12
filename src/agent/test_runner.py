@@ -43,7 +43,7 @@ class StepTestResult:
     """Result of testing a single documented step."""
     step_number: int
     title: str
-    status: str  # "PASSED" | "DRIFT" | "BROKEN" | "HEALED"
+    status: str  # "PASSED" | "DRIFT" | "DRIFT_SUSPECTED" | "BROKEN" | "HEALED"
     visual_similarity: float
     dom_changed: bool
     new_screenshot_path: Optional[str] = None
@@ -76,6 +76,7 @@ class DocTestReport:
         total = len(self.results)
         passed = sum(1 for r in self.results if r.status == "PASSED")
         drift = sum(1 for r in self.results if r.status == "DRIFT")
+        suspected = sum(1 for r in self.results if r.status == "DRIFT_SUSPECTED")
         broken = sum(1 for r in self.results if r.status == "BROKEN")
         lines = [
             f"Test Report: {self.overall_status}",
@@ -84,6 +85,8 @@ class DocTestReport:
             f"  Threshold: {self.threshold}",
             f"  Results: {passed}/{total} passed, {drift} drift, {broken} broken",
         ]
+        if suspected:
+            lines.append(f"  {suspected} drift-suspected (awaiting human review)")
         if self.steps_outdated:
             lines.append(f"  Outdated steps: {self.steps_outdated}")
         if self.steps_broken:
@@ -551,6 +554,9 @@ class DocTestRunner:
                 "passed": sum(1 for r in report.results if r.status == "PASSED"),
                 "drift": len(report.steps_outdated),
                 "broken": len(report.steps_broken),
+                "drift_suspected": sum(
+                    1 for r in report.results if r.status == "DRIFT_SUSPECTED"
+                ),
                 "threshold": report.threshold,
             }
 
