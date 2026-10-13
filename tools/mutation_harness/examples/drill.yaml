@@ -1,0 +1,48 @@
+# Example mutation drill config — point --url at your test/staging app.
+# Selector names below are illustrative; adapt to the target app.
+app_url: ""
+threshold: 0.95
+settle_ms: 150
+mutations:
+  # --- semantic: real product changes, must be detected ---
+  - id: rename-cta
+    kind: semantic
+    op: set_text
+    selector: "#cta"
+    value: "Confirm order"
+    description: "Rename the primary action button"
+
+  - id: drop-panel
+    kind: semantic
+    op: remove
+    selector: "#promo-panel"
+    description: "Remove a secondary panel entirely"
+
+  - id: move-details
+    kind: semantic
+    op: move_after
+    selector: "#details"
+    to: "#footer"
+    description: "Relocate the details section below the footer marker"
+
+  - id: tab-state-flip
+    kind: semantic
+    op: set_attribute
+    selector: "#tab-1"
+    attr: "data-state"
+    value: "open"
+    description: "Flip interactive state without visible change (DOM-only)"
+
+  # --- noise: cosmetic churn, should NOT be flagged ---
+  - id: clock-churn
+    kind: noise
+    op: set_text
+    selector: "#clock"
+    value: "{{now}}"
+    description: "Timestamp widget updating"
+
+  - id: promo-banner
+    kind: noise
+    op: insert_banner
+    value: "Seasonal offer {{rand}}"
+    description: "Ephemeral promo banner rotation"
