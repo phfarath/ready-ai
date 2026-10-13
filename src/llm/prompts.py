@@ -132,6 +132,16 @@ You must output EXACTLY ONE valid JSON object with one of these action types:
 9. No action needed (observation/verification step):
    {"action": "observe"}
 
+10. Upload local files into a file input (requires READY_AI_UPLOAD_ALLOWLIST to be configured; paths outside the allowlist are rejected):
+   {"action": "upload_file", "selector": "input[type=file]", "paths": ["ABSOLUTE_PATH_1"]}
+
+11. Handle a JavaScript dialog (alert/confirm/prompt) — REQUIRES an explicit accept decision; use "prompt_text" only to answer accepted prompts:
+   {"action": "handle_dialog", "accept": true}
+   {"action": "handle_dialog", "accept": false}
+
+12. Wait for a download to start and complete, optionally validating declared criteria:
+   {"action": "wait_for_download", "filename_contains": "report", "timeout": 10, "max_bytes": 10485760, "min_bytes": 1}
+
 SELECTOR PRIORITY (use the most stable selector available):
 1. [aria-label="..."] or [role="..."] combined with text — MOST STABLE
 2. [data-testid="..."] or [data-cy="..."] — test attributes
@@ -162,6 +172,9 @@ Available action types:
 7. {"action": "scroll_to", "selector": "CSS_SELECTOR"} — scroll element into view
 8. {"action": "wait", "selector": "CSS_SELECTOR"}
 9. {"action": "observe"} — no action
+10. {"action": "upload_file", "selector": "input[type=file]", "paths": ["ABSOLUTE_PATH_1"]} — upload files (depends on the configured upload allowlist; outside paths are rejected)
+11. {"action": "handle_dialog", "accept": true} — handle an open JavaScript dialog; accept MUST be explicit true/false (optional "prompt_text" answers accepted prompts)
+12. {"action": "wait_for_download", "filename_contains": "report", "timeout": 10, "min_bytes": 1, "max_bytes": 10485760} — wait for download completion with optional criteria
 
 RETRY STRATEGIES (try in order):
 1. Use a completely different selector (try aria-label, role, data-testid, or text content)
@@ -239,6 +252,9 @@ Available action types:
 7. {{"action": "scroll_to", "selector": "CSS_SELECTOR"}}
 8. {{"action": "wait", "selector": "CSS_SELECTOR"}}
 9. {{"action": "observe"}}
+10. {{"action": "upload_file", "selector": "input[type=file]", "paths": ["ABSOLUTE_PATH_1"]}} — depends on the configured upload allowlist; outside paths are rejected
+11. {{"action": "handle_dialog", "accept": true}} — requires an explicit accept true/false (optional "prompt_text" answers accepted prompts)
+12. {{"action": "wait_for_download", "filename_contains": "report", "timeout": 10, "min_bytes": 1, "max_bytes": 10485760}}
 
 SELECTOR PRIORITY (use the most stable selector available):
 1. [aria-label="..."] or [role="..."] — MOST STABLE

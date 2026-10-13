@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import tempfile
 import websockets
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
@@ -634,6 +635,55 @@ async def _dispatch_action(
 
         elif action_type == "observe":
             return "Observing current page state"
+
+        elif action_type == "upload_file":
+            selector = action["selector"]
+            paths = action.get("paths") or []
+            uploaded = await input_domain.set_file_input_files(selector, paths)
+            # Deliberately no local paths in the description.
+            return f"Uploaded {len(uploaded)} file(s) to {selector}"
+
+        elif action_type == "handle_dialog":
+            if "accept" not in action or action.get("accept") is None:
+                return (
+                    "[Error] handle_dialog: 'accept' must be explicitly "
+                    "true or false — dialogs are never answered by default"
+                )
+            accept = bool(action.get("accept"))
+            prompt_text = str(action.get("prompt_text") or "")
+            dialog_timeout = float(action.get("timeout", 5.0))
+            dialog = await page.wait_for_dialog(timeout=dialog_timeout)
+            if dialog is None:
+                return "[Failed] No JavaScript dialog opened to handle"
+            await page.handle_dialog(accept=accept, prompt_text=prompt_text)
+            verb = "accepted" if accept else "dismissed"
+            dialog_kind = str(dialog.details.get("dialog_type", "unknown"))
+            message = str(dialog.details.get("message", ""))
+            if len(message) > 80:
+                message = message[:77] + "..."
+            return f"{dialog_kind} dialog {verb}: {message}"
+
+        elif action_type == "wait_for_download":
+            download_dir = tempfile.mkdtemp(prefix="ready-ai-downloads-")
+            await page.enable_downloads(download_dir)
+            item = await page.wait_for_download_complete(
+                filename_contains=action.get("filename_contains"),
+                timeout=float(action.get("timeout", 10.0)),
+                max_bytes=action.get("max_bytes"),
+                min_bytes=action.get("min_bytes"),
+            )
+            if item.passed:
+                filename = str(item.details.get("filename", ""))
+                return f"Download completed: {filename}"
+            observed = item.observed
+            details_summary = ", ".join(
+                f"{key}={item.details[key]}"
+                for key in ("state", "mimeType")
+                if key in item.details
+            )
+            if details_summary:
+                observed = f"{observed} ({details_summary})"
+            return f"[Failed] wait_for_download: {observed}"
 
         else:
             logger.warning(f"Unknown action type: {action_type}")

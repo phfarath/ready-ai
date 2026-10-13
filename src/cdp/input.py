@@ -8,12 +8,31 @@ and Input.dispatchKeyEvent for typing.
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Optional
 
 from .connection import CDPConnection
 from .accessibility import ActionValidator
 
 logger = logging.getLogger(__name__)
+
+# Uploads are fail-closed: when this env var is unset or empty, every
+# upload is rejected. Roots must be absolute and are separated by
+# os.pathsep (';' on Windows, ':' on POSIX).
+ENV_UPLOAD_ALLOWLIST = "READY_AI_UPLOAD_ALLOWLIST"
+
+
+def _resolve_upload_allowlist() -> list[Path]:
+    """Parse the configured upload roots. Empty/unset means no uploads."""
+    raw = os.environ.get(ENV_UPLOAD_ALLOWLIST, "")
+    roots: list[Path] = []
+    for chunk in raw.split(os.pathsep):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        roots.append(Path(chunk).resolve())
+    return roots
 
 
 class InputDomain:
@@ -390,3 +409,56 @@ class InputDomain:
         except Exception as exc:
             logger.warning(f"Drag failed for {selector}: {exc}")
             return False
+
+    async def set_file_input_files(
+        self, selector: str, paths: list[str]
+    ) -> list[str]:
+        """Attach local files to a file <input> via DOM.setFileInputFiles.
+
+        Security policy (fail-closed): every path must resolve under one of
+        the absolute roots configured in ``READY_AI_UPLOAD_ALLOWLIST``; an
+        unset or empty variable rejects ALL uploads. Validation happens
+        before any CDP traffic. Logs and errors carry basenames and counts
+        only — full local paths never enter logs.
+        """
+        roots = _resolve_upload_allowlist()
+        if not roots:
+            raise ValueError(
+                f"upload rejected: {ENV_UPLOAD_ALLOWLIST} is unset or empty; "
+                "uploads are disabled"
+            )
+        if not paths:
+            raise ValueError("upload rejected: no files provided")
+
+        resolved: list[str] = []
+        for raw_path in paths:
+            candidate = Path(raw_path)
+            basename = candidate.name
+            if not candidate.exists():
+                raise ValueError(f"upload rejected: file not found: {basename}")
+            if not candidate.is_file():
+                raise ValueError(f"upload rejected: not a regular file: {basename}")
+            absolute = candidate.resolve()
+            if not any(absolute.is_relative_to(root) for root in roots):
+                allowed = ", ".join(str(root) for root in roots)
+                raise ValueError(
+                    f"upload rejected: {basename} is outside the upload allowlist "
+                    f"(allowed roots: {allowed})"
+                )
+            resolved.append(str(absolute))
+
+        doc = await self._conn.send("DOM.getDocument", {"depth": 1})
+        root_id = doc["root"]["nodeId"]
+        result = await self._conn.send(
+            "DOM.querySelector", {"nodeId": root_id, "selector": selector}
+        )
+        node_id = result.get("nodeId", 0)
+        if node_id == 0:
+            raise ValueError(f"upload rejected: element not found: {selector}")
+
+        await self._conn.send(
+            "DOM.setFileInputFiles",
+            {"files": resolved, "nodeId": node_id},
+        )
+        logger.info(f"Uploaded {len(resolved)} file(s) to {selector}")
+        return resolved

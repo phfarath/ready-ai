@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -840,6 +841,212 @@ class PageDomain:
         finally:
             subscription.close()
 
+    async def wait_for_dialog(
+        self,
+        *,
+        timeout: float = 10.0,
+        after_sequence: Optional[int] = None,
+    ) -> Optional[PassiveEvidence]:
+        """Observe a native JavaScript dialog (alert/confirm/prompt/beforeunload).
+
+        Returns sanitized evidence about the dialog; the caller decides the
+        explicit accept/dismiss action via :meth:`handle_dialog`. Chrome blocks
+        the page while a dialog is open, so a missing dialog within ``timeout``
+        yields ``None`` instead of an exception.
+        """
+        cursor = self.event_cursor if after_sequence is None else after_sequence
+        subscription = self._conn.subscribe_events(
+            context=self.context if self._is_scoped() else None,
+            event_name="Page.javascriptDialogOpening",
+            after_sequence=cursor,
+        )
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return None
+                try:
+                    event = await subscription.wait(remaining)
+                except TimeoutError:
+                    return None
+                params = event.get("params") or {}
+                dialog_type = str(params.get("type") or "unknown")
+                return PassiveEvidence(
+                    kind="dialog",
+                    passed=True,
+                    observed=f"{dialog_type} dialog opened",
+                    details={
+                        "dialog_type": dialog_type,
+                        "message": str(params.get("message") or ""),
+                    },
+                )
+        finally:
+            subscription.close()
+
+    async def handle_dialog(self, *, accept: bool, prompt_text: str = "") -> None:
+        """Answer the currently open JavaScript dialog with an explicit action.
+
+        ``promptText`` is only included when non-empty; empty answers must
+        not inject unintended input into the dialog response.
+        """
+        params: dict[str, Any] = {"accept": accept}
+        if prompt_text:
+            params["promptText"] = prompt_text
+        await self._conn.send("Page.handleJavaScriptDialog", params)
+
+    async def enable_downloads(self, download_dir: str | Path) -> None:
+        """Route downloads to ``download_dir`` with progress events enabled.
+
+        Uses ``allowAndName`` so files land under unique names instead of
+        silently overwriting user data. Limitation: CDPConnection.send always
+        attaches the cached page session id when one exists (connection.py
+        keeps no browser-level channel), so this command travels through the
+        page session. Chrome accepts Browser-domain commands routed via a
+        page session in flatten mode; a dedicated browser-level send path
+        would be required only if that ever changes.
+        """
+        # The local download path never enters logs — behavior and outcome only.
+        logger.debug("Download behavior set to allowAndName with progress events")
+        await self._conn.send(
+            "Browser.setDownloadBehavior",
+            {
+                "behavior": "allowAndName",
+                "downloadPath": str(Path(download_dir)),
+                "eventsEnabled": True,
+            },
+        )
+
+    async def wait_for_download_complete(
+        self,
+        *,
+        filename_contains: Optional[str] = None,
+        timeout: float = 30.0,
+        max_bytes: Optional[int] = None,
+        min_bytes: Optional[int] = None,
+        after_sequence: Optional[int] = None,
+    ) -> PassiveEvidence:
+        """Wait for one download from start to completion and validate declared criteria.
+
+        Tracks the first ``Page.downloadWillBegin`` after the cursor, then its
+        matching ``Browser.downloadProgress`` events until ``completed`` or
+        ``canceled``. Byte criteria are evaluated against ``receivedBytes``/
+        ``totalBytes`` when the events carry them; absent fields mean the
+        criterion is not evaluable and is reported as such rather than failing.
+        MIME type is captured only if the protocol supplies it — never invented.
+
+        Every failure mode (canceled, timeout, violated criterion) returns a
+        structured failed PassiveEvidence so callers get one uniform shape.
+        """
+        cursor = self.event_cursor if after_sequence is None else after_sequence
+        subscription = self._conn.subscribe_events(
+            context=self.context if self._is_scoped() else None,
+            after_sequence=cursor,
+        )
+        deadline = asyncio.get_running_loop().time() + timeout
+
+        def _evidence(passed: bool, observed: str, **extra: Any) -> PassiveEvidence:
+            details: dict[str, Any] = {
+                "filename": begin.get("suggestedFilename", ""),
+                "url": _sanitize_evidence_url(str(begin.get("url") or "")),
+                "state": state,
+            }
+            mime = begin.get("mimeType") or progress_params.get("mimeType") or begin.get("mime") or progress_params.get("mime")
+            if mime:
+                details["mimeType"] = str(mime)
+            for field_name in ("receivedBytes", "totalBytes"):
+                value = progress_params.get(field_name)
+                if value is not None:
+                    details[field_name] = value
+            details.update(extra)
+            return PassiveEvidence(kind="download", passed=passed, observed=observed, details=details)
+
+        begin: dict[str, Any] = {}
+        progress_params: dict[str, Any] = {}
+        guid: Optional[str] = None
+        state = "not_started"
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    if not begin:
+                        return _evidence(False, "download did not start before timeout")
+                    return _evidence(False, "download did not complete before timeout")
+                try:
+                    event = await subscription.wait(remaining)
+                except TimeoutError:
+                    if not begin:
+                        return _evidence(False, "download did not start before timeout")
+                    return _evidence(False, "download did not complete before timeout")
+
+                method = event.get("method")
+                params = event.get("params") or {}
+
+                if method == "Page.downloadWillBegin":
+                    if guid is not None:
+                        continue
+                    guid = str(params.get("guid") or "")
+                    begin = dict(params)
+                    state = "in_progress"
+                    continue
+
+                if method == "Browser.downloadProgress":
+                    event_guid = str(params.get("guid") or "")
+                    if guid is not None and event_guid != guid:
+                        continue
+                    if guid is None and not begin:
+                        # Progress without a tracked begin: adopt it so late
+                        # subscribers still observe completion.
+                        guid = event_guid
+                        state = "in_progress"
+                    progress_params = dict(params)
+                    state = str(params.get("state") or "")
+                    if state == "canceled":
+                        return _evidence(False, "download canceled")
+                    if state == "completed":
+                        break
+        finally:
+            subscription.close()
+
+        filename = str(begin.get("suggestedFilename") or "")
+        if filename_contains and filename_contains not in filename:
+            return _evidence(
+                False,
+                f"filename criterion violated: expected substring {filename_contains!r} "
+                f"in {filename!r}",
+                criteria_evaluated=["filename"],
+            )
+
+        received = progress_params.get("receivedBytes")
+        total = progress_params.get("totalBytes")
+        evaluated: list[str] = []
+        byte_values = [int(v) for v in (received, total) if v is not None]
+        if min_bytes is not None and byte_values:
+            evaluated.append("min_bytes")
+            if max(byte_values) < int(min_bytes):
+                return _evidence(
+                    False,
+                    f"min_bytes criterion violated: largest observed byte count "
+                    f"{max(byte_values)} < {min_bytes}",
+                    criteria_evaluated=evaluated,
+                )
+        if max_bytes is not None and byte_values:
+            evaluated.append("max_bytes")
+            smallest = min(byte_values)
+            if smallest > int(max_bytes):
+                return _evidence(
+                    False,
+                    f"max_bytes criterion violated: smallest observed byte count "
+                    f"{smallest} > {max_bytes}",
+                    criteria_evaluated=evaluated,
+                )
+
+        extra: dict[str, Any] = {"criteria_evaluated": evaluated}
+        if (min_bytes is not None or max_bytes is not None) and not byte_values:
+            extra["bytes_criteria"] = (
+                "not_evaluable: protocol supplied no byte counts"
+            )
+        return _evidence(True, "download completed", **extra)
 
     async def screenshot(
         self,
