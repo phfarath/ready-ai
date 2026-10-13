@@ -14,10 +14,13 @@ Designed with OTel-ready interfaces: swap backend in this file only.
 import functools
 import json
 import logging
+import os
 import re
 import time
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
@@ -428,3 +431,268 @@ def _structured_log(level: int, msg: str, data: dict[str, Any]) -> None:
 def log_event(event: str, **data: Any) -> None:
     """Log a structured event at INFO level."""
     _structured_log(logging.INFO, event, {"event": event, **data})
+
+
+# ---------------------------------------------------------------------------
+# Flight Recorder — sanitized terminal-failure bundles (READY-AI-T-9)
+# ---------------------------------------------------------------------------
+#
+# A terminal failure must be diagnosable WITHOUT re-running the flow. Every
+# section below is best-effort and bounded: no cookies, credentials, response
+# bodies, or raw DOM ever enter the bundle — DOM goes through the same
+# sanitizer used for LLM context, URLs keep only scheme/host/path, and the
+# CDP event history already retains only routing/outcome fields
+# (``_history_safe_event``).
+
+ENV_FR_DISABLED = "READY_AI_FR_DISABLED"
+ENV_FR_MAX_DOM_CHARS = "READY_AI_FR_MAX_DOM_CHARS"
+ENV_FR_MAX_EVENTS = "READY_AI_FR_MAX_EVENTS"
+ENV_FR_MAX_SCREENSHOT_BYTES = "READY_AI_FR_MAX_SCREENSHOT_BYTES"
+ENV_FR_MAX_BUNDLES = "READY_AI_FR_MAX_BUNDLES"
+ENV_FR_DIR = "READY_AI_FLIGHT_RECORDER_DIR"
+
+_FR_CONSOLE_METHODS = (
+    "Runtime.consoleAPICalled",
+    "Runtime.exceptionThrown",
+    "Log.entryAdded",
+)
+
+
+@dataclass(frozen=True)
+class FlightRecorderConfig:
+    """Bounded capture limits, all overridable via ``READY_AI_FR_*`` env."""
+
+    enabled: bool = True
+    max_dom_chars: int = 8_000
+    max_events: int = 100
+    max_screenshot_bytes: int = 1_500_000
+    max_bundles: int = 20
+
+    @classmethod
+    def from_env(cls) -> "FlightRecorderConfig":
+        def _int(name: str, default: int) -> int:
+            try:
+                value = int(os.environ.get(name, "") or default)
+            except ValueError:
+                return default
+            return value if value > 0 else default
+
+        return cls(
+            enabled=os.environ.get(ENV_FR_DISABLED, "").lower()
+            not in ("1", "true", "yes"),
+            max_dom_chars=_int(ENV_FR_MAX_DOM_CHARS, 8_000),
+            max_events=_int(ENV_FR_MAX_EVENTS, 100),
+            max_screenshot_bytes=_int(
+                ENV_FR_MAX_SCREENSHOT_BYTES, 1_500_000
+            ),
+            max_bundles=_int(ENV_FR_MAX_BUNDLES, 20),
+        )
+
+
+def _bundle_url(value: Any) -> str:
+    """Keep scheme/host/path only — queries and userinfo carry secrets."""
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+    except (TypeError, ValueError):
+        return ""
+    netloc = parsed.hostname or ""
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+
+
+def _console_entry(sequence: int, event: dict[str, Any]) -> dict[str, Any]:
+    """Compact one sanitized history event into a console/diagnostic row."""
+    params = event.get("params") or {}
+    method = event.get("method") or ""
+    entry: dict[str, Any] = {
+        "seq": sequence,
+        "method": method,
+        "session_id": event.get("sessionId") or params.get("sessionId"),
+        "target_id": event.get("targetId") or params.get("targetId"),
+    }
+    if method == "Runtime.consoleAPICalled":
+        entry["type"] = params.get("type")
+        args = params.get("args")
+        if isinstance(args, list):
+            entry["text"] = " ".join(
+                str(a.get("value", a.get("type", "")))
+                for a in args
+                if isinstance(a, dict)
+            )[:500]
+    elif method == "Runtime.exceptionThrown":
+        details = params.get("exceptionDetails") or {}
+        exception = details.get("exception") or {}
+        entry["text"] = (
+            exception.get("description") or details.get("text") or ""
+        )[:500]
+        entry["url"] = details.get("url")
+        entry["line"] = details.get("lineNumber")
+    elif method == "Log.entryAdded":
+        log_entry = params.get("entry") or {}
+        entry["level"] = log_entry.get("level")
+        entry["text"] = str(log_entry.get("text") or "")[:500]
+        entry["url"] = log_entry.get("url")
+    return entry
+
+
+def _prune_bundles(directory: Path, max_bundles: int) -> None:
+    """Retain only the ``max_bundles`` most recent bundle files."""
+    try:
+        bundles = sorted(
+            directory.glob("*_failure.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in bundles[max_bundles:]:
+            stale.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug(f"Flight recorder pruning skipped: {exc}")
+
+
+async def capture_failure_bundle(
+    *,
+    output_dir: str,
+    run_id: str,
+    kind: str = "flow",
+    flow: Optional[str] = None,
+    status: str = "FAILED",
+    failure_reason: Optional[str] = None,
+    step: Optional[dict[str, Any]] = None,
+    initial_url: Optional[str] = None,
+    page: Any = None,
+    runtime: Any = None,
+    connection: Any = None,
+    run_ctx: Optional[RunContext] = None,
+    config: Optional[FlightRecorderConfig] = None,
+) -> Optional[Path]:
+    """Capture a sanitized diagnostic bundle for a terminal failure.
+
+    Returns the bundle path, or None when disabled or the write fails.
+    Never raises: each section is guarded and records ``capture_errors``
+    so a crashed browser cannot prevent the rest of the bundle.
+    """
+    cfg = config or FlightRecorderConfig.from_env()
+    if not cfg.enabled:
+        return None
+
+    errors: list[str] = []
+
+    async def _try(label: str, coro) -> Any:
+        try:
+            return await coro
+        except Exception as exc:  # noqa: BLE001 — recorder must not raise
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            return None
+
+    bundle: dict[str, Any] = {
+        "schema": "ready-ai.flight-recorder/v1",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id,
+        "kind": kind,
+        "flow": flow,
+        "status": status,
+        "failure_reason": failure_reason,
+        "step": step,
+        "sanitization": (
+            "sensitive keys redacted; urls reduced to scheme/host/path; "
+            "no cookies, credentials, response bodies, or raw DOM"
+        ),
+    }
+
+    # Live URL — the flow's start URL is always known; the live one is a
+    # best-effort probe that often survives a step failure.
+    bundle["url"] = {"initial": _bundle_url(initial_url)}
+    if runtime is not None:
+        live = await _try("url", runtime.evaluate("window.location.href"))
+        bundle["url"]["current"] = _bundle_url(live)
+
+    if page is not None:
+        dom = await _try("dom", page.get_dom_html(max_length=cfg.max_dom_chars))
+        if dom is not None:
+            bundle["dom_excerpt"] = dom
+        shot = await _try("screenshot", page.screenshot())
+        if isinstance(shot, str) and shot:
+            approx_bytes = len(shot) * 3 // 4
+            if approx_bytes <= cfg.max_screenshot_bytes:
+                bundle["screenshot_b64"] = shot
+            else:
+                bundle["screenshot_b64"] = (
+                    f"omitted: {approx_bytes}B exceeds "
+                    f"{cfg.max_screenshot_bytes}B cap"
+                )
+
+    if runtime is not None:
+        fingerprint = await _try(
+            "fingerprint", runtime.get_state_fingerprint()
+        )
+        if fingerprint:
+            bundle["state_fingerprint"] = fingerprint[:2_000]
+
+    if connection is not None:
+        state = getattr(connection, "state", None)
+        bundle["connection"] = {
+            "state": getattr(state, "value", state),
+            "consecutive_failures": getattr(
+                connection, "_consecutive_failures", None
+            ),
+        }
+        try:
+            context = getattr(page, "context", None) if page is not None else None
+            if context is not None and getattr(context, "is_empty", True):
+                context = None
+            history = getattr(connection, "_event_history", None) or []
+            events = [
+                (seq, ev)
+                for seq, ev in history
+                if context is None or context.matches(ev)
+            ]
+            bundle["console"] = [
+                _console_entry(seq, ev)
+                for seq, ev in events
+                if ev.get("method") in _FR_CONSOLE_METHODS
+            ][-cfg.max_events :]
+            bundle["network_events"] = [
+                ev
+                for _, ev in events
+                if str(ev.get("method") or "").startswith("Network.")
+            ][-cfg.max_events :]
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"events: {type(exc).__name__}: {exc}")
+
+    if page is not None and hasattr(page, "http_failures_since"):
+        try:
+            failures = page.http_failures_since(0)
+            bundle["network_failures"] = [
+                asdict(item) if hasattr(item, "__dataclass_fields__") else item
+                for item in (failures or [])
+            ]
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"network_failures: {type(exc).__name__}: {exc}")
+
+    if run_ctx is not None:
+        try:
+            bundle["timings"] = run_ctx.run_summary(status=status)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"timings: {type(exc).__name__}: {exc}")
+
+    bundle["capture_errors"] = errors
+
+    try:
+        directory = Path(
+            os.environ.get(ENV_FR_DIR) or Path(output_dir) / "flight_recorder"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{run_id}_failure.json"
+        path.write_text(
+            json.dumps(_redact(bundle), indent=2, default=str),
+            encoding="utf-8",
+        )
+        _prune_bundles(directory, cfg.max_bundles)
+        log_event("flight_recorder_bundle", run_id=run_id, path=str(path))
+        return path
+    except OSError as exc:
+        logger.warning(f"Failed to write flight recorder bundle: {exc}")
+        return None

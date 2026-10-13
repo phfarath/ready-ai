@@ -80,6 +80,79 @@ def _history_safe_event(event: dict[str, Any]) -> dict[str, Any]:
         url = str(params["url"])
         parsed = urlsplit(url)
         safe_params["url"] = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    if isinstance(params.get("request"), dict):
+        # Network.requestWillBeSent: method + query-less URL only — never
+        # headers or postData, which routinely carry credentials.
+        request = params["request"]
+        url = str(request.get("url") or "")
+        parsed = urlsplit(url)
+        safe_params["request"] = {
+            "method": request.get("method"),
+            "url": urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+        }
+    method = event.get("method")
+    if method == "Network.loadingFailed":
+        for key in ("errorText", "type", "canceled"):
+            if params.get(key) is not None:
+                safe_params[key] = params[key]
+    if method == "Runtime.consoleAPICalled":
+        # Keep the console level plus primitive arg values only, each
+        # truncated — remote-object payloads/previews are dropped.
+        if params.get("type") is not None:
+            safe_params["type"] = params["type"]
+        args = params.get("args")
+        if isinstance(args, list):
+            safe_args = []
+            for arg in args[:8]:
+                if isinstance(arg, dict):
+                    entry: dict[str, Any] = {"type": arg.get("type")}
+                    value = arg.get("value")
+                    if "value" in arg and isinstance(
+                        value, (str, int, float, bool)
+                    ):
+                        entry["value"] = str(value)[:200]
+                    safe_args.append(entry)
+            safe_params["args"] = safe_args
+    if method == "Runtime.exceptionThrown":
+        details = params.get("exceptionDetails")
+        if isinstance(details, dict):
+            safe_details: dict[str, Any] = {}
+            if details.get("text") is not None:
+                safe_details["text"] = str(details["text"])[:300]
+            url = str(details.get("url") or "")
+            if url:
+                parsed = urlsplit(url)
+                safe_details["url"] = urlunsplit(
+                    (parsed.scheme, parsed.netloc, parsed.path, "", "")
+                )
+            if details.get("lineNumber") is not None:
+                safe_details["lineNumber"] = details["lineNumber"]
+            exception = details.get("exception")
+            if isinstance(exception, dict):
+                safe_details["exception"] = {
+                    key: str(exception[key])[:300]
+                    for key in ("className", "description")
+                    if exception.get(key) is not None
+                }
+            if safe_details:
+                safe_params["exceptionDetails"] = safe_details
+    if method == "Log.entryAdded":
+        entry = params.get("entry")
+        if isinstance(entry, dict):
+            safe_entry: dict[str, Any] = {}
+            for key in ("source", "level"):
+                if entry.get(key) is not None:
+                    safe_entry[key] = str(entry[key])
+            if entry.get("text") is not None:
+                safe_entry["text"] = str(entry["text"])[:300]
+            url = str(entry.get("url") or "")
+            if url:
+                parsed = urlsplit(url)
+                safe_entry["url"] = urlunsplit(
+                    (parsed.scheme, parsed.netloc, parsed.path, "", "")
+                )
+            if safe_entry:
+                safe_params["entry"] = safe_entry
     if safe_params:
         safe["params"] = safe_params
     return safe
