@@ -495,7 +495,7 @@ class RunResult(BaseModel):
             url=_strip_url_userinfo(str(data.get("url") or "")),
             status=str(data.get("status") or "passed"),
             steps=steps,
-            summary=_sanitize(data.get("summary") or {}),
+            summary=_scrub_diag(_sanitize(data.get("summary") or {})),
             artifacts=_collect_artifacts(data.get("run_id") or "", output_dir),
             failure_reason=_scrub_url_text(
                 _sanitize(data.get("failure_reason"))

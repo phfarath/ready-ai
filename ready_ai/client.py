@@ -442,7 +442,7 @@ class ReadyAI:
         )
         try:
             return RunResult.from_flow_result(data, output_dir=output_dir)
-        except (ValidationError, TypeError) as exc:
+        except (ValidationError, TypeError, AttributeError) as exc:
             raise FlowValidationError(
                 f"engine result for run {run_id!r} was malformed: {exc}"
             ) from exc
@@ -746,7 +746,7 @@ class ReadyAI:
             return RunResult.from_flow_result(
                 data, output_dir=output_dir, cost=cost
             )
-        except (ValidationError, TypeError) as exc:
+        except (ValidationError, TypeError, AttributeError) as exc:
             raise FlowValidationError(
                 f"engine result for replay {run_id!r} was malformed: {exc}"
             ) from exc
