@@ -287,3 +287,61 @@ async def test_paused_checkpoint_out_of_range_index_is_policy_error(tmp_path):
 
     with pytest.raises(RunPolicyError, match="outside the declared"):
         await loop.run_flow(_flow([_navigate_step()]))
+
+
+async def test_cancel_writes_no_failure_bundle(tmp_path, monkeypatch):
+    """Cancel is operator intent — no flight-recorder bundle on disk."""
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action",
+        AsyncMock(return_value="Navigated to: https://app.example.com/done"),
+    )
+    loop, _page, _runtime = _make_loop(tmp_path)
+    loop.request_cancel()
+    result = await loop.run_flow(_flow([_navigate_step()]))
+    assert result["status"] == "cancelled"
+    assert list(tmp_path.glob("*_failure.json")) == []
+
+
+async def test_resume_blocked_reports_honest_skip_reason(
+    tmp_path, monkeypatch
+):
+    """A resume whose condition is unmet fails closed and explains the
+    skipped steps with a resume-blocked reason, not a CDP disconnect."""
+    # Persist a PAUSED checkpoint at step 2 for run "sso-run".
+    state = RunState(
+        run_id="sso-run",
+        goal="evt",
+        url="https://app.example.com/start",
+        status="PAUSED",
+        current_step_index=2,
+        pause_reason="Finish SSO",
+        resume_when={"selector_visible": "#authed"},
+    )
+    state.to_file(tmp_path / "sso-run_state.json")
+
+    loop, _page, _runtime = _make_loop(tmp_path, run_id="sso-run")
+    loop.resume_from = str(tmp_path / "sso-run_state.json")
+    loop._state = RunState.from_file(loop.resume_from)
+    loop._check_resume_condition = AsyncMock(
+        return_value=(False, "resume condition not met: selector_visible")
+    )
+    events: list[dict] = []
+    loop.set_event_sink(events.append)
+    monkeypatch.setattr(
+        "src.agent.loop.executor._dispatch_action",
+        AsyncMock(return_value="Navigated to: https://app.example.com/done"),
+    )
+
+    flow = _flow(
+        [_navigate_step("Land"), _navigate_step("SSO"), _navigate_step("Verify")]
+    )
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "failed"
+    assert "resume condition not met" in result["failure_reason"]
+    skipped = result["steps"][1:]
+    assert [s["status"] for s in skipped] == ["skipped", "skipped"]
+    assert all("resume blocked" in s["failure_reason"] for s in skipped)
+    finished = [e for e in events if e["type"] == "step_finished"]
+    assert finished and finished[-1]["step_index"] == 2
+    assert finished[-1]["status"] == "failed"

@@ -240,6 +240,41 @@ async def test_connection_failures_map_to_connection_lost(
         await ai.run(_flow())
 
 
+async def test_engine_internal_timeout_maps_connection_lost(
+    tmp_path, monkeypatch
+):
+    """A builtin TimeoutError inside the engine (CDP command timeout)
+    is NOT the run budget — it must not alias to RunTimeoutError."""
+
+    class _TimingOut:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+
+        async def run_flow(self, spec, confirm=None):
+            raise TimeoutError("CDP command Page.navigate timed out")
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _TimingOut)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(ConnectionLostError, match="internal timeout"):
+        await ai.run(_flow())
+
+
+async def test_generic_engine_error_maps_to_readyai_error(
+    tmp_path, monkeypatch
+):
+    class _Broken:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+
+        async def run_flow(self, spec, confirm=None):
+            raise RuntimeError("protocol blew up")
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Broken)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(ReadyAIError, match="RuntimeError"):
+        await ai.run(_flow())
+
+
 async def test_policy_refusal_maps_to_policy_violation(tmp_path, monkeypatch):
     class _Refusing:
         def __init__(self, **kw):
@@ -329,7 +364,10 @@ async def test_events_terminate_when_the_run_raises(tmp_path, monkeypatch):
     handle = ai.start(_flow())
 
     collected = [event async for event in handle.events()]
-    assert [e.type for e in collected] == ["run_started"]
+    # The SDK synthesizes the terminal run_finished even when the engine
+    # raised — the stream always ends with an explicit outcome.
+    assert [e.type for e in collected] == ["run_started", "run_finished"]
+    assert collected[-1].status == "error"
     with pytest.raises(ConnectionLostError):
         await handle.result()
 
@@ -392,6 +430,38 @@ async def test_cooperative_cancel_via_handle(tmp_path, monkeypatch):
     assert events[-1].status == "cancelled"
 
 
+async def test_task_cancel_synthesizes_run_finished(tmp_path, monkeypatch):
+    """Cancelling the awaiting task still yields a terminal event."""
+
+    class _Blocking:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+            self._sink = None
+
+        def set_event_sink(self, sink):
+            self._sink = sink
+
+        async def run_flow(self, spec, confirm=None):
+            self._sink({"seq": 1, "type": "run_started", "run_id": self.run_id})
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Blocking)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    handle = ai.start(_flow())
+
+    events = []
+    result_task = asyncio.create_task(handle.result())
+    async for event in handle.events():
+        events.append(event)
+        if event.type == "run_started":
+            result_task.cancel()
+
+    with pytest.raises(RunCancelledError):
+        await result_task
+    assert events[-1].type == "run_finished"
+    assert events[-1].status == "cancelled"
+
+
 # ─── Checkpoint resume ───────────────────────────────────────────────
 
 
@@ -406,6 +476,14 @@ def _write_checkpoint(output_dir, run_id, status="PAUSED", step_index=2):
         resume_when={"selector_visible": "#authed"},
     )
     state.to_file(output_dir / f"{run_id}_state.json")
+
+
+@pytest.mark.parametrize("bad", ["../escape", "..\\win", "a b", "a/b", ""])
+async def test_resume_rejects_traversal_run_id(tmp_path, bad):
+    """The run token reaches a filesystem path — validate its charset."""
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(FlowValidationError, match="run token"):
+        await ai.resume(_flow(), run_id=bad)
 
 
 async def test_resume_without_checkpoint_refuses(tmp_path):

@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -63,6 +65,19 @@ logger = logging.getLogger(__name__)
 
 _QUEUE_END = object()
 """Sentinel pushed onto the event queue when the run task terminates."""
+
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+"""Same charset as ``Flow.run_id`` — a run token must never reach a path."""
+
+
+class _EngineTimeoutError(Exception):
+    """Marker: a *builtin* ``TimeoutError`` raised inside the engine.
+
+    On Python 3.11+ ``asyncio.TimeoutError`` IS the builtin
+    ``TimeoutError`` — without this wrapper an internal CDP/navigation
+    timeout would alias to ``RunTimeoutError`` ("budget exceeded"),
+    which mis-reports an infrastructure fault as a run-budget overrun.
+    """
 
 _EVENT_SCALAR_KEYS = frozenset(
     {"seq", "type", "run_id", "step_index", "step_name", "status"}
@@ -196,6 +211,10 @@ class RunHandle:
 
         ``_QUEUE_END`` is always enqueued when the run task terminates —
         even on crash or cancellation — so the iterator can never hang.
+
+        Single-consumer: each call consumes the shared queue — open a
+        second iterator only after the first has returned, and never
+        concurrently.
         """
         while True:
             item = await self._queue.get()
@@ -351,12 +370,26 @@ class ReadyAI:
     ) -> RunResult:
         """Await ``loop.run_flow`` under the timeout and map every engine
         failure onto the public exception taxonomy."""
+        coro = (
+            loop.run_flow(flow_spec)
+            if confirm is None
+            else loop.run_flow(flow_spec, confirm=confirm)
+        )
+
+        async def _guarded():
+            # Re-label engine-internal TimeoutErrors before wait_for can
+            # alias them to the budget-expiry signal (py3.11+ identity).
+            try:
+                return await coro
+            except TimeoutError as exc:
+                raise _EngineTimeoutError(str(exc)) from exc
+
         try:
-            if confirm is None:
-                coro = loop.run_flow(flow_spec)
-            else:
-                coro = loop.run_flow(flow_spec, confirm=confirm)
-            data = await asyncio.wait_for(coro, timeout=timeout_s)
+            data = await asyncio.wait_for(_guarded(), timeout=timeout_s)
+        except _EngineTimeoutError as exc:
+            raise ConnectionLostError(
+                f"run {loop.run_id!r} hit an internal timeout: {exc}"
+            ) from exc
         except asyncio.TimeoutError as exc:
             raise RunTimeoutError(
                 f"flow {flow_label!r} exceeded its "
@@ -376,6 +409,13 @@ class ReadyAI:
             raise ConnectionLostError(
                 f"run {loop.run_id!r} lost the browser connection: "
                 f"{type(exc).__name__}"
+            ) from exc
+        except Exception as exc:
+            # The taxonomy stays total: uncategorized engine failures
+            # still surface as a public error, never a raw src.* type.
+            raise ReadyAIError(
+                f"run {loop.run_id!r} failed: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
         return RunResult.from_flow_result(data, output_dir=output_dir)
 
@@ -408,6 +448,11 @@ class ReadyAI:
         idempotency keys of steps declared with ``confirm=True`` to
         authorize their execution. Cancelling the awaiting task raises
         ``RunCancelledError``.
+
+        Note: a mid-run CDP disconnect during an action is reported as a
+        truthful ``RunResult(status="failed", failure_reason="CDP
+        connection lost ...")`` — ``ConnectionLostError`` covers
+        disconnects that escape the flow loop (setup/teardown).
         """
         flow_spec, loop, output_dir, rid = self._prepare(flow, browser)
         return await self._execute(
@@ -484,7 +529,14 @@ class ReadyAI:
             ) from exc
         flow_spec, loop, output_dir, rid = self._prepare(flow, browser)
         queue: asyncio.Queue = asyncio.Queue()
-        loop.set_event_sink(lambda event: queue.put_nowait(_to_public_event(event)))
+        last_seq = [0]
+
+        def _sink(event: Mapping[str, Any]) -> None:
+            public = _to_public_event(event)
+            last_seq[0] = public.seq
+            queue.put_nowait(public)
+
+        loop.set_event_sink(_sink)
 
         async def _tracked() -> RunResult:
             try:
@@ -497,6 +549,30 @@ class ReadyAI:
                     flow_label=flow.name or rid,
                 )
             finally:
+                # Synthesize the terminal run_finished the engine could
+                # not emit on cancel/timeout (CancelledError bypasses
+                # the loop's except-Exception), so the stream always
+                # ends with an explicit outcome before _QUEUE_END.
+                exc = sys.exc_info()[1]
+                if exc is not None:
+                    status = (
+                        "cancelled"
+                        if isinstance(exc, RunCancelledError)
+                        else "timeout"
+                        if isinstance(exc, RunTimeoutError)
+                        else "error"
+                    )
+                    queue.put_nowait(
+                        _to_public_event(
+                            {
+                                "seq": last_seq[0] + 1,
+                                "type": "run_finished",
+                                "run_id": rid,
+                                "status": status,
+                                "failure_reason": str(exc)[:300],
+                            }
+                        )
+                    )
                 queue.put_nowait(_QUEUE_END)
 
         task = running.create_task(_tracked())
@@ -520,6 +596,14 @@ class ReadyAI:
         silently re-executes a completed run.
         """
         output_dir = flow.output or self.output_dir
+        # The run token reaches a filesystem path — same charset as
+        # ``Flow.run_id``, validated here because ``resume`` takes it as
+        # a plain parameter (traversal would escape the output dir).
+        if not _RUN_ID_RE.fullmatch(run_id or ""):
+            raise FlowValidationError(
+                f"run_id {run_id!r} is not a valid run token "
+                "(allowed: letters, digits, '_' and '-')"
+            )
         state_path = Path(output_dir) / f"{run_id}_state.json"
         if not state_path.is_file():
             raise PolicyViolationError(

@@ -437,7 +437,7 @@ class RunResult(BaseModel):
             steps=steps,
             summary=_sanitize(data.get("summary") or {}),
             artifacts=_collect_artifacts(data.get("run_id") or "", output_dir),
-            failure_reason=data.get("failure_reason"),
+            failure_reason=_sanitize(data.get("failure_reason")),
             pause=_sanitize(data.get("pause")),
             replay=replay if replay is not None else _sanitize(data.get("replay")),
             cost=cost,

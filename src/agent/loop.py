@@ -651,8 +651,21 @@ class AgenticLoop:
                             logger.warning(
                                 "Flow resume blocked at step %s: %s", index, reason
                             )
+                            self._emit(
+                                "step_finished",
+                                step_index=index,
+                                step_name=step.name,
+                                status="failed",
+                                failure_reason=reason,
+                            )
                             self._mark_remaining_steps_skipped(
-                                step_results, flow, index - 1
+                                step_results,
+                                flow,
+                                index - 1,
+                                reason=(
+                                    f"resume blocked at step {index}: "
+                                    "condition not met"
+                                ),
                             )
                             break
                     step_report = await self._execute_flow_step(
@@ -1169,7 +1182,8 @@ class AgenticLoop:
 
         for action in step.actions:
             report = await self._execute_flow_action(
-                action, step_retries, page, input_domain, runtime
+                action, step_retries, page, input_domain, runtime,
+                step_index=index,
             )
             action_reports.append(report)
             if not report["passed"]:
@@ -1259,6 +1273,8 @@ class AgenticLoop:
         page: PageDomain,
         input_domain: InputDomain,
         runtime: RuntimeDomain,
+        *,
+        step_index: Optional[int] = None,
     ) -> dict:
         """Dispatch one declarative action with a bounded retry budget.
 
@@ -1289,7 +1305,10 @@ class AgenticLoop:
                 break
             if attempts > 0:
                 self._emit(
-                    "retry", action=action_type, attempt=attempts + 1
+                    "retry",
+                    step_index=step_index,
+                    action=action_type,
+                    attempt=attempts + 1,
                 )
             attempts += 1
             try:

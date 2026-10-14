@@ -9,12 +9,17 @@ order, emitted at engine boundaries:
 Ordering contract
 -----------------
 - ``seq`` is a strictly increasing per-run counter starting at 1.
-- ``run_started`` is always the first event, ``run_finished`` always the
-  last (``status``: ``passed`` | ``failed`` | ``paused`` |
-  ``pending_confirmation`` | ``cancelled`` | ``error``).
+- ``run_started`` fires after browser setup/navigation — a failure
+  during setup may produce a stream whose only event is the terminal
+  ``run_finished``; when present, ``run_started`` is always first.
+- ``run_finished`` is always the terminal event (``status``:
+  ``passed`` | ``failed`` | ``paused`` | ``pending_confirmation`` |
+  ``cancelled`` | ``timeout`` | ``error``); on caller cancellation or
+  budget expiry the SDK synthesizes it so consumers still see an
+  explicit outcome.
 - ``step_*`` events nest inside their ``step_index``; ``retry`` events
   sit between ``step_started`` and ``step_finished`` of the enclosing
-  step and carry ``detail.action``/``detail.attempt``.
+  step and carry ``step_index`` + ``detail.action``/``detail.attempt``.
 - ``checkpoint_paused``/``checkpoint_resumed`` mark a human checkpoint
   (``await_human``) suspending or releasing the run.
 
