@@ -28,8 +28,9 @@ covered by this policy; consumers must not import them.
   minimal SDK smoke) on every PR.
 - Versioning policy formalized above; the public surface is now the
   compatibility contract.
-- Reviewed across three passes before merge (PR #49); CI green
-  (lint, mypy, pytest 3.10–3.12, e2e, regression, CodeQL).
+- Reviewed across multiple passes before merge (PRs #49, #50); CI
+  green (lint, strict mypy 3.10–3.12, pytest 3.10–3.12, e2e,
+  regression, CodeQL).
 - Known follow-up (tracked in `READY-AI-T-SDK-FOLLOWUPS`): paused
   checkpoints are not yet bound to the originating flow fingerprint.
 

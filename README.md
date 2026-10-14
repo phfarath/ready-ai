@@ -125,7 +125,9 @@ Authenticated runs: prefer a cookies JSON array file (`--cookies-file`, `profile
 
 ```bash
 python3 -m pytest -q
-ruff check src/ tests/ main.py
+ruff check src/ tests/ main.py ready_ai/ examples/
+python -m mypy
 ```
 
-CI runs lint plus pytest across Python 3.10–3.12. See `CONTRIBUTING.md` and `SECURITY.md`.
+CI runs lint, strict mypy and pytest across Python 3.10–3.12, plus a
+wheel build installed into a clean venv. See `CONTRIBUTING.md` and `SECURITY.md`.

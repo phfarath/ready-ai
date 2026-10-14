@@ -76,6 +76,7 @@ def test_runtime_deps_stay_minimal():
     assert names == {
         "websockets",
         "litellm",
+        "pydantic",
         "aiohttp",
         "Pillow",
         "python-dotenv",
