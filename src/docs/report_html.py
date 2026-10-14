@@ -271,7 +271,7 @@ def render_healer_scorecard(scorecard: dict, output_path: str | Path) -> str:
         f"<td>{'flag' if m['dom_flagged'] else '—'}</td>"
         + "".join(
             f'<td><span class="badge" style="background: {_VERDICT_COLORS.get(v, "#94a3b8")}; '
-            f'color: #0f172a; font-size: 0.75rem;">{v}</span></td>'
+            f'color: #0f172a; font-size: 0.75rem;">{_esc(str(v))}</span></td>'
             for v in (
                 m["verdicts"].get(r, "—") if m["applied"] else "—"
                 for r in ("single_visual", "single_dom", "gated")

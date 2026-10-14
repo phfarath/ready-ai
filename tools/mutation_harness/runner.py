@@ -6,10 +6,18 @@ Flow per drill:
 1. Launch a BrowserSession, navigate to ``config.app_url``.
 2. Capture baseline: screenshot + ``dom_fingerprint``.
 3. For each declared mutation: apply via ``Runtime.evaluate``, settle,
-   measure both channels, then reload the page so no mutation leaks
-   into the next measurement (declarative isolation — no revert code).
-4. Compute the scorecard and write ``healer_scorecard.json`` +
-   ``healer_scorecard.html`` (rendered via src.docs.report_html).
+   measure both channels, then reload the page AND recapture the
+   baseline — so non-deterministic page churn across reloads is never
+   attributed to the mutation.
+4. Per-mutation measurement failures are recorded on the outcome
+   (``error``) and the drill continues; failures that leave the page
+   state untrusted (reload, baseline capture) abort the drill — but the
+   scorecard is still written from whatever was measured.
+
+Apply contract: ``Runtime.evaluate`` exceptions (``exceptionDetails``)
+mean "not applied" — the shared ``RuntimeDomain.evaluate`` swallows
+them into a truthy error-description string, so the apply call goes one
+level lower and inspects the raw response.
 """
 
 from __future__ import annotations
@@ -46,6 +54,48 @@ def _write_b64_png(b64_data: str, path: Path) -> None:
     path.write_bytes(base64.b64decode(b64_data))
 
 
+async def _evaluate_apply(conn, expression: str) -> tuple[bool, Optional[str]]:
+    """Apply mutation JS via raw ``Runtime.evaluate``.
+
+    Returns ``(applied, error)``. ``exceptionDetails`` in the response
+    means the mutation JS threw → not applied (a malformed selector or
+    throwing ``js`` op must surface as a stale declaration, never as a
+    phantom detector miss).
+    """
+    result = await conn.send(
+        "Runtime.evaluate",
+        {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+        },
+    )
+    details = result.get("exceptionDetails")
+    if details:
+        exception = details.get("exception") or {}
+        desc = exception.get("description") or details.get("text") or "unknown"
+        return False, f"mutation JS threw: {desc}"
+    remote = result.get("result", {})
+    return bool(remote.get("value")), None
+
+
+async def _capture_baseline(page, runtime, shot_path: Path) -> str:
+    """Screenshot + DOM fingerprint of the clean page.
+
+    A fingerprint that comes back as the ``__fp_error__`` sentinel means
+    the CDP evaluation failed — comparing anything against it flags
+    every mutation, so it aborts loudly instead of poisoning the
+    scorecard.
+    """
+    _write_b64_png(await page.screenshot(), shot_path)
+    fp = await dom_fingerprint(runtime)
+    if fp.startswith(FP_ERROR_PREFIX):
+        raise RuntimeError(
+            "baseline DOM fingerprint failed (CDP evaluation error)"
+        )
+    return fp
+
+
 async def run_mutation_drill(
     config_path: str | Path,
     *,
@@ -76,20 +126,20 @@ async def run_mutation_drill(
     diffs_dir = out / "diffs"
     shots_dir.mkdir(parents=True, exist_ok=True)
     diffs_dir.mkdir(parents=True, exist_ok=True)
+    baseline_png = shots_dir / "_baseline.png"
 
     session = BrowserSession(port=port or _free_port(), headless=headless)
     outcomes: list[MutationOutcome] = []
+    abort_error: Optional[BaseException] = None
 
     try:
         await session.setup()
-        page, runtime = session.page, session.runtime
+        conn, page, runtime = session.conn, session.page, session.runtime
 
         logger.info("Mutation drill: %d mutations against %s",
                     len(config.mutations), app_url)
         await page.navigate(app_url)
-        baseline_png = shots_dir / "_baseline.png"
-        _write_b64_png(await page.screenshot(), baseline_png)
-        baseline_fp = await dom_fingerprint(runtime)
+        baseline_fp = await _capture_baseline(page, runtime, baseline_png)
 
         for mutation in config.mutations:
             outcome = MutationOutcome(
@@ -97,21 +147,21 @@ async def run_mutation_drill(
             )
             outcomes.append(outcome)
             try:
-                applied = await runtime.evaluate(mutation.apply_js())
-            except Exception as exc:
-                outcome.error = f"evaluate failed: {exc}"
-                logger.warning("Mutation %s failed to evaluate: %s",
-                               mutation.id, exc)
-            else:
-                if applied:
+                applied, apply_error = await _evaluate_apply(
+                    conn, mutation.apply_js()
+                )
+                if apply_error:
+                    outcome.error = apply_error
+                    logger.warning("Mutation %s: %s", mutation.id, apply_error)
+                elif applied:
                     outcome.applied = True
                     await asyncio.sleep(config.settle_ms / 1000)
 
                     shot_path = shots_dir / f"m_{mutation.id}.png"
                     _write_b64_png(await page.screenshot(), shot_path)
-                    diff_path = diffs_dir / f"m_{mutation.id}.png"
                     diff = compare_screenshots(
-                        baseline_png, shot_path, diff_path,
+                        baseline_png, shot_path,
+                        diffs_dir / f"m_{mutation.id}.png",
                         threshold=config.threshold,
                     )
                     outcome.visual_similarity = round(diff.similarity_score, 4)
@@ -122,14 +172,31 @@ async def run_mutation_drill(
                         fp.startswith(FP_ERROR_PREFIX) or fp != baseline_fp
                     )
                 else:
-                    outcome.error = "mutation JS returned falsy (stale selector?)"
+                    outcome.error = (
+                        "mutation JS returned falsy (stale selector?)"
+                    )
                     logger.warning("Mutation %s did not apply", mutation.id)
+            except Exception as exc:
+                # Measurement failure: record on the outcome and move on —
+                # one broken mutation must not discard the whole drill.
+                outcome.error = f"measurement failed: {type(exc).__name__}: {exc}"
+                logger.warning("Mutation %s: %s", mutation.id, outcome.error)
 
-            # Reset app state: full reload isolates each measurement.
+            # Reset app state: full reload isolates each measurement, and
+            # the baseline is recaptured so non-deterministic page churn is
+            # never attributed to the next mutation. A failed reload or
+            # baseline leaves the page state untrusted → abort.
             await page.navigate(app_url)
+            baseline_fp = await _capture_baseline(page, runtime, baseline_png)
 
+    except Exception as exc:
+        abort_error = exc
+        logger.error("Mutation drill aborted: %s", exc)
     finally:
         await session.teardown()
+
+    if not outcomes:
+        raise abort_error or RuntimeError("drill produced no outcomes")
 
     scorecard = compute_scorecard(
         outcomes, app_url=app_url, threshold=config.threshold
@@ -142,4 +209,6 @@ async def run_mutation_drill(
         "Mutation drill done: %d/%d applied — scorecard in %s",
         scorecard["applied_mutations"], scorecard["total_mutations"], out,
     )
+    if abort_error is not None:
+        raise abort_error
     return scorecard

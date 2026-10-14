@@ -8,6 +8,7 @@ import pytest
 
 from src.docs.report_html import render_healer_scorecard
 from tools.mutation_harness.mutations import load_config
+from tools.mutation_harness.runner import _evaluate_apply
 from tools.mutation_harness.scorecard import (
     MutationOutcome,
     compute_scorecard,
@@ -137,6 +138,24 @@ class TestLoadConfig:
             "threshold: 0\nmutations:\n  - id: x\n    kind: noise\n    js: 'true'\n",
         )
         with pytest.raises(ValueError, match="threshold"):
+            load_config(p)
+
+    def test_non_string_selector_rejected(self, tmp_path):
+        p = _write_config(
+            tmp_path,
+            "mutations:\n  - id: x\n    kind: semantic\n    op: remove\n"
+            "    selector: 123\n",
+        )
+        with pytest.raises(ValueError, match="'selector' must be a string"):
+            load_config(p)
+
+    def test_non_scalar_value_rejected(self, tmp_path):
+        p = _write_config(
+            tmp_path,
+            "mutations:\n  - id: x\n    kind: semantic\n    op: set_text\n"
+            "    selector: '#a'\n    value: {k: v}\n",
+        )
+        with pytest.raises(ValueError, match="'value' must be a scalar"):
             load_config(p)
 
 
@@ -317,6 +336,64 @@ class TestComputeScorecard:
             app_url="u", threshold=0.95,
         )
         json.dumps(sc)
+
+
+class _FakeConn:
+    def __init__(self, response):
+        self._response = response
+
+    async def send(self, method, params):
+        assert method == "Runtime.evaluate"
+        return self._response
+
+
+class TestEvaluateApply:
+    @pytest.mark.asyncio
+    async def test_truthy_value_marks_applied(self):
+        applied, error = await _evaluate_apply(
+            _FakeConn({"result": {"type": "boolean", "value": True}}), "true"
+        )
+        assert applied is True
+        assert error is None
+
+    @pytest.mark.asyncio
+    async def test_falsy_value_marks_unapplied(self):
+        applied, error = await _evaluate_apply(
+            _FakeConn({"result": {"type": "boolean", "value": False}}), "false"
+        )
+        assert applied is False
+        assert error is None
+
+    @pytest.mark.asyncio
+    async def test_throwing_js_is_not_applied(self):
+        response = {
+            "result": {
+                "type": "object",
+                "subtype": "error",
+                "description": "SyntaxError: Unexpected token",
+            },
+            "exceptionDetails": {
+                "text": "Uncaught",
+                "exception": {
+                    "className": "SyntaxError",
+                    "description": "SyntaxError: Unexpected token",
+                },
+            },
+        }
+        applied, error = await _evaluate_apply(_FakeConn(response), "[[[")
+        assert applied is False
+        assert "threw" in error
+        assert "SyntaxError" in error
+
+    @pytest.mark.asyncio
+    async def test_exception_details_without_exception_object(self):
+        response = {
+            "result": {},
+            "exceptionDetails": {"text": "Uncaught ReferenceError"},
+        }
+        applied, error = await _evaluate_apply(_FakeConn(response), "nope()")
+        assert applied is False
+        assert "ReferenceError" in error
 
 
 class TestRenderHealerScorecard:

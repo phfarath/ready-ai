@@ -188,12 +188,23 @@ def _parse_mutation(entry: dict, where: str) -> Mutation:
     if op == "js" and not entry.get("js"):
         raise ValueError(f"{where}: op 'js' requires 'js'")
 
+    # Type-check fields compiled into JS — a non-string value (e.g.
+    # `selector: 123`) must fail loudly at parse time, not as a silent
+    # JS SyntaxError inside the page.
+    for field_name in ("selector", "attr", "to", "js"):
+        val = entry.get(field_name)
+        if val is not None and not isinstance(val, str):
+            raise ValueError(f"{where}: {field_name!r} must be a string")
+    value = entry.get("value", "")
+    if not isinstance(value, (str, int, float)):
+        raise ValueError(f"{where}: 'value' must be a scalar")
+
     return Mutation(
         id=mid,
         kind=kind,
         op=op,
         selector=selector,
-        value=str(entry.get("value", "")),
+        value=str(value),
         attr=entry.get("attr"),
         to=entry.get("to"),
         js=entry.get("js"),
