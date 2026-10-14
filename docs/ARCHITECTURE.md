@@ -109,7 +109,11 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
   distributed limiting and API auth are post-pivot hardening, not pivot blockers.
 - `main.py` — CLI: `run` (agent), `test` (docs regression + `--auto-heal`), `batch`
   (YAML/TOML multi-flow), `api`, `export` (markdown/html/llms.txt…).
-- `observability.py` — in-memory `Metrics` + `RunContext` spans (`run_summary()`).
+- `observability.py` — in-memory `Metrics` + `RunContext` spans (`run_summary()`)
+  and the flight recorder (`capture_failure_bundle`): on terminal failure it
+  writes a sanitized bundle (step, URLs reduced to scheme/host/path, DOM
+  excerpt, screenshot, console/exception/log rows, network events, timings),
+  bounded by `READY_AI_FR_*` caps.
   Prometheus export is slotted post-harness.
 - `notify.py`, `history.py`, `versioning.py` (manifests, `manifest.json` per run),
   `mcp_server.py` — notifiers, run history, versioned doc sets, MCP exposure.
@@ -119,8 +123,13 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
 `renderer`/`parser` (multilingual steps) → `visual_diff` + `semantic_diff` →
 `auto_healer` (**multi-causal gate**: heal only when visual drift AND DOM change agree,
 else `DRIFT_SUSPECTED`) → `healing_publisher` (reviewable PR body) → `report_html`
-(standalone report) / `export` / `text_diff` (`changelog.md` + `diff.json`) /
-`terminal_output`. Frozen as example surface: bugfixes yes, features no.
+(standalone report + `render_healer_scorecard`) / `export` / `text_diff`
+(`changelog.md` + `diff.json`) / `terminal_output`. Frozen as example
+surface: bugfixes yes, features no.
+
+`tools/mutation_harness/` drives the monthly drill (v0.5.0): YAML-declared
+mutations applied over CDP measure TP/FP/FN/TN per regime — `single_visual`,
+`single_dom`, `gated` — and emit `healer_scorecard.{json,html}`.
 
 ## 7. Effects & safety model
 

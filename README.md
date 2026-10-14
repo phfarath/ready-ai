@@ -50,9 +50,10 @@ Precision here means: the same flow passes 50/50 on a clean tree and fails loudl
 | Explicit tab/session contexts, allowlisted upload, verified download, explicit dialogs | ✅ shipped (v0.3.0) |
 | Human checkpoint (`await_human` pause/resume) + persistent profiles, temp cleanup | ✅ shipped (v0.3.0) |
 | Zero-token replay: manifest compile + drift gate + bounded fallback + before/after cost | ✅ shipped (v0.4.0) |
-| Mutation scorecard (detection rate / false-positive rate per channel) | 🚧 Fase 4 (`READY-AI-T-PH4-DIAG-SCORE`) |
+| Sanitized flight recorder on terminal failure (bundle correlated to run/step, no secrets or response bodies) | ✅ shipped (v0.5.0) |
+| Mutation scorecard (detection rate / false-positive rate per channel, single vs gated) | ✅ shipped (v0.5.0) |
 
-Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; zero-token replay shipped in v0.4.0.
+Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; replay shipped in v0.4.0, diagnosis + measured healing in v0.5.0.
 
 ## What this is / is not
 
