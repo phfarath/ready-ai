@@ -34,6 +34,7 @@ from typing import (
     Any,
     AsyncIterator,
     Collection,
+    Coroutine,
     Mapping,
     Optional,
 )
@@ -63,7 +64,7 @@ from .models import BrowserOptions, EffectPolicy, Flow, Profile, RunResult
 
 logger = logging.getLogger(__name__)
 
-_QUEUE_END = object()
+_QUEUE_END: "Optional[RunEvent]" = None  # terminal sentinel for events()
 """Sentinel pushed onto the event queue when the run task terminates."""
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -120,7 +121,7 @@ def _to_flow_spec(
     cookies_file: Optional[str] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
-):
+) -> Any:
     """Translate the public ``Flow`` onto the engine's ``FlowSpec``.
 
     Credentials arrive as resolved profile *references* (paths/logins),
@@ -198,9 +199,9 @@ class RunHandle:
         *,
         run_id: str,
         task: "asyncio.Task[RunResult]",
-        queue: "asyncio.Queue",
+        queue: "asyncio.Queue[Optional[RunEvent]]",
         loop_obj: AgenticLoop,
-    ):
+    ) -> None:
         self.run_id = run_id
         self._task = task
         self._queue = queue
@@ -218,7 +219,7 @@ class RunHandle:
         """
         while True:
             item = await self._queue.get()
-            if item is _QUEUE_END:
+            if item is None:
                 return
             yield item
 
@@ -316,7 +317,7 @@ class ReadyAI:
         *,
         run_id: Optional[str] = None,
         resume_from: Optional[str] = None,
-    ):
+    ) -> tuple[Any, AgenticLoop, str, str]:
         """Build the (flow_spec, loop, output_dir, run_id) bundle for a run.
 
         Validation of public models happens at their construction;
@@ -360,12 +361,12 @@ class ReadyAI:
 
     async def _await_mapped(
         self,
-        coro,
+        coro: Coroutine[Any, Any, dict[str, Any]],
         *,
         timeout_s: float,
         run_id: str,
         label: str,
-    ):
+    ) -> dict[str, Any]:
         """Await a coroutine under ``timeout_s``, mapping every failure
         onto the public exception taxonomy.
 
@@ -374,7 +375,7 @@ class ReadyAI:
         catch-all keeps uncategorized engine failures off the surface.
         """
 
-        async def _guarded():
+        async def _guarded() -> dict[str, Any]:
             # Re-label engine-internal TimeoutErrors before wait_for can
             # alias them to the budget-expiry signal (py3.11+ identity).
             try:
@@ -419,7 +420,7 @@ class ReadyAI:
     async def _execute(
         self,
         loop: AgenticLoop,
-        flow_spec,
+        flow_spec: Any,
         *,
         timeout_s: float,
         confirm: Optional[Collection[str]],
@@ -557,7 +558,7 @@ class ReadyAI:
                 "`ai.run_sync(...)` from synchronous code"
             ) from exc
         flow_spec, loop, output_dir, rid = self._prepare(flow, browser)
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue[Optional[RunEvent]] = asyncio.Queue()
         last_seq = [0]
         saw_terminal = [False]
 
@@ -667,7 +668,7 @@ class ReadyAI:
 
     async def replay_manifest(
         self,
-        manifest: str | Path | Mapping,
+        manifest: str | Path | Mapping[str, Any],
         *,
         browser: Optional[BrowserOptions] = None,
         confirm: Collection[str] | None = None,
@@ -694,6 +695,7 @@ class ReadyAI:
         """
         from src.agent.replay import read_manifest, run_replay
 
+        loaded: Mapping[str, Any]
         if isinstance(manifest, (str, Path)):
             try:
                 loaded = read_manifest(manifest)
@@ -756,7 +758,7 @@ class ReadyAI:
         source_run_id: Optional[str],
         run_id: str,
         output_dir: str | Path,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Best-effort before/after cost ledger (PH3C) from metrics artifacts.
 
         Reads ``{run_id}_flow_metrics.json`` (replay) and
@@ -766,16 +768,17 @@ class ReadyAI:
         """
         from ready_ai.replay import summarize_replay_cost
 
-        def _read_metrics(rid: Optional[str]):
+        def _read_metrics(rid: Optional[str]) -> Optional[dict[str, Any]]:
             if not rid:
                 return None
             candidate = Path(output_dir) / f"{rid}_flow_metrics.json"
             if not candidate.is_file():
                 return None
             try:
-                return json.loads(candidate.read_text(encoding="utf-8"))
+                data = json.loads(candidate.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 return None
+            return data if isinstance(data, dict) else None
 
         return summarize_replay_cost(
             _read_metrics(source_run_id), _read_metrics(run_id)

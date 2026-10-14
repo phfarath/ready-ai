@@ -23,8 +23,8 @@ flow = Flow(
 )
 
 ai = ReadyAI()
-result = asyncio.run(ai.run_flow(flow))
-print(result.status)  # passed | failed
+result = ai.run_sync(flow)
+print(result.status)  # passed | failed | paused | cancelled | error
 ```
 
 60 seconds to first green run: `pip install -e ".[dev]"`, export one LLM key, run the snippet above against your staging URL.
@@ -52,6 +52,8 @@ Precision here means: the same flow passes 50/50 on a clean tree and fails loudl
 | Zero-token replay: manifest compile + drift gate + bounded fallback + before/after cost | ✅ shipped (v0.4.0) |
 | Sanitized flight recorder on terminal failure (bundle correlated to run/step, no secrets or response bodies) | ✅ shipped (v0.5.0) |
 | Mutation scorecard (detection rate / false-positive rate per channel, single vs gated) | ✅ shipped (v0.5.0) |
+| Public async-first SDK (`run`/`start`/`resume`, ordered events, cooperative cancel, typed exceptions) | ✅ shipped (v0.6.0) |
+| Distribution contract (`py.typed`, strict mypy gate, wheel install smoke in CI) | ✅ shipped (v0.6.0) |
 
 Known limits today: OAuth/SSO auto-login (human checkpoint only, by design), heavy multi-app SSO chains — Fase 2 closed; replay shipped in v0.4.0, diagnosis + measured healing in v0.5.0.
 
@@ -79,8 +81,21 @@ flow = Flow(url="https://app.example.com", steps=[FlowStep(
     actions=[FlowAction(action="observe")],
 )])
 ai = ReadyAI(profiles={"qa": "./cookies.json"})
-result = asyncio.run(ai.run_flow(flow, browser=BrowserOptions(profile="qa")))
+
+async def main():
+    result = await ai.run(flow, browser=BrowserOptions(profile="qa"))
+    print(result.status, result.run_id)
+
+asyncio.run(main())
 ```
+
+The SDK is async-first: `run()`/`start()` stream ordered `RunEvent`s and
+support cooperative cancellation; `run_sync()` is the synchronous
+entrypoint; `resume(run_id)` continues a paused human checkpoint. The
+full surface — `ReadyAI`, `Flow*`/`Run*` models, `RunEvent`, and the
+typed exception taxonomy — ships `py.typed` and is strict-mypy clean;
+`src.*` internals are not public (see the versioning policy in
+`CHANGELOG.md`).
 
 CLI (flows and docs consumers):
 
@@ -110,7 +125,9 @@ Authenticated runs: prefer a cookies JSON array file (`--cookies-file`, `profile
 
 ```bash
 python3 -m pytest -q
-ruff check src/ tests/ main.py
+ruff check src/ tests/ main.py ready_ai/ examples/
+python -m mypy
 ```
 
-CI runs lint plus pytest across Python 3.10–3.12. See `CONTRIBUTING.md` and `SECURITY.md`.
+CI runs lint, strict mypy and pytest across Python 3.10–3.12, plus a
+wheel build installed into a clean venv. See `CONTRIBUTING.md` and `SECURITY.md`.

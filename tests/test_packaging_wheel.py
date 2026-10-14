@@ -248,6 +248,26 @@ def test_wheel_contains_public_package_and_engine(wheel):
     assert "main.py" in names, "CLI entry module must remain in the wheel"
 
 
+def test_wheel_contains_py_typed_marker(wheel):
+    """PEP 561: the wheel must ship ``ready_ai/py.typed`` so type
+    checkers treat the public SDK as typed."""
+    with zipfile.ZipFile(wheel) as zf:
+        assert "ready_ai/py.typed" in zf.namelist()
+
+
+def test_wheel_core_metadata(wheel):
+    """Core metadata present on either build path (real backend or the
+    hermetic fallback assembler)."""
+    with zipfile.ZipFile(wheel) as zf:
+        meta_name = next(
+            n for n in zf.namelist() if n.endswith(".dist-info/METADATA")
+        )
+        metadata = zf.read(meta_name).decode("utf-8")
+    lines = {line.strip() for line in metadata.splitlines()}
+    assert "Name: ready-ai" in lines
+    assert "Requires-Python: >=3.10" in lines
+
+
 # ─── Clean-env smoke run ───────────────────────────────────────────────────
 
 
