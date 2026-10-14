@@ -46,6 +46,24 @@ def _history_safe_event(event: dict[str, Any]) -> dict[str, Any]:
         if event.get(key) is not None:
             safe[key] = event[key]
 
+    def _history_url(raw: Any) -> str:
+        """scheme://host[:port]/path — query, fragment and userinfo dropped.
+
+        ``netloc`` would keep ``user:pass@``, so the host is rebuilt
+        explicitly; a malformed port must not kill history capture.
+        """
+        try:
+            parsed = urlsplit(str(raw))
+            host = parsed.hostname or ""
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            netloc = f"{host}:{port}" if port else host
+            return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        except (TypeError, ValueError):
+            return ""
+
     params = event.get("params") or {}
     safe_params: dict[str, Any] = {}
     for key in (
@@ -70,25 +88,19 @@ def _history_safe_event(event: dict[str, Any]) -> dict[str, Any]:
         }
     if isinstance(params.get("response"), dict):
         response = params["response"]
-        url = str(response.get("url") or "")
-        parsed = urlsplit(url)
         safe_params["response"] = {
             "status": response.get("status"),
-            "url": urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+            "url": _history_url(response.get("url") or ""),
         }
     elif params.get("url") is not None:
-        url = str(params["url"])
-        parsed = urlsplit(url)
-        safe_params["url"] = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        safe_params["url"] = _history_url(params["url"])
     if isinstance(params.get("request"), dict):
         # Network.requestWillBeSent: method + query-less URL only — never
         # headers or postData, which routinely carry credentials.
         request = params["request"]
-        url = str(request.get("url") or "")
-        parsed = urlsplit(url)
         safe_params["request"] = {
             "method": request.get("method"),
-            "url": urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+            "url": _history_url(request.get("url") or ""),
         }
     method = event.get("method")
     if method == "Network.loadingFailed":
@@ -119,12 +131,9 @@ def _history_safe_event(event: dict[str, Any]) -> dict[str, Any]:
             safe_details: dict[str, Any] = {}
             if details.get("text") is not None:
                 safe_details["text"] = str(details["text"])[:300]
-            url = str(details.get("url") or "")
+            url = _history_url(details.get("url") or "")
             if url:
-                parsed = urlsplit(url)
-                safe_details["url"] = urlunsplit(
-                    (parsed.scheme, parsed.netloc, parsed.path, "", "")
-                )
+                safe_details["url"] = url
             if details.get("lineNumber") is not None:
                 safe_details["lineNumber"] = details["lineNumber"]
             exception = details.get("exception")
@@ -145,12 +154,9 @@ def _history_safe_event(event: dict[str, Any]) -> dict[str, Any]:
                     safe_entry[key] = str(entry[key])
             if entry.get("text") is not None:
                 safe_entry["text"] = str(entry["text"])[:300]
-            url = str(entry.get("url") or "")
+            url = _history_url(entry.get("url") or "")
             if url:
-                parsed = urlsplit(url)
-                safe_entry["url"] = urlunsplit(
-                    (parsed.scheme, parsed.netloc, parsed.path, "", "")
-                )
+                safe_entry["url"] = url
             if safe_entry:
                 safe_params["entry"] = safe_entry
     if safe_params:
@@ -789,7 +795,9 @@ class CDPConnection:
 
         # Step 3: re-enable the essential domains and the cursor.
         if self._session_id:
-            for method in ("Page.enable", "DOM.enable", "Runtime.enable"):
+            for method in (
+                "Page.enable", "DOM.enable", "Runtime.enable", "Log.enable"
+            ):
                 try:
                     await self.send(
                         method, session_id=self._session_id, timeout=5.0
@@ -814,7 +822,9 @@ class CDPConnection:
         """Re-enable Page/DOM/Runtime and re-inject the cursor script on a
         freshly auto-attached session so events fire and the visual overlay
         survives cross-origin process swaps."""
-        for method in ("Page.enable", "DOM.enable", "Runtime.enable"):
+        for method in (
+            "Page.enable", "DOM.enable", "Runtime.enable", "Log.enable"
+        ):
             try:
                 await self.send(method, session_id=session_id, timeout=5.0)
             except Exception as e:

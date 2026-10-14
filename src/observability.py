@@ -40,6 +40,21 @@ _REDACTED_VALUE = "***REDACTED***"
 # Quickly identify strings that look like URLs with a scheme authority.
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 
+# http(s) URLs embedded inside free text (stack traces, assertion
+# messages, console args). The trailing class excludes common quoting /
+# bracketing so the regex does not swallow sentence punctuation.
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s\"'<>\)\]\}]+")
+
+
+def _safe_netloc(parsed) -> str:
+    """``host[:port]`` with userinfo dropped; malformed ports tolerated."""
+    host = parsed.hostname or ""
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return f"{host}:{port}" if port is not None else host
+
 
 def _strip_url_userinfo(value: str) -> str:
     """Strip ``user:pass@`` userinfo from an http/https URL.
@@ -55,19 +70,42 @@ def _strip_url_userinfo(value: str) -> str:
     if parsed.scheme in ("http", "https") and (
         parsed.username or parsed.password
     ):
-        netloc = parsed.hostname or ""
-        if parsed.port is not None:
-            netloc = f"{netloc}:{parsed.port}"
-        return urlunparse(parsed._replace(netloc=netloc))
+        return urlunparse(parsed._replace(netloc=_safe_netloc(parsed)))
     return value
 
 
-def _redact(value: Any) -> Any:
+def _scrub_embedded_urls(value: str) -> str:
+    """Reduce every http(s) URL inside free text to scheme://host/path.
+
+    Free-text fields (failure reasons, stack traces, console args) carry
+    raw URLs with query strings, userinfo and fragment secrets. Each
+    embedded URL is rewritten to its safe form; an URL that cannot be
+    parsed is replaced by a placeholder rather than kept verbatim.
+    """
+    def _sub(match: "re.Match[str]") -> str:
+        raw = match.group(0)
+        try:
+            parsed = urlparse(raw)
+            if not parsed.hostname:
+                return "[redacted-url]"
+            return urlunparse(
+                (parsed.scheme, _safe_netloc(parsed), parsed.path, "", "", "")
+            )
+        except (TypeError, ValueError):
+            return "[redacted-url]"
+
+    return _EMBEDDED_URL_RE.sub(_sub, value)
+
+
+def _redact(value: Any, *, scrub_embedded: bool = False) -> Any:
     """Recursively redact sensitive keys and sanitize URLs in ``value``.
 
     - Dict keys matching ``_SENSITIVE_KEYS`` (case-insensitive) have their
       values replaced with ``***REDACTED***``.
     - String values have URL userinfo stripped.
+    - With ``scrub_embedded`` (flight-recorder bundles only) every
+      embedded http(s) URL is additionally reduced to scheme/host/path —
+      stricter than logs, which keep queries for debuggability.
     - Nested dicts and lists are traversed recursively.
     """
     if isinstance(value, dict):
@@ -75,14 +113,15 @@ def _redact(value: Any) -> Any:
             k: (
                 _REDACTED_VALUE
                 if k.lower() in _SENSITIVE_KEYS
-                else _redact(v)
+                else _redact(v, scrub_embedded=scrub_embedded)
             )
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_redact(item) for item in value]
+        return [_redact(item, scrub_embedded=scrub_embedded) for item in value]
     if isinstance(value, str):
-        return _strip_url_userinfo(value)
+        value = _strip_url_userinfo(value)
+        return _scrub_embedded_urls(value) if scrub_embedded else value
     return value
 
 
@@ -479,7 +518,7 @@ class FlightRecorderConfig:
 
         return cls(
             enabled=os.environ.get(ENV_FR_DISABLED, "").lower()
-            not in ("1", "true", "yes"),
+            not in ("1", "true", "yes", "on"),
             max_dom_chars=_int(ENV_FR_MAX_DOM_CHARS, 8_000),
             max_events=_int(ENV_FR_MAX_EVENTS, 100),
             max_screenshot_bytes=_int(
@@ -497,10 +536,9 @@ def _bundle_url(value: Any) -> str:
         parsed = urlparse(value)
     except (TypeError, ValueError):
         return ""
-    netloc = parsed.hostname or ""
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
-    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+    return urlunparse(
+        (parsed.scheme, _safe_netloc(parsed), parsed.path, "", "", "")
+    )
 
 
 def _console_entry(sequence: int, event: dict[str, Any]) -> dict[str, Any]:
@@ -685,14 +723,20 @@ async def capture_failure_bundle(
             os.environ.get(ENV_FR_DIR) or Path(output_dir) / "flight_recorder"
         )
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{run_id}_failure.json"
+        # run_id is user-controlled (CLI --run-id, FlowSpec) and flows
+        # straight into the filename — sanitize it so a pathological id
+        # cannot escape the recorder directory.
+        safe_run_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(run_id)) or "run"
+        path = directory / f"{safe_run_id}_failure.json"
         path.write_text(
-            json.dumps(_redact(bundle), indent=2, default=str),
+            json.dumps(
+                _redact(bundle, scrub_embedded=True), indent=2, default=str
+            ),
             encoding="utf-8",
         )
         _prune_bundles(directory, cfg.max_bundles)
         log_event("flight_recorder_bundle", run_id=run_id, path=str(path))
         return path
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 — the recorder never raises
         logger.warning(f"Failed to write flight recorder bundle: {exc}")
         return None

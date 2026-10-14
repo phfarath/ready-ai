@@ -511,3 +511,141 @@ async def test_screenshot_cap_omits_oversized_capture(tmp_path):
     )
     bundle = json.loads(path.read_text(encoding="utf-8"))
     assert bundle["screenshot_b64"].startswith("omitted:")
+
+
+@pytest.mark.asyncio
+async def test_enable_sends_diagnostic_domains_on_primary_session():
+    """Regression — Runtime/Log must be enabled on the primary session or
+    ``bundle['console']`` stays empty forever in production."""
+    from src.cdp.page import PageDomain
+
+    conn = MagicMock()
+    conn.send = AsyncMock(return_value={})
+    conn.session_id = "s-1"
+    page = PageDomain(conn)
+
+    await page.enable()
+
+    sent = [call.args[0] for call in conn.send.call_args_list]
+    assert "Runtime.enable" in sent
+    assert "Log.enable" in sent
+
+
+@pytest.mark.asyncio
+async def test_pending_confirmation_is_not_labeled_failed(
+    tmp_path, monkeypatch
+):
+    """A run parked on a confirmation gate is not a FAILED run."""
+    loop, page, runtime, _ = _make_loop(tmp_path)
+    dispatch = AsyncMock(return_value="should not run")
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    flow = FlowSpec(
+        name="guarded",
+        url="https://app.example.com/start",
+        steps=[
+            FlowStepSpec(
+                name="Charge card",
+                confirm=True,
+                actions=[
+                    FlowAction(action="navigate", url="https://x.example.com")
+                ],
+            )
+        ],
+    )
+
+    result = await loop.run_flow(flow)
+
+    assert result["status"] == "pending_confirmation"
+    dispatch.assert_not_awaited()
+    _, bundle = _read_bundle(tmp_path)
+    assert bundle["status"] == "PENDING_CONFIRMATION"
+
+
+@pytest.mark.asyncio
+async def test_free_text_failure_reason_has_urls_scrubbed(tmp_path):
+    """Embedded URLs in free text lose query, fragment and userinfo."""
+    path = await capture_failure_bundle(
+        output_dir=str(tmp_path),
+        run_id="scrub",
+        failure_reason=(
+            "assert failed: "
+            "actual='https://u:p@app.example.com/cb?token=abc&x=1#frag'"
+        ),
+        step={
+            "index": 1,
+            "failure_reason": "see https://a.example.com/log?key=k",
+        },
+    )
+    raw = path.read_text(encoding="utf-8")
+    assert "https://app.example.com/cb" in raw
+    assert "https://a.example.com/log" in raw
+    assert "token=abc" not in raw
+    assert "key=k" not in raw
+    assert "u:p@" not in raw
+    assert "frag" not in raw
+
+
+@pytest.mark.asyncio
+async def test_run_id_cannot_escape_the_recorder_directory(tmp_path):
+    """User-controlled run_id is sanitized before hitting the filename."""
+    path = await capture_failure_bundle(
+        output_dir=str(tmp_path),
+        run_id="../../evil",
+    )
+    assert path is not None
+    assert path.parent == tmp_path / "flight_recorder"
+    assert ".." not in path.name
+
+
+@pytest.mark.asyncio
+async def test_history_url_drops_userinfo_and_query():
+    event = _history_safe_event(
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "request": {
+                    "method": "GET",
+                    "url": "https://u:p@api.example.com/x?token=1",
+                }
+            },
+        }
+    )
+    assert event["params"]["request"]["url"] == "https://api.example.com/x"
+
+
+@pytest.mark.asyncio
+async def test_recorder_failure_does_not_mask_original_exception(
+    tmp_path, monkeypatch
+):
+    """If the recorder itself blows up, the original error still wins."""
+    loop, *_ = _make_loop(tmp_path)
+    loop._session.setup = AsyncMock(
+        side_effect=RuntimeError("original-boom")
+    )
+    monkeypatch.setattr(
+        "src.agent.loop.capture_failure_bundle",
+        AsyncMock(side_effect=RuntimeError("recorder-boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="original-boom"):
+        await loop.run_flow(_failing_flow())
+
+
+@pytest.mark.asyncio
+async def test_pipeline_exception_writes_bundle_with_step_index(
+    tmp_path, monkeypatch
+):
+    """The run() pipeline hook produces a kind='pipeline' bundle."""
+    loop, *_ = _make_loop(tmp_path)
+    loop._session.setup = AsyncMock(
+        side_effect=RuntimeError("pipeline-boom")
+    )
+    loop._state.current_step_index = 3
+
+    with pytest.raises(RuntimeError, match="pipeline-boom"):
+        await loop.run()
+
+    _, bundle = _read_bundle(tmp_path)
+    assert bundle["kind"] == "pipeline"
+    assert bundle["step"] == {"index": 3}
+    assert "pipeline-boom" in bundle["failure_reason"]
