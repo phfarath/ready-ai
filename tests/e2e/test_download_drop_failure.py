@@ -75,7 +75,7 @@ async def test_download_completes_to_configured_dir(e2e_server, tmp_path, cdp_po
 
 
 @pytest.mark.asyncio
-async def test_chrome_kill_reports_terminal_disconnect(e2e_server, tmp_path, cdp_port):
+async def test_chrome_kill_reports_terminal_disconnect(e2e_server, tmp_path, cdp_port, monkeypatch):
     flow = FlowSpec(
         name="kill-midflow",
         url=f"{e2e_server}/spa",
@@ -98,14 +98,31 @@ async def test_chrome_kill_reports_terminal_disconnect(e2e_server, tmp_path, cdp
         ],
     )
     loop = _loop(flow.url, tmp_path=tmp_path, cdp_port=cdp_port, run_id="e2e-kill")
+
+    # Deterministic sync: kill Chrome only once step 2's `wait` action is
+    # actually in flight. A fixed sleep races the initial navigate on slow
+    # machines — the kill then lands in setup, which is a DIFFERENT
+    # contract (run-level exception propagates out of run_flow instead of
+    # a per-step terminal failure) and is out of scope here.
+    from src.agent import executor
+
+    step2_in_flight = asyncio.Event()
+    real_dispatch = executor._dispatch_action
+
+    async def _spy(action, page, input_domain, runtime):
+        if isinstance(action, dict) and action.get("action") == "wait":
+            step2_in_flight.set()
+        return await real_dispatch(action, page, input_domain, runtime)
+
+    monkeypatch.setattr(executor, "_dispatch_action", _spy)
+
     task = asyncio.create_task(loop.run_flow(flow))
-    # Wait for Chrome to be up, then give step 1 time to pass so the kill
-    # lands mid-flight in step 2 (never in setup or step 1).
-    for _ in range(40):
+    for _ in range(80):  # up to ~20s for the Chrome proc to appear
         if loop._session._chrome_proc is not None:
             break
         await asyncio.sleep(0.25)
-    await asyncio.sleep(3.0)
+    assert loop._session._chrome_proc is not None, "Chrome never launched"
+    await asyncio.wait_for(step2_in_flight.wait(), timeout=60.0)
     loop._session._chrome_proc.kill()
     result = await asyncio.wait_for(task, timeout=90.0)
     assert result["status"] == "failed", result
