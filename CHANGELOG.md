@@ -2,6 +2,37 @@
 
 Format: one entry per release. Tags `vX.Y.Z` cut only from `main` after the phase DoD is green.
 
+## Versioning policy
+
+`ready-ai` follows SemVer while in `0.x`: **minor** releases may add
+surface and adjust behavior documented in the release entry; **patch**
+releases are fixes only. Within the public SDK surface
+(`ready_ai` package: `ReadyAI`, `Flow*`/`Run*` models, `RunEvent`,
+the exception taxonomy), a breaking change — removal, signature change
+or semantic change of a documented name — first appears as a
+deprecation: the old name keeps working for at least one minor release
+and is announced in this changelog. Internal modules (`src.*`) are not
+covered by this policy; consumers must not import them.
+
+## v0.6.0 — 2026-10 — Public async-first SDK + distribution contract (Fase 5)
+
+- Async-first public API: `ReadyAI.run()` / `run_sync()` /
+  `start()` + `RunHandle` (ordered `RunEvent` stream, cooperative
+  `cancel()`, `done`), and `resume(run_id)` for human checkpoints —
+  all behind typed public exceptions (`ReadyAIError` family); no
+  `src.*` import is ever needed on the consumer side.
+- Distribution contract: wheel ships `ready_ai` + PEP 561 `py.typed`
+  and full metadata (readme, MIT license, classifiers, project URLs);
+  strict `mypy` gates `ready_ai` + `examples/` on Python 3.10/3.11/3.12;
+  CI builds the wheel and installs it into a clean venv (import + CLI +
+  minimal SDK smoke) on every PR.
+- Versioning policy formalized above; the public surface is now the
+  compatibility contract.
+- Reviewed across three passes before merge (PR #49); CI green
+  (lint, mypy, pytest 3.10–3.12, e2e, regression, CodeQL).
+- Known follow-up (tracked in `READY-AI-T-SDK-FOLLOWUPS`): paused
+  checkpoints are not yet bound to the originating flow fingerprint.
+
 ## v0.5.0 — 2026-10 — Diagnosable failures + measured healer precision (Fase 4)
 
 - Flight recorder: every terminal failure (`run`, `run_flow`, pipeline)

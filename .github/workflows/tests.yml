@@ -14,7 +14,39 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - name: Lint with ruff
-        run: ruff check src/ tests/ main.py
+        run: ruff check src/ tests/ main.py ready_ai/ examples/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - name: Strict mypy on the public SDK + typed examples
+        run: python -m mypy
+
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: pip install build && python -m build --wheel
+      - name: Install wheel into a clean venv and smoke-test it
+        run: |
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/pip install dist/*.whl
+          /tmp/wheelenv/bin/python -c "import ready_ai; assert ready_ai.__version__; print('import-ok', ready_ai.__version__)"
+          /tmp/wheelenv/bin/ready-ai --help >/dev/null
+          echo "wheel-install-ok"
 
   pytest:
     runs-on: ubuntu-latest

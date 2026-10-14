@@ -350,7 +350,7 @@ def _scrub_url_text(value: Any) -> Any:
     if not isinstance(value, str):
         return value
 
-    def _one(match: re.Match) -> str:
+    def _one(match: re.Match[str]) -> str:
         try:
             parsed = urlparse(match.group(0))
             host = parsed.hostname
@@ -360,7 +360,9 @@ def _scrub_url_text(value: Any) -> Any:
         if not host:
             return "[redacted-url]"
         netloc = host + (f":{port}" if port else "")
-        return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+        return str(
+            urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+        )
 
     return _EMBEDDED_URL_RE.sub(_one, value)
 

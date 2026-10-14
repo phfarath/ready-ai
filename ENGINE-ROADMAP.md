@@ -37,7 +37,7 @@
 | v0.3.0 | Fase 2 / `READY-AI-T-PH2-PRECISE-CORE` | Núcleo preciso e seguro | ✅ shipped |
 | v0.4.0 | Fase 3 / `READY-AI-T-PH3-ZERO-TOKEN-REPLAY` | Replay determinístico zero-token | ✅ shipped |
 | v0.5.0 | Fase 4 / `READY-AI-T-PH4-DIAG-SCORE` | Flight recorder + healer scorecard | ✅ shipped |
-| v0.6.0 | Fase 5 / `READY-AI-T-PH5-PUBLIC-SDK` | SDK público distribuível | 🚧 next |
+| v0.6.0 | Fase 5 / `READY-AI-T-PH5-PUBLIC-SDK` | SDK público distribuível | ✅ shipped |
 
 Cada release: bump em `pyproject.toml` + entrada no `CHANGELOG.md` + tag `vX.Y.Z`.
 `READY-AI-T-PH0-DOCS-RELEASES` acompanha todas: README e `docs/ARCHITECTURE.md` atualizados por release.

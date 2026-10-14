@@ -4,9 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ready-ai"
-version = "0.5.0"
+version = "0.6.0"
 description = "ready-ai: agentic browser automation for SaaS documentation generation using CDP + LLM"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "ready-ai contributors" },
+]
+keywords = ["browser-automation", "cdp", "llm", "sdk", "testing"]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "websockets>=12.0",
@@ -18,11 +36,19 @@ dependencies = [
     "tomli>=2.0.1; python_version < '3.11'",
 ]
 
+[project.urls]
+Homepage = "https://github.com/phfarath/ready-ai"
+Repository = "https://github.com/phfarath/ready-ai"
+Issues = "https://github.com/phfarath/ready-ai/issues"
+Changelog = "https://github.com/phfarath/ready-ai/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = [
+    "build>=1.0",
     "fastapi>=0.104,<1.0",
     "uvicorn>=0.24,<1.0",
     "httpx>=0.28,<1.0",
+    "mypy>=1.10,<3",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
@@ -39,6 +65,27 @@ py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["src*", "ready_ai*"]
+
+[tool.setuptools.package-data]
+ready_ai = ["py.typed"]
+
+# Public SDK surface is typed (PEP 561 `py.typed` marker ships in the
+# wheel). ``ready_ai`` is checked strict; the legacy engine under ``src``
+# is followed silently — its internals are not part of the public typing
+# contract. ``python_version`` is intentionally unset: CI runs mypy on
+# the real 3.10/3.11/3.12 interpreters so each supported version is
+# checked natively.
+[tool.mypy]
+files = ["ready_ai", "examples"]
+plugins = ["pydantic.mypy"]
+strict = true
+follow_imports = "silent"
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "src.*"
+follow_imports = "silent"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
