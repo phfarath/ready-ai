@@ -372,6 +372,43 @@ async def test_events_terminate_when_the_run_raises(tmp_path, monkeypatch):
         await handle.result()
 
 
+async def test_no_duplicate_terminal_event_when_engine_emitted(
+    tmp_path, monkeypatch
+):
+    """The engine emits run_finished(error) before re-raising — the SDK
+    synthesis must not append a second terminal event."""
+
+    class _TerminalDying:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+            self._sink = None
+
+        def set_event_sink(self, sink):
+            self._sink = sink
+
+        async def run_flow(self, spec, confirm=None):
+            self._sink({"seq": 1, "type": "run_started", "run_id": self.run_id})
+            self._sink(
+                {
+                    "seq": 2,
+                    "type": "run_finished",
+                    "run_id": self.run_id,
+                    "status": "error",
+                    "failure_reason": "boom",
+                }
+            )
+            raise WebSocketDisconnected("gone")
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _TerminalDying)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    handle = ai.start(_flow())
+
+    collected = [event async for event in handle.events()]
+    assert [e.type for e in collected].count("run_finished") == 1
+    with pytest.raises(ConnectionLostError):
+        await handle.result()
+
+
 async def test_event_payloads_are_scrubbed(tmp_path, monkeypatch):
     _patch_loop(
         monkeypatch,
@@ -536,3 +573,20 @@ def test_exception_taxonomy_hierarchy():
     assert issubclass(ready_ai.ConnectionLostError, ReadyAIError)
     assert issubclass(ready_ai.PolicyViolationError, ReadyAIError)
     assert issubclass(ready_ai.FlowValidationError, ValueError)
+
+
+def test_result_failure_reason_is_scrubbed():
+    result = RunResult.from_flow_result(
+        {
+            "run_id": "r1",
+            "status": "failed",
+            "failure_reason": (
+                "expected https://user:pass@app.example.com/x?token=abc"
+            ),
+            "steps": [],
+            "summary": {},
+        },
+        output_dir=".",
+    )
+    assert "user:pass@" not in (result.failure_reason or "")
+    assert "token=abc" not in (result.failure_reason or "")

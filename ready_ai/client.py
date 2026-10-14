@@ -358,23 +358,21 @@ class ReadyAI:
         )
         return flow_spec, loop, output_dir, rid
 
-    async def _execute(
+    async def _await_mapped(
         self,
-        loop: AgenticLoop,
-        flow_spec,
+        coro,
         *,
         timeout_s: float,
-        confirm: Optional[Collection[str]],
-        output_dir: str,
-        flow_label: str,
-    ) -> RunResult:
-        """Await ``loop.run_flow`` under the timeout and map every engine
-        failure onto the public exception taxonomy."""
-        coro = (
-            loop.run_flow(flow_spec)
-            if confirm is None
-            else loop.run_flow(flow_spec, confirm=confirm)
-        )
+        run_id: str,
+        label: str,
+    ):
+        """Await a coroutine under ``timeout_s``, mapping every failure
+        onto the public exception taxonomy.
+
+        Engine-internal ``TimeoutError`` is re-labelled before
+        ``wait_for`` can alias it to the budget-expiry signal, and a
+        catch-all keeps uncategorized engine failures off the surface.
+        """
 
         async def _guarded():
             # Re-label engine-internal TimeoutErrors before wait_for can
@@ -385,19 +383,19 @@ class ReadyAI:
                 raise _EngineTimeoutError(str(exc)) from exc
 
         try:
-            data = await asyncio.wait_for(_guarded(), timeout=timeout_s)
+            return await asyncio.wait_for(_guarded(), timeout=timeout_s)
         except _EngineTimeoutError as exc:
             raise ConnectionLostError(
-                f"run {loop.run_id!r} hit an internal timeout: {exc}"
+                f"run {run_id!r} hit an internal timeout: {exc}"
             ) from exc
         except asyncio.TimeoutError as exc:
             raise RunTimeoutError(
-                f"flow {flow_label!r} exceeded its "
+                f"flow {label!r} exceeded its "
                 f"timeout_s={timeout_s:g}s budget"
             ) from exc
         except asyncio.CancelledError as exc:
             raise RunCancelledError(
-                f"run {loop.run_id!r} was cancelled by the caller"
+                f"run {run_id!r} was cancelled by the caller"
             ) from exc
         except RunPolicyError as exc:
             raise PolicyViolationError(str(exc)) from exc
@@ -407,17 +405,47 @@ class ReadyAI:
             websockets.exceptions.ConnectionClosed,
         ) as exc:
             raise ConnectionLostError(
-                f"run {loop.run_id!r} lost the browser connection: "
+                f"run {run_id!r} lost the browser connection: "
                 f"{type(exc).__name__}"
             ) from exc
         except Exception as exc:
             # The taxonomy stays total: uncategorized engine failures
             # still surface as a public error, never a raw src.* type.
             raise ReadyAIError(
-                f"run {loop.run_id!r} failed: "
+                f"run {run_id!r} failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
-        return RunResult.from_flow_result(data, output_dir=output_dir)
+
+    async def _execute(
+        self,
+        loop: AgenticLoop,
+        flow_spec,
+        *,
+        timeout_s: float,
+        confirm: Optional[Collection[str]],
+        output_dir: str,
+        flow_label: str,
+        run_id: str,
+    ) -> RunResult:
+        """Await ``loop.run_flow`` under the timeout and map every engine
+        failure onto the public exception taxonomy."""
+        coro = (
+            loop.run_flow(flow_spec)
+            if confirm is None
+            else loop.run_flow(flow_spec, confirm=confirm)
+        )
+        data = await self._await_mapped(
+            coro,
+            timeout_s=timeout_s,
+            run_id=run_id,
+            label=flow_label,
+        )
+        try:
+            return RunResult.from_flow_result(data, output_dir=output_dir)
+        except ValidationError as exc:
+            raise FlowValidationError(
+                f"engine result for run {run_id!r} was malformed: {exc}"
+            ) from exc
 
     def validate_config(
         self, flow: Flow, *, browser: Optional[BrowserOptions] = None
@@ -462,6 +490,7 @@ class ReadyAI:
             confirm=confirm,
             output_dir=output_dir,
             flow_label=flow.name or rid,
+            run_id=rid,
         )
 
     async def run_flow(
@@ -530,10 +559,13 @@ class ReadyAI:
         flow_spec, loop, output_dir, rid = self._prepare(flow, browser)
         queue: asyncio.Queue = asyncio.Queue()
         last_seq = [0]
+        saw_terminal = [False]
 
         def _sink(event: Mapping[str, Any]) -> None:
             public = _to_public_event(event)
             last_seq[0] = public.seq
+            if public.type == "run_finished":
+                saw_terminal[0] = True
             queue.put_nowait(public)
 
         loop.set_event_sink(_sink)
@@ -547,14 +579,17 @@ class ReadyAI:
                     confirm=confirm,
                     output_dir=output_dir,
                     flow_label=flow.name or rid,
+                    run_id=rid,
                 )
             finally:
                 # Synthesize the terminal run_finished the engine could
                 # not emit on cancel/timeout (CancelledError bypasses
                 # the loop's except-Exception), so the stream always
-                # ends with an explicit outcome before _QUEUE_END.
+                # ends with an explicit outcome before _QUEUE_END. The
+                # engine already emitted one on its own error path —
+                # never duplicate the terminal event.
                 exc = sys.exc_info()[1]
-                if exc is not None:
+                if exc is not None and not saw_terminal[0]:
                     status = (
                         "cancelled"
                         if isinstance(exc, RunCancelledError)
@@ -599,7 +634,7 @@ class ReadyAI:
         # The run token reaches a filesystem path — same charset as
         # ``Flow.run_id``, validated here because ``resume`` takes it as
         # a plain parameter (traversal would escape the output dir).
-        if not _RUN_ID_RE.fullmatch(run_id or ""):
+        if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
             raise FlowValidationError(
                 f"run_id {run_id!r} is not a valid run token "
                 "(allowed: letters, digits, '_' and '-')"
@@ -627,6 +662,7 @@ class ReadyAI:
             confirm=confirm,
             output_dir=out_dir,
             flow_label=flow.name or rid,
+            run_id=rid,
         )
 
     async def replay_manifest(
@@ -682,29 +718,29 @@ class ReadyAI:
             cookies_file=credentials.cookies_file,
             run_id=run_id,
         )
-        try:
-            data = await asyncio.wait_for(
-                run_replay(
-                    manifest=loaded,
-                    loop=loop,
-                    allow_fallback=fallback_agentic,
-                    max_fallback_runs=max_fallback_runs,
-                    confirm=confirm,
-                ),
-                timeout=300.0,
-            )
-        except asyncio.TimeoutError as exc:
-            raise RunTimeoutError(
-                f"replay {run_id!r} exceeded its 300.0s budget"
-            ) from exc
-        except asyncio.CancelledError as exc:
-            raise RunCancelledError(
-                f"replay {run_id!r} was cancelled by the caller"
-            ) from exc
+        data = await self._await_mapped(
+            run_replay(
+                manifest=loaded,
+                loop=loop,
+                allow_fallback=fallback_agentic,
+                max_fallback_runs=max_fallback_runs,
+                confirm=confirm,
+            ),
+            timeout_s=300.0,
+            run_id=run_id,
+            label=f"replay {run_id!r}",
+        )
         cost = self._replay_cost_ledger(
             loaded.get("source_run_id"), run_id, output_dir
         )
-        return RunResult.from_flow_result(data, output_dir=output_dir, cost=cost)
+        try:
+            return RunResult.from_flow_result(
+                data, output_dir=output_dir, cost=cost
+            )
+        except ValidationError as exc:
+            raise FlowValidationError(
+                f"engine result for replay {run_id!r} was malformed: {exc}"
+            ) from exc
 
     def _replay_cost_ledger(
         self,

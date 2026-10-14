@@ -118,6 +118,7 @@ async def test_retry_event_between_step_started_and_finished(tmp_path, monkeypat
     retry = next(e for e in events if e["type"] == "retry")
     assert retry["action"] == "navigate"
     assert retry["attempt"] == 2
+    assert retry["step_index"] == 1
     assert types.index("step_started") < types.index("retry") < types.index("step_finished")
 
 

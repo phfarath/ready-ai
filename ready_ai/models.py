@@ -335,6 +335,34 @@ def _sanitize(value: Any) -> Any:
     return value
 
 
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s'\")\]]+")
+
+
+def _scrub_url_text(value: Any) -> Any:
+    """Reduce embedded http(s) URLs in free text to scheme://host[:port].
+
+    Run-level failure reasons carry free text (assert messages, engine
+    errors) where a URL's query/userinfo could leak credentials or
+    tokens — same treatment the event stream gets via the flight
+    recorder's ``scrub_embedded``.
+    """
+    if not isinstance(value, str):
+        return value
+
+    def _one(match: re.Match) -> str:
+        try:
+            parsed = urlparse(match.group(0))
+            host = parsed.hostname
+            port = parsed.port
+        except (ValueError, TypeError):
+            return "***"
+        if not host:
+            return "***"
+        return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
+
+    return _EMBEDDED_URL_RE.sub(_one, value)
+
+
 def _collect_artifacts(run_id: str, output_dir: str | Path) -> List[str]:
     """Only report result files that actually exist inside ``output_dir``."""
     base = Path(output_dir).resolve()
@@ -437,7 +465,9 @@ class RunResult(BaseModel):
             steps=steps,
             summary=_sanitize(data.get("summary") or {}),
             artifacts=_collect_artifacts(data.get("run_id") or "", output_dir),
-            failure_reason=_sanitize(data.get("failure_reason")),
+            failure_reason=_scrub_url_text(
+                _sanitize(data.get("failure_reason"))
+            ),
             pause=_sanitize(data.get("pause")),
             replay=replay if replay is not None else _sanitize(data.get("replay")),
             cost=cost,
