@@ -339,12 +339,13 @@ _EMBEDDED_URL_RE = re.compile(r"https?://[^\s'\")\]]+")
 
 
 def _scrub_url_text(value: Any) -> Any:
-    """Reduce embedded http(s) URLs in free text to scheme://host[:port].
+    """Reduce embedded http(s) URLs in free text to scheme://host[:port]/path.
 
-    Run-level failure reasons carry free text (assert messages, engine
-    errors) where a URL's query/userinfo could leak credentials or
-    tokens — same treatment the event stream gets via the flight
-    recorder's ``scrub_embedded``.
+    Diagnostic strings (assert messages, engine errors) carry raw URLs
+    whose query/userinfo/fragment could leak credentials or tokens —
+    same treatment the event stream gets via the flight recorder's
+    ``scrub_embedded``. The path is kept for diagnosability; query,
+    fragment and userinfo are dropped.
     """
     if not isinstance(value, str):
         return value
@@ -355,12 +356,40 @@ def _scrub_url_text(value: Any) -> Any:
             host = parsed.hostname
             port = parsed.port
         except (ValueError, TypeError):
-            return "***"
+            return "[redacted-url]"
         if not host:
-            return "***"
-        return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
+            return "[redacted-url]"
+        netloc = host + (f":{port}" if port else "")
+        return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
 
     return _EMBEDDED_URL_RE.sub(_one, value)
+
+
+_DIAG_TEXT_KEYS = frozenset(
+    {"failure_reason", "description", "message", "actual", "reason"}
+)
+
+
+def _scrub_diag(value: Any) -> Any:
+    """Scrub embedded URLs in diagnostic free-text fields of a structure.
+
+    Applied recursively: dict values whose key names a diagnostic
+    free-text field are scrubbed; everything else is recursed into.
+    Structured data (``extracted[].value``, URL fields) is untouched —
+    extraction payloads are what the caller asked for, not diagnostics.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                _scrub_url_text(item)
+                if key in _DIAG_TEXT_KEYS
+                else _scrub_diag(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_diag(item) for item in value]
+    return value
 
 
 def _collect_artifacts(run_id: str, output_dir: str | Path) -> List[str]:
@@ -456,7 +485,10 @@ class RunResult(BaseModel):
         run-flow results carry no ledger while manifest replays can attach
         both blocks explicitly.
         """
-        steps = [RunStep(**_sanitize(step)) for step in data.get("steps", [])]
+        steps = [
+            RunStep(**_scrub_diag(_sanitize(step)))
+            for step in data.get("steps", [])
+        ]
         return cls(
             run_id=str(data.get("run_id") or ""),
             flow=data.get("flow"),
@@ -468,7 +500,7 @@ class RunResult(BaseModel):
             failure_reason=_scrub_url_text(
                 _sanitize(data.get("failure_reason"))
             ),
-            pause=_sanitize(data.get("pause")),
+            pause=_scrub_diag(_sanitize(data.get("pause"))),
             replay=replay if replay is not None else _sanitize(data.get("replay")),
             cost=cost,
         )

@@ -590,3 +590,82 @@ def test_result_failure_reason_is_scrubbed():
     )
     assert "user:pass@" not in (result.failure_reason or "")
     assert "token=abc" not in (result.failure_reason or "")
+
+
+async def test_step_level_diag_text_is_scrubbed():
+    """Assert diagnostics embed the live page URL — query tokens and
+    userinfo must not survive into RunResult step payloads."""
+    result = RunResult.from_flow_result(
+        {
+            "run_id": "r1",
+            "status": "failed",
+            "steps": [
+                {
+                    "index": 1,
+                    "status": "failed",
+                    "failure_reason": "see https://app.example.com/cb?code=sekrit",
+                    "actions": [
+                        {
+                            "action": "click",
+                            "status": "failed",
+                            "description": "err at https://u:p@h.io/x?t=1",
+                            "failure_reason": "boom https://h.io?token=zz",
+                        }
+                    ],
+                    "asserts": [
+                        {
+                            "type": "url_contains",
+                            "status": "failed",
+                            "message": "expected x actual https://app.io/cb?session=abc",
+                            "actual": "https://app.io/cb?session=abc",
+                        }
+                    ],
+                    "extracted": [
+                        {"name": "link", "value": "https://site.io/a?keep=1"}
+                    ],
+                }
+            ],
+            "summary": {},
+        },
+        output_dir=".",
+    )
+    step = result.steps[0]
+    assert "code=sekrit" not in step.failure_reason
+    assert "app.example.com/cb" in step.failure_reason  # path kept
+    action = step.actions[0]
+    assert "u:p@" not in action["description"]
+    assert "token=zz" not in action["failure_reason"]
+    assertion = step.asserts[0]
+    assert "session=abc" not in assertion["message"]
+    assert "session=abc" not in assertion["actual"]
+    # Extraction payloads are caller-requested data, not diagnostics.
+    assert step.extracted[0]["value"] == "https://site.io/a?keep=1"
+
+
+async def test_replay_manifest_load_errors_map_to_flow_validation(tmp_path):
+    """Missing/corrupt manifest paths and non-mapping manifests must not
+    leak raw builtins across the public boundary."""
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(FlowValidationError, match="cannot read"):
+        await ai.replay_manifest(tmp_path / "nope_replay_manifest.json")
+    with pytest.raises(FlowValidationError, match="path or a mapping"):
+        await ai.replay_manifest(42)
+
+
+async def test_result_conversion_type_errors_map_to_flow_validation(
+    tmp_path, monkeypatch
+):
+    """A non-mapping step entry raises TypeError inside RunStep(**step) —
+    must surface as FlowValidationError, not a raw builtin."""
+    _patch_loop(
+        monkeypatch,
+        result={
+            "run_id": "r1",
+            "status": "passed",
+            "steps": ["not-a-dict"],
+            "summary": {},
+        },
+    )
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(FlowValidationError, match="malformed"):
+        await ai.run(_flow())

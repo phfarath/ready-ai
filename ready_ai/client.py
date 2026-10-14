@@ -442,7 +442,7 @@ class ReadyAI:
         )
         try:
             return RunResult.from_flow_result(data, output_dir=output_dir)
-        except ValidationError as exc:
+        except (ValidationError, TypeError) as exc:
             raise FlowValidationError(
                 f"engine result for run {run_id!r} was malformed: {exc}"
             ) from exc
@@ -694,11 +694,20 @@ class ReadyAI:
         """
         from src.agent.replay import read_manifest, run_replay
 
-        loaded = (
-            read_manifest(manifest)
-            if isinstance(manifest, (str, Path))
-            else manifest
-        )
+        if isinstance(manifest, (str, Path)):
+            try:
+                loaded = read_manifest(manifest)
+            except (OSError, ValueError, TypeError) as exc:
+                raise FlowValidationError(
+                    f"cannot read replay manifest {manifest!r}: {exc}"
+                ) from exc
+        elif isinstance(manifest, Mapping):
+            loaded = manifest
+        else:
+            raise FlowValidationError(
+                "manifest must be a path or a mapping, "
+                f"got {type(manifest).__name__}"
+            )
         browser = self._merge_browser(browser)
         credentials = self._resolve_profile(browser.profile)
         if credentials.username and credentials.password:
@@ -737,7 +746,7 @@ class ReadyAI:
             return RunResult.from_flow_result(
                 data, output_dir=output_dir, cost=cost
             )
-        except ValidationError as exc:
+        except (ValidationError, TypeError) as exc:
             raise FlowValidationError(
                 f"engine result for replay {run_id!r} was malformed: {exc}"
             ) from exc
