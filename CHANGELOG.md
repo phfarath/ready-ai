@@ -2,6 +2,33 @@
 
 Format: one entry per release. Tags `vX.Y.Z` cut only from `main` after the phase DoD is green.
 
+## v0.5.0 — 2026-10 — Diagnosable failures + measured healer precision (Fase 4)
+
+- Flight recorder: every terminal failure (`run`, `run_flow`, pipeline)
+  writes `<run_id>_failure.json` — failed step, URLs (scheme/host/path
+  only), sanitized DOM excerpt, screenshot, console/exception/Log rows,
+  network events and timings — correlated to the run; bounded by
+  `READY_AI_FR_*` caps and retention.
+- Sanitized event history at the source: `_history_safe_event` retains
+  only routing/outcome fields — never headers, postData, response bodies
+  or credentials; `Runtime`/`Log` are now enabled on the primary session
+  so console rows reach the bundle.
+- Multi-causal healing gate effective on main (US5 port): auto-heal
+  requires ≥2 causally distinct channels agreeing; a single channel
+  yields `DRIFT_SUSPECTED` and never heals silently; per-step channel
+  agreement logged; healing never rewrites step assertions.
+- Mutation harness (`tools/mutation_harness`): YAML-declared mutations
+  applied over CDP measure TP/FP/FN/TN per regime (single_visual,
+  single_dom, gated); scorecard rendered into the HTML report
+  (`render_healer_scorecard`); monthly drill documented in
+  `docs/MUTATION-DRILL.md`.
+- All three PRs (#44/#45/#46) independently reviewed before merge;
+  CI green (lint, pytest 3.10–3.12, e2e, regression, CodeQL).
+- Known pre-existing (tracked, not gating):
+  `test_chrome_kill_reports_terminal_disconnect` kill-timing race
+  (`READY-AI-T-E2E-KILL-RACE`); GitGuardian false positive on a test
+  fixture in PR #44 history (de-fanged at head; non-required check).
+
 ## v0.4.0 — 2026-09 — Zero-token deterministic replay (Fase 3)
 
 - Manifest compile: verified (`passed`) runs compile to versioned
