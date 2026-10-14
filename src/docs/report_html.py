@@ -219,6 +219,131 @@ def render_html_report(report: "DocTestReport", output_path: str | Path) -> str:
     return str(out)
 
 
+_REGIME_LABELS = {
+    "single_visual": "Visual only",
+    "single_dom": "DOM only",
+    "gated": "Gated (visual AND DOM)",
+}
+
+_VERDICT_COLORS = {
+    "TP": "#22c55e",
+    "TN": "#22c55e",
+    "FN": "#ef4444",
+    "FP": "#ef4444",
+}
+
+
+def _pct(value) -> str:
+    return f"{value:.1%}" if isinstance(value, (int, float)) else "n/a"
+
+
+def render_healer_scorecard(scorecard: dict, output_path: str | Path) -> str:
+    """
+    Render a mutation-drill healer scorecard as a standalone HTML page.
+
+    Args:
+        scorecard: dict produced by tools.mutation_harness.compute_scorecard.
+        output_path: Path to write the HTML file.
+
+    Returns:
+        The path to the generated HTML file.
+    """
+    regimes = scorecard["regimes"]
+    mutations = scorecard["mutations"]
+
+    regime_rows = "".join(
+        "<tr>"
+        f"<td>{_esc(_REGIME_LABELS.get(r, r))}</td>"
+        f"<td>{m['tp']}</td><td>{m['fp']}</td><td>{m['fn']}</td><td>{m['tn']}</td>"
+        f"<td><strong>{_pct(m['detection_rate'])}</strong></td>"
+        f"<td><strong>{_pct(m['fpr'])}</strong></td>"
+        "</tr>"
+        for r, m in regimes.items()
+    )
+
+    mutation_rows = "".join(
+        "<tr>"
+        f"<td>{_esc(m['id'])}</td>"
+        f"<td>{_esc(m['kind'])}</td>"
+        f"<td>{'yes' if m['applied'] else 'NO'}</td>"
+        f"<td>{_pct(m['visual_similarity']) if m['visual_similarity'] is not None else '—'}</td>"
+        f"<td>{'flag' if m['visual_flagged'] else '—'}</td>"
+        f"<td>{'flag' if m['dom_flagged'] else '—'}</td>"
+        + "".join(
+            f'<td><span class="badge" style="background: {_VERDICT_COLORS.get(v, "#94a3b8")}; '
+            f'color: #0f172a; font-size: 0.75rem;">{_esc(str(v))}</span></td>'
+            for v in (
+                m["verdicts"].get(r, "—") if m["applied"] else "—"
+                for r in ("single_visual", "single_dom", "gated")
+            )
+        )
+        + f"<td>{_esc(m['error'] or '')}</td></tr>"
+        for m in mutations
+    )
+
+    gated = regimes.get("gated", {})
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Healer Scorecard — {_esc(scorecard.get('app_url', ''))}</title>
+    <style>{_CSS}</style>
+</head>
+<body>
+    <div class="container">
+        <h1>Healer Scorecard <span class="badge" style="background:#3b82f6;color:#0f172a;margin-left:0.5rem;">mutation drill</span></h1>
+        <div class="meta">
+            <div>App: {_esc(scorecard.get('app_url', ''))}</div>
+            <div>Threshold: {_pct(scorecard.get('threshold', 0))} &middot; {_esc(scorecard.get('generated_at', ''))}</div>
+        </div>
+
+        <div class="summary-bar">
+            <div class="summary-item">
+                <div class="count">{scorecard.get('applied_mutations', 0)}/{scorecard.get('total_mutations', 0)}</div>
+                <div class="label">Mutations applied</div>
+            </div>
+            <div class="summary-item">
+                <div class="count" style="color:#22c55e;">{_pct(gated.get('detection_rate'))}</div>
+                <div class="label">Gated mutation score</div>
+            </div>
+            <div class="summary-item">
+                <div class="count" style="color:#ef4444;">{_pct(gated.get('fpr'))}</div>
+                <div class="label">Gated FPR</div>
+            </div>
+        </div>
+
+        <h2 style="margin-bottom:0.5rem;">Detection regimes</h2>
+        <p class="meta">Semantic mutations should be detected (TP); noise should not (flagged noise = FP). Gated = US5 multi-causal gate: both channels must agree before the healer actuates.</p>
+        <table>
+            <thead><tr>
+                <th>Regime</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th>
+                <th>Detection rate</th><th>FPR</th>
+            </tr></thead>
+            <tbody>{regime_rows}</tbody>
+        </table>
+
+        <h2 style="margin:2rem 0 0.5rem;">Mutations</h2>
+        <table>
+            <thead><tr>
+                <th>Mutation</th><th>Kind</th><th>Applied</th><th>Similarity</th>
+                <th>Visual</th><th>DOM</th>
+                <th>Visual-only</th><th>DOM-only</th><th>Gated</th>
+                <th>Error</th>
+            </tr></thead>
+            <tbody>{mutation_rows}</tbody>
+        </table>
+    </div>
+</body>
+</html>"""
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    logger.info(f"Healer scorecard saved: {out}")
+    return str(out)
+
+
 def _esc(text: str) -> str:
     """Escape HTML special characters using stdlib html.escape."""
     from html import escape
