@@ -136,9 +136,28 @@ class RuntimeDomain:
         js = """
         (() => {
             const text = document.body?.innerText || '';
-            // Only visible, user-editable fields; password/file/hidden are
-            // redacted so sensitive values never enter the fingerprint, and
-            // invisible/disabled fields don't create false state churn.
+            // Only visible, user-editable fields. Values must follow the
+            // repo's is_sensitive_field policy (type=password, sensitive
+            // autocomplete tokens, sensitive keywords in name/id) so a
+            // TOTP or token field never enters the fingerprint; hidden/
+            // file fields are excluded and invisible/disabled fields
+            // don't create false state churn.
+            const SENSITIVE_AUTOCOMPLETE = new Set([
+                'cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month',
+                'cc-exp-year', 'current-password', 'new-password',
+                'one-time-code'
+            ]);
+            const SENSITIVE_KEYWORDS = [
+                'password', 'passwd', 'senha', 'ssn', 'cpf', 'cnpj',
+                'secret', 'token', 'api_key', 'apikey'
+            ];
+            const isSensitive = (e) => {
+                if ((e.type || '').toLowerCase() === 'password') return true;
+                const ac = (e.getAttribute('autocomplete') || '').toLowerCase();
+                if (SENSITIVE_AUTOCOMPLETE.has(ac)) return true;
+                const ident = ((e.name || '') + ' ' + (e.id || '')).toLowerCase();
+                return SENSITIVE_KEYWORDS.some(kw => ident.includes(kw));
+            };
             const fields = Array.from(
                 document.querySelectorAll(
                     'input:not([type="hidden"]):not([type="file"]), textarea, select'
@@ -153,7 +172,7 @@ class RuntimeDomain:
             }).map(e => {
                 const key = e.name || e.id || e.type || e.tagName;
                 let val;
-                if (e.type === 'password') {
+                if (isSensitive(e)) {
                     // length only — signals change without leaking chars
                     val = '[REDACTED:' + (e.value || '').length + ']';
                 } else if (e.type === 'checkbox' || e.type === 'radio') {

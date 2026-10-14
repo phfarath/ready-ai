@@ -240,6 +240,15 @@ class PageDomain:
             await self._conn.send("Page.setLifecycleEventsEnabled", {"enabled": True})
         except Exception as exc:
             logger.debug(f"setLifecycleEventsEnabled failed: {exc}")
+        # READY-AI-T-9: Runtime/Log events feed the sanitized event
+        # history the flight recorder reads (consoleAPICalled,
+        # exceptionThrown, Log.entryAdded). Diagnostic-only: a failure
+        # here must not break the attach, it only thins the bundle.
+        for diagnostic_domain in ("Runtime.enable", "Log.enable"):
+            try:
+                await self._conn.send(diagnostic_domain)
+            except Exception as exc:
+                logger.debug(f"{diagnostic_domain} failed: {exc}")
         await register_cursor_script(self._conn)
 
     # ─── Multi-tab operations (READY-AI-T-PH2B) ──────────────────────

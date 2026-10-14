@@ -22,7 +22,13 @@ from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
 from ..cdp.connection_state import ConnectionState, RECONNECT_HEAL_WAIT_S
 from ..cdp.exceptions import CircuitOpenError, WebSocketDisconnected
-from ..observability import Span, init_run_context, get_metrics, log_event
+from ..observability import (
+    Span,
+    capture_failure_bundle,
+    init_run_context,
+    get_metrics,
+    log_event,
+)
 from . import planner, executor, critic, recovery, replay
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
@@ -219,6 +225,41 @@ class AgenticLoop:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state.to_file(self._state_path)
 
+    async def _capture_flight_recorder(
+        self,
+        *,
+        kind: str,
+        flow_name: Optional[str] = None,
+        status: str = "FAILED",
+        failure_reason: Optional[str] = None,
+        step: Optional[dict] = None,
+        run_ctx=None,
+    ) -> None:
+        """Write a sanitized failure bundle for a terminal failure.
+
+        Best-effort wrapper: the recorder itself never raises, and any
+        unexpected error here is logged so it cannot mask the original
+        failure (READY-AI-T-9).
+        """
+        try:
+            session = self._session
+            await capture_failure_bundle(
+                output_dir=self.output_dir,
+                run_id=self.run_id,
+                kind=kind,
+                flow=flow_name,
+                status=status,
+                failure_reason=failure_reason,
+                step=step,
+                initial_url=self.url,
+                page=getattr(session, "_page", None),
+                runtime=getattr(session, "_runtime", None),
+                connection=getattr(session, "_conn", None),
+                run_ctx=run_ctx,
+            )
+        except Exception as exc:
+            logger.warning(f"Flight recorder capture failed: {exc}")
+
     async def run(self) -> str:
         """
         Execute the full agentic documentation pipeline.
@@ -319,6 +360,15 @@ class AgenticLoop:
                 return output_path
             except Exception as e:
                 logger.error(f"Pipeline error: {e}")
+                step_idx = int(
+                    getattr(self._state, "current_step_index", 0) or 0
+                )
+                await self._capture_flight_recorder(
+                    kind="pipeline",
+                    failure_reason=f"{type(e).__name__}: {e}",
+                    step={"index": step_idx} if step_idx > 0 else None,
+                    run_ctx=run_ctx,
+                )
                 self._save_checkpoint("FAILED")
                 self._save_metrics(run_ctx, status="FAILED")
                 raise
@@ -390,6 +440,10 @@ class AgenticLoop:
         step_results: list[dict] = []
         overall_status = "passed"
         run_failed_reason: Optional[str] = None
+        # 1-based index of the last step the loop reached — lets the
+        # flight recorder correlate failures that happen outside a
+        # step report (resume-blocked, disconnect, raised exception).
+        last_attempted_index: Optional[int] = None
         confirmations = frozenset(confirm or ())
 
         # READY-AI-T-PH2D: validate a paused checkpoint BEFORE launching
@@ -507,6 +561,7 @@ class AgenticLoop:
                 for index, step in enumerate(flow.steps, start=1):
                     if index < start_index:
                         continue
+                    last_attempted_index = index
                     # On resume the paused step runs only after the human
                     # observably satisfied the pause condition; otherwise
                     # the run fails closed instead of running blind.
@@ -635,6 +690,46 @@ class AgenticLoop:
                     self._state.status = "PAUSED"
                 else:
                     self._state.status = "FAILED"
+                    # READY-AI-T-9: a terminal failure must be diagnosable
+                    # without re-running — capture the sanitized bundle
+                    # while the session is still alive.
+                    failed_step = next(
+                        (s for s in step_results if s["status"] == "failed"),
+                        None,
+                    )
+                    reason = (
+                        run_failed_reason
+                        or (failed_step or {}).get("failure_reason")
+                    )
+                    if failed_step:
+                        step_info = {
+                            "index": failed_step.get("index"),
+                            "name": failed_step.get("name"),
+                            "failure_reason": failed_step.get(
+                                "failure_reason"
+                            ),
+                        }
+                    elif last_attempted_index is not None:
+                        # Failure without a step report (resume-blocked,
+                        # disconnect mid-setup): correlate to the last
+                        # step the loop actually reached.
+                        step_info = {
+                            "index": last_attempted_index,
+                            "name": flow.steps[
+                                last_attempted_index - 1
+                            ].name,
+                            "failure_reason": reason,
+                        }
+                    else:
+                        step_info = None
+                    await self._capture_flight_recorder(
+                        kind="flow",
+                        flow_name=flow_name,
+                        status=overall_status.upper(),
+                        failure_reason=reason,
+                        step=step_info,
+                        run_ctx=run_ctx,
+                    )
                 self._save_checkpoint()
 
                 pause_block: Optional[dict] = None
@@ -657,6 +752,25 @@ class AgenticLoop:
             except Exception as exc:
                 logger.error(f"Run-flow failed: {exc}")
                 self._state.status = "FAILED"
+                exc_reason = f"{type(exc).__name__}: {exc}"
+                await self._capture_flight_recorder(
+                    kind="flow",
+                    flow_name=flow_name,
+                    failure_reason=exc_reason,
+                    step=(
+                        {
+                            "index": last_attempted_index,
+                            "name": flow.steps[
+                                last_attempted_index - 1
+                            ].name,
+                            "failure_reason": exc_reason,
+                        }
+                        if last_attempted_index is not None
+                        and last_attempted_index <= len(flow.steps)
+                        else None
+                    ),
+                    run_ctx=run_ctx,
+                )
                 try:
                     self._save_checkpoint()
                 except Exception:
