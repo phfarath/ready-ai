@@ -259,7 +259,9 @@ async def test_run_flow_exception_path_still_writes_bundle(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_secret_redaction_and_no_response_bodies(tmp_path, monkeypatch):
     """DoD4 — secrets are redacted; response bodies never enter the bundle."""
-    secret = "hunter2-sup3r-s3cret"
+    # Deliberately fake low-entropy marker — real redaction only needs a
+    # recognizable string. High-entropy lookalikes trip secret scanners.
+    secret = "TESTONLY-NOT-A-REAL-SECRET-redact-me"
     conn = _FakeConn()
     page = MagicMock()
     page.get_dom_html = AsyncMock(return_value="<html/>")
