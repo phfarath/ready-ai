@@ -34,6 +34,18 @@ class WebSocketDisconnected(RuntimeError):
     """
 
 
+class RunPolicyError(ValueError):
+    """Fail-closed run refusal raised by the agent loop.
+
+    Covers refusals that are *policy*, not malformed input: a paused
+    checkpoint that belongs to a different run or indexes steps the
+    declared flow does not have, and zero-LLM replay attempting
+    credential auto-login. Subclasses ``ValueError`` so existing
+    callers keep working; the type identity lets the public SDK map it
+    to a stable ``PolicyViolationError``.
+    """
+
+
 class CircuitOpenError(WebSocketDisconnected):
     """Structured terminal error: the CDP circuit breaker is open.
 

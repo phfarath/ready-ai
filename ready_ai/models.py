@@ -335,6 +335,63 @@ def _sanitize(value: Any) -> Any:
     return value
 
 
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s'\")\]]+")
+
+
+def _scrub_url_text(value: Any) -> Any:
+    """Reduce embedded http(s) URLs in free text to scheme://host[:port]/path.
+
+    Diagnostic strings (assert messages, engine errors) carry raw URLs
+    whose query/userinfo/fragment could leak credentials or tokens —
+    same treatment the event stream gets via the flight recorder's
+    ``scrub_embedded``. The path is kept for diagnosability; query,
+    fragment and userinfo are dropped.
+    """
+    if not isinstance(value, str):
+        return value
+
+    def _one(match: re.Match) -> str:
+        try:
+            parsed = urlparse(match.group(0))
+            host = parsed.hostname
+            port = parsed.port
+        except (ValueError, TypeError):
+            return "[redacted-url]"
+        if not host:
+            return "[redacted-url]"
+        netloc = host + (f":{port}" if port else "")
+        return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+
+    return _EMBEDDED_URL_RE.sub(_one, value)
+
+
+_DIAG_TEXT_KEYS = frozenset(
+    {"failure_reason", "description", "message", "actual", "reason"}
+)
+
+
+def _scrub_diag(value: Any) -> Any:
+    """Scrub embedded URLs in diagnostic free-text fields of a structure.
+
+    Applied recursively: dict values whose key names a diagnostic
+    free-text field are scrubbed; everything else is recursed into.
+    Structured data (``extracted[].value``, URL fields) is untouched —
+    extraction payloads are what the caller asked for, not diagnostics.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                _scrub_url_text(item)
+                if key in _DIAG_TEXT_KEYS
+                else _scrub_diag(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_diag(item) for item in value]
+    return value
+
+
 def _collect_artifacts(run_id: str, output_dir: str | Path) -> List[str]:
     """Only report result files that actually exist inside ``output_dir``."""
     base = Path(output_dir).resolve()
@@ -378,7 +435,13 @@ class RunResult(BaseModel):
     run_id: str
     flow: Optional[str] = None
     url: str = ""
-    status: str = Field("passed", description="passed | failed | paused")
+    status: str = Field(
+        "passed",
+        description=(
+            "passed | failed | paused | pending_confirmation | "
+            "cancelled | error"
+        ),
+    )
     steps: List[RunStep] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
     artifacts: List[str] = Field(
@@ -422,17 +485,22 @@ class RunResult(BaseModel):
         run-flow results carry no ledger while manifest replays can attach
         both blocks explicitly.
         """
-        steps = [RunStep(**_sanitize(step)) for step in data.get("steps", [])]
+        steps = [
+            RunStep(**_scrub_diag(_sanitize(step)))
+            for step in data.get("steps", [])
+        ]
         return cls(
             run_id=str(data.get("run_id") or ""),
             flow=data.get("flow"),
             url=_strip_url_userinfo(str(data.get("url") or "")),
             status=str(data.get("status") or "passed"),
             steps=steps,
-            summary=_sanitize(data.get("summary") or {}),
+            summary=_scrub_diag(_sanitize(data.get("summary") or {})),
             artifacts=_collect_artifacts(data.get("run_id") or "", output_dir),
-            failure_reason=data.get("failure_reason"),
-            pause=_sanitize(data.get("pause")),
+            failure_reason=_scrub_url_text(
+                _sanitize(data.get("failure_reason"))
+            ),
+            pause=_scrub_diag(_sanitize(data.get("pause"))),
             replay=replay if replay is not None else _sanitize(data.get("replay")),
             cost=cost,
         )
