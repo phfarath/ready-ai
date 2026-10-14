@@ -42,7 +42,17 @@ Minimal example::
 
 from __future__ import annotations
 
-from .client import ReadyAI, ReadyAIError, RunTimeoutError, UnknownProfileError
+from .client import ReadyAI, RunHandle
+from .events import EVENT_TYPES, RunEvent
+from .exceptions import (
+    ConnectionLostError,
+    FlowValidationError,
+    PolicyViolationError,
+    ReadyAIError,
+    RunCancelledError,
+    RunTimeoutError,
+    UnknownProfileError,
+)
 from .models import (
     SCHEMA_VERSION,
     BrowserOptions,
@@ -60,17 +70,24 @@ from .models import (
 __version__ = "0.5.0"
 
 __all__ = [
+    "EVENT_TYPES",
     "SCHEMA_VERSION",
     "BrowserOptions",
+    "ConnectionLostError",
     "EffectPolicy",
     "Flow",
     "FlowAction",
     "FlowAssertion",
     "FlowExtraction",
     "FlowStep",
+    "FlowValidationError",
+    "PolicyViolationError",
     "Profile",
     "ReadyAI",
     "ReadyAIError",
+    "RunCancelledError",
+    "RunEvent",
+    "RunHandle",
     "RunResult",
     "RunStep",
     "RunTimeoutError",

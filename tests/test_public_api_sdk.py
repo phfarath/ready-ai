@@ -1,0 +1,460 @@
+"""Public async-first SDK surface (READY-AI-T-14).
+
+The façade exposes async ``run()``/``start()``, an explicit ``run_sync()``
+adapter, cooperative cancellation, an ordered/sanitized event stream,
+checkpoint resume by ``run_id`` token, and a public exception taxonomy
+(validation / policy / cancellation / timeout / connection) — no
+``src.*`` types cross the boundary.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+import ready_ai
+from ready_ai import (
+    ConnectionLostError,
+    Flow,
+    FlowAction,
+    FlowStep,
+    FlowValidationError,
+    PolicyViolationError,
+    ReadyAI,
+    ReadyAIError,
+    RunCancelledError,
+    RunEvent,
+    RunResult,
+    RunTimeoutError,
+)
+from src.agent.state import RunState
+from src.cdp.exceptions import (
+    CircuitOpenError,
+    RunPolicyError,
+    WebSocketDisconnected,
+)
+
+
+def _flow(**overrides):
+    kwargs = dict(
+        name="sdk-flow",
+        url="https://app.example.com/start",
+        timeout_s=30.0,
+        steps=[
+            FlowStep(
+                name="Go",
+                actions=[
+                    FlowAction(
+                        action="navigate", url="https://app.example.com/done"
+                    )
+                ],
+            )
+        ],
+    )
+    kwargs.update(overrides)
+    return Flow(**kwargs)
+
+
+def _engine_result(run_id, status="passed"):
+    return {
+        "run_id": run_id,
+        "flow": "sdk-flow",
+        "url": "https://app.example.com/start",
+        "status": status,
+        "steps": [
+            {
+                "index": 1,
+                "name": "Go",
+                "actions": [],
+                "asserts": [],
+                "extracted": [],
+                "attempts": 1,
+                "status": "passed",
+                "failure_reason": "",
+                "skipped_asserts": 0,
+                "skipped_extractions": 0,
+            }
+        ],
+        "summary": {"steps_total": 1, "steps_passed": 1},
+        "failure_reason": None,
+    }
+
+
+class _ScriptedLoop:
+    """Fake AgenticLoop: records kwargs, replays canned events/results."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.run_id = kwargs.get("run_id", "run-x")
+        self.resume_from = kwargs.get("resume_from")
+        self.spec = None
+        self.confirm = None
+        self._sink = None
+        self._cancelled = False
+        self.events = []
+        self.result_payload = None
+
+    def set_event_sink(self, sink):
+        self._sink = sink
+
+    def request_cancel(self):
+        self._cancelled = True
+
+    def _emit(self, **event):
+        if self._sink:
+            self._sink({"seq": 0, "run_id": self.run_id, **event})
+
+    async def run_flow(self, flow_spec, confirm=None):
+        self.spec = flow_spec
+        self.confirm = confirm
+        for i, event in enumerate(self.events, start=1):
+            event.setdefault("seq", i)
+            self._sink(dict(event, run_id=self.run_id))
+            await asyncio.sleep(0)
+        return self.result_payload or _engine_result(self.run_id)
+
+
+class _LoopFactory:
+    def __init__(self, *, events=None, result=None):
+        self.instances = []
+        self.events = events or []
+        self.result = result
+
+    def __call__(self, **kwargs):
+        instance = _ScriptedLoop(**kwargs)
+        instance.events = list(self.events)
+        instance.result_payload = self.result
+        self.instances.append(instance)
+        return instance
+
+
+def _patch_loop(monkeypatch, **kwargs) -> _LoopFactory:
+    factory = _LoopFactory(**kwargs)
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", factory)
+    return factory
+
+
+# ─── Async execution ─────────────────────────────────────────────────
+
+
+async def test_run_inside_existing_asyncio_loop(tmp_path, monkeypatch):
+    """The primary path: ``await ai.run(...)`` inside a caller-owned loop."""
+    assert asyncio.get_running_loop() is not None
+    factory = _patch_loop(monkeypatch)
+
+    ai = ReadyAI(output_dir=str(tmp_path))
+    result = await ai.run(_flow(run_id="r1"))
+
+    assert isinstance(result, RunResult)
+    assert result.status == "passed"
+    assert factory.instances[0].run_id == "r1"
+
+
+async def test_run_flow_alias_kept(tmp_path, monkeypatch):
+    _patch_loop(monkeypatch)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    result = await ai.run_flow(_flow())
+    assert result.status == "passed"
+
+
+def test_run_sync_runs_outside_a_loop(tmp_path, monkeypatch):
+    _patch_loop(monkeypatch)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    result = ai.run_sync(_flow())
+    assert isinstance(result, RunResult)
+    assert result.status == "passed"
+
+
+async def test_run_sync_inside_a_loop_fails_explicitly(tmp_path, monkeypatch):
+    """No nested event loop — sync adapter refuses with a clear error."""
+    _patch_loop(monkeypatch)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(ReadyAIError, match="active asyncio loop"):
+        ai.run_sync(_flow())
+
+
+def test_start_outside_a_loop_fails_explicitly(tmp_path):
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(ReadyAIError, match="running asyncio loop"):
+        ai.start(_flow())
+
+
+# ─── Exception taxonomy ──────────────────────────────────────────────
+
+
+async def test_timeout_maps_to_run_timeout_error(tmp_path, monkeypatch):
+    class _Slow:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+
+        def set_event_sink(self, sink):
+            pass
+
+        async def run_flow(self, spec, confirm=None):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Slow)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(RunTimeoutError, match="timeout_s"):
+        await ai.run(_flow(timeout_s=0.01))
+
+
+async def test_task_cancellation_maps_to_run_cancelled(tmp_path, monkeypatch):
+    class _Blocking:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+
+        async def run_flow(self, spec, confirm=None):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Blocking)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    task = asyncio.create_task(ai.run(_flow()))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(RunCancelledError):
+        await task
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        WebSocketDisconnected("socket gone"),
+        CircuitOpenError("circuit open", state="down", attempts=3),
+    ],
+)
+async def test_connection_failures_map_to_connection_lost(
+    tmp_path, monkeypatch, exc
+):
+    class _Dying:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+
+        async def run_flow(self, spec, confirm=None):
+            raise exc
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Dying)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(ConnectionLostError):
+        await ai.run(_flow())
+
+
+async def test_policy_refusal_maps_to_policy_violation(tmp_path, monkeypatch):
+    class _Refusing:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+
+        async def run_flow(self, spec, confirm=None):
+            raise RunPolicyError("paused checkpoint run_id mismatch")
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Refusing)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(PolicyViolationError, match="checkpoint"):
+        await ai.run(_flow())
+
+
+async def test_translation_error_maps_to_flow_validation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "ready_ai.client._to_flow_spec",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("bad step")),
+    )
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(FlowValidationError, match="translated"):
+        await ai.run(_flow())
+
+
+# ─── Events stream ───────────────────────────────────────────────────
+
+
+async def test_events_stream_order_schema_and_terminal_event(
+    tmp_path, monkeypatch
+):
+    _patch_loop(
+        monkeypatch,
+        events=[
+            {"type": "run_started", "flow": "sdk-flow", "steps": 1},
+            {"type": "step_started", "step_index": 1, "step_name": "Go"},
+            {"type": "retry", "action": "navigate", "attempt": 2},
+            {
+                "type": "step_finished",
+                "step_index": 1,
+                "step_name": "Go",
+                "status": "passed",
+            },
+            {"type": "run_finished", "status": "passed"},
+        ],
+    )
+    ai = ReadyAI(output_dir=str(tmp_path))
+    handle = ai.start(_flow(run_id="ev-1"))
+
+    collected = [event async for event in handle.events()]
+    result = await handle.result()
+
+    assert result.status == "passed"
+    assert all(isinstance(e, RunEvent) for e in collected)
+    types = [e.type for e in collected]
+    assert types == [
+        "run_started",
+        "step_started",
+        "retry",
+        "step_finished",
+        "run_finished",
+    ]
+    assert collected[0].seq < collected[-1].seq
+    assert collected[-1].status == "passed"
+    retry = collected[2]
+    assert retry.detail["action"] == "navigate"
+    assert retry.detail["attempt"] == 2
+    assert collected[1].step_index == 1
+
+
+async def test_events_terminate_when_the_run_raises(tmp_path, monkeypatch):
+    class _Dying:
+        def __init__(self, **kw):
+            self.run_id = kw.get("run_id")
+            self._sink = None
+
+        def set_event_sink(self, sink):
+            self._sink = sink
+
+        async def run_flow(self, spec, confirm=None):
+            self._sink({"seq": 1, "type": "run_started", "run_id": self.run_id})
+            raise WebSocketDisconnected("gone")
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Dying)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    handle = ai.start(_flow())
+
+    collected = [event async for event in handle.events()]
+    assert [e.type for e in collected] == ["run_started"]
+    with pytest.raises(ConnectionLostError):
+        await handle.result()
+
+
+async def test_event_payloads_are_scrubbed(tmp_path, monkeypatch):
+    _patch_loop(
+        monkeypatch,
+        events=[
+            {"type": "run_started"},
+            {
+                "type": "step_finished",
+                "step_index": 1,
+                "status": "failed",
+                "failure_reason": "expected url https://user:pass@app.example.com/in?token=abc to load",
+            },
+            {"type": "run_finished", "status": "failed"},
+        ],
+    )
+    ai = ReadyAI(output_dir=str(tmp_path))
+    handle = ai.start(_flow())
+    collected = [event async for event in handle.events()]
+    await handle.result()
+
+    failed = collected[1]
+    payload = repr(failed.detail) + (failed.step_name or "")
+    assert "user:pass@" not in payload
+    assert "token=abc" not in payload
+
+
+# ─── Cooperative cancellation ────────────────────────────────────────
+
+
+async def test_cooperative_cancel_via_handle(tmp_path, monkeypatch):
+    """handle.cancel() flips the engine flag; the run resolves cancelled."""
+
+    class _Cancellable(_ScriptedLoop):
+        async def run_flow(self, spec, confirm=None):
+            self._emit(type="run_started", seq=1)
+            self._emit(type="step_started", seq=2, step_index=1)
+            # The engine checks the flag at the next boundary.
+            while not self._cancelled:
+                await asyncio.sleep(0.005)
+            self._emit(
+                type="run_finished", seq=3, status="cancelled"
+            )
+            return _engine_result(self.run_id, status="cancelled")
+
+    monkeypatch.setattr("ready_ai.client.AgenticLoop", _Cancellable)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    handle = ai.start(_flow())
+
+    events = []
+    async for event in handle.events():
+        events.append(event)
+        if event.type == "step_started":
+            await handle.cancel()
+
+    result = await handle.result()
+    assert result.status == "cancelled"
+    assert events[-1].status == "cancelled"
+
+
+# ─── Checkpoint resume ───────────────────────────────────────────────
+
+
+def _write_checkpoint(output_dir, run_id, status="PAUSED", step_index=2):
+    state = RunState(
+        run_id=run_id,
+        goal="sdk-flow",
+        url="https://app.example.com/start",
+        status=status,
+        current_step_index=step_index,
+        pause_reason="Finish SSO",
+        resume_when={"selector_visible": "#authed"},
+    )
+    state.to_file(output_dir / f"{run_id}_state.json")
+
+
+async def test_resume_without_checkpoint_refuses(tmp_path):
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(PolicyViolationError, match="no checkpoint"):
+        await ai.resume(_flow(), run_id="ghost-run")
+
+
+async def test_resume_non_paused_checkpoint_refuses(tmp_path):
+    _write_checkpoint(tmp_path, "done-run", status="FINISHED")
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(PolicyViolationError, match="not paused"):
+        await ai.resume(_flow(), run_id="done-run")
+
+
+async def test_resume_uses_run_id_token_only(tmp_path, monkeypatch):
+    """The consumer resumes with just run_id — no engine internals."""
+    _write_checkpoint(tmp_path, "sso-1", status="PAUSED", step_index=2)
+    factory = _patch_loop(monkeypatch)
+    ai = ReadyAI(output_dir=str(tmp_path))
+
+    result = await ai.resume(_flow(), run_id="sso-1")
+
+    assert result.status == "passed"
+    loop = factory.instances[0]
+    assert loop.kwargs["run_id"] == "sso-1"
+    assert loop.kwargs["resume_from"].endswith("sso-1_state.json")
+
+
+# ─── Public surface ──────────────────────────────────────────────────
+
+
+def test_new_names_exported():
+    for name in (
+        "RunHandle",
+        "RunEvent",
+        "EVENT_TYPES",
+        "RunCancelledError",
+        "ConnectionLostError",
+        "PolicyViolationError",
+        "FlowValidationError",
+    ):
+        assert hasattr(ready_ai, name)
+        assert name in ready_ai.__all__
+
+
+def test_exception_taxonomy_hierarchy():
+    assert issubclass(ready_ai.RunTimeoutError, ReadyAIError)
+    assert issubclass(ready_ai.RunCancelledError, ReadyAIError)
+    assert issubclass(ready_ai.ConnectionLostError, ReadyAIError)
+    assert issubclass(ready_ai.PolicyViolationError, ReadyAIError)
+    assert issubclass(ready_ai.FlowValidationError, ValueError)

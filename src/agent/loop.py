@@ -15,13 +15,17 @@ import websockets
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Collection, Optional
+from typing import TYPE_CHECKING, Callable, Collection, Optional
 
 from ..llm.prompts import ANNOTATOR_PROMPT, PLANNER_SUPPLEMENT_SYSTEM
 from ..docs.renderer import DocRenderer
 from ..docs.output import save_docs
 from ..cdp.connection_state import ConnectionState, RECONNECT_HEAL_WAIT_S
-from ..cdp.exceptions import CircuitOpenError, WebSocketDisconnected
+from ..cdp.exceptions import (
+    CircuitOpenError,
+    RunPolicyError,
+    WebSocketDisconnected,
+)
 from ..observability import (
     Span,
     capture_failure_bundle,
@@ -180,6 +184,14 @@ class AgenticLoop:
         # session can never trigger an unbounded respawn loop.
         self._connection_crashes: int = 0
 
+        # READY-AI-T-14: optional run-event sink + cooperative cancel.
+        # The sink receives ordered, plain-dict events; cancellation is
+        # honored at step/action boundaries, never mid-CMD, so a
+        # cancelled run leaves no hidden browser work in flight.
+        self._event_sink: Optional[Callable[[dict], None]] = None
+        self._cancel_requested = False
+        self._event_seq = 0
+
         # Checkpointing state
         self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
 
@@ -197,6 +209,44 @@ class AgenticLoop:
                 run_id=self.run_id, goal=self.goal, url=self.url,
                 app_version=self.app_version, git_commit=self.git_commit, deployed_at=self.deployed_at,
             )
+
+    def set_event_sink(self, sink: Optional[Callable[[dict], None]]) -> None:
+        """Install a callback receiving ordered run-event dicts.
+
+        Events carry only plain, serializable fields (``seq``, ``type``,
+        ``run_id``, plus per-type fields like ``step_index``/``status``) —
+        no CDP objects. The sink is invoked synchronously; its errors are
+        swallowed so telemetry can never break a run.
+        """
+        self._event_sink = sink
+
+    def request_cancel(self) -> None:
+        """Request cooperative cancellation.
+
+        The flag is checked at step boundaries and between action retry
+        attempts: the in-flight action finishes (or times out on its own
+        budget), remaining steps report ``skipped`` and the run resolves
+        with ``status="cancelled"`` — no teardown is skipped.
+        """
+        self._cancel_requested = True
+
+    def _emit(self, event_type: str, **fields) -> None:
+        """Emit one ordered run event to the sink; never raises."""
+        sink = self._event_sink
+        if sink is None:
+            return
+        self._event_seq += 1
+        try:
+            sink(
+                {
+                    "seq": self._event_seq,
+                    "type": event_type,
+                    "run_id": self.run_id,
+                    **fields,
+                }
+            )
+        except Exception:
+            logger.debug("run-event sink raised; ignoring", exc_info=True)
 
     def _save_checkpoint(self, status: Optional[str] = None) -> None:
         """Write current execution state to disk."""
@@ -458,20 +508,20 @@ class AgenticLoop:
         if not allow_llm and (
             self._session.username and self._session.password
         ):
-            raise ValueError(
+            raise RunPolicyError(
                 "replay (allow_llm=False) cannot perform credential "
                 "auto-login; use a persistent profile or cookies instead"
             )
         if self._state.status == "PAUSED":
             if self._state.run_id != self.run_id:
-                raise ValueError(
+                raise RunPolicyError(
                     f"paused checkpoint run_id={self._state.run_id!r} "
                     f"does not match run_id={self.run_id!r}; refusing "
                     "to resume another run's checkpoint"
                 )
             paused_at = int(self._state.current_step_index or 0)
             if paused_at < 1 or paused_at > len(flow.steps):
-                raise ValueError(
+                raise RunPolicyError(
                     f"paused checkpoint index {paused_at} is outside "
                     f"the declared {len(flow.steps)} step(s); refusing "
                     "to resume an incompatible flow"
@@ -518,6 +568,14 @@ class AgenticLoop:
                 except Exception as exc:
                     logger.debug(f"Flow start network-idle wait failed/timed out: {exc}")
 
+                self._emit(
+                    "run_started",
+                    flow=flow_name,
+                    url=self.url,
+                    steps=len(flow.steps),
+                    resumed=resuming,
+                )
+
                 # READY-AI-T-PH2D: resume a run paused at a human
                 # checkpoint (validated above). Earlier steps already passed
                 # in the pre-pause run and are reported as skipped — never
@@ -562,6 +620,24 @@ class AgenticLoop:
                     if index < start_index:
                         continue
                     last_attempted_index = index
+                    # READY-AI-T-14: cooperative cancel — stop BEFORE the
+                    # step actuates; remaining steps report skipped.
+                    if self._cancel_requested:
+                        overall_status = "cancelled"
+                        run_failed_reason = "cancelled by caller"
+                        logger.info("Flow cancelled by caller at step %s", index)
+                        self._mark_remaining_steps_skipped(
+                            step_results,
+                            flow,
+                            index - 1,
+                            reason="cancelled by caller; never executed",
+                        )
+                        break
+                    self._emit(
+                        "step_started",
+                        step_index=index,
+                        step_name=step.name,
+                    )
                     # On resume the paused step runs only after the human
                     # observably satisfied the pause condition; otherwise
                     # the run fails closed instead of running blind.
@@ -630,7 +706,19 @@ class AgenticLoop:
                             ],
                         }
                         step_report.pop("pause", None)
+                        self._emit(
+                            "checkpoint_resumed",
+                            step_index=index,
+                            step_name=step.name,
+                        )
                     step_results.append(step_report)
+                    self._emit(
+                        "step_finished",
+                        step_index=step_report["index"],
+                        step_name=step_report.get("name"),
+                        status=step_report["status"],
+                        failure_reason=step_report.get("failure_reason") or "",
+                    )
                     if step_report["status"] == "paused":
                         if overall_status == "passed":
                             overall_status = "paused"
@@ -652,6 +740,12 @@ class AgenticLoop:
                         )
                         self._save_checkpoint(
                             "PAUSED" if overall_status == "paused" else "FAILED"
+                        )
+                        self._emit(
+                            "checkpoint_paused",
+                            step_index=index,
+                            step_name=step.name,
+                            reason=pause.get("reason", ""),
                         )
                         self._mark_remaining_steps_skipped(
                             step_results, flow, index
@@ -683,11 +777,27 @@ class AgenticLoop:
                         run_failed_reason = disconnect_reason
                         self._mark_remaining_steps_skipped(step_results, flow, index)
                         break
+                    # READY-AI-T-14: a cancel that landed mid-step surfaces
+                    # here — the abort reason is on the failed step.
+                    if self._cancel_requested and overall_status != "paused":
+                        overall_status = "cancelled"
+                        run_failed_reason = "cancelled by caller"
+                        self._mark_remaining_steps_skipped(
+                            step_results,
+                            flow,
+                            index,
+                            reason="cancelled by caller; never executed",
+                        )
+                        break
 
                 if overall_status == "passed":
                     self._state.status = "FINISHED"
                 elif overall_status == "paused":
                     self._state.status = "PAUSED"
+                elif overall_status == "cancelled":
+                    # Operator intent, not a failure: no failure bundle,
+                    # checkpoint records the honest terminal state.
+                    self._state.status = "CANCELLED"
                 else:
                     self._state.status = "FAILED"
                     # READY-AI-T-9: a terminal failure must be diagnosable
@@ -748,11 +858,21 @@ class AgenticLoop:
                 )
                 self._persist_flow_result(result)
                 self._save_flow_metrics(run_ctx, flow_name, overall_status, step_results)
+                self._emit(
+                    "run_finished",
+                    status=overall_status,
+                    failure_reason=run_failed_reason or "",
+                )
                 return result
             except Exception as exc:
                 logger.error(f"Run-flow failed: {exc}")
                 self._state.status = "FAILED"
                 exc_reason = f"{type(exc).__name__}: {exc}"
+                self._emit(
+                    "run_finished",
+                    status="error",
+                    failure_reason=exc_reason,
+                )
                 await self._capture_flight_recorder(
                     kind="flow",
                     flow_name=flow_name,
@@ -1164,6 +1284,13 @@ class AgenticLoop:
         last_desc = ""
         last_failure = ""
         while attempts <= budget:
+            if self._cancel_requested:
+                last_failure = "cancelled by caller"
+                break
+            if attempts > 0:
+                self._emit(
+                    "retry", action=action_type, attempt=attempts + 1
+                )
             attempts += 1
             try:
                 desc = await executor._dispatch_action(
@@ -1280,6 +1407,8 @@ class AgenticLoop:
         step_results: list[dict],
         flow: FlowSpec,
         failed_index: int,
+        *,
+        reason: str = "aborted: CDP connection lost",
     ) -> None:
         """Append truthful ``skipped`` reports for steps after a CDP abort.
 
@@ -1299,7 +1428,7 @@ class AgenticLoop:
                     "extracted": [],
                     "attempts": 0,
                     "status": "skipped",
-                    "failure_reason": "aborted: CDP connection lost",
+                    "failure_reason": reason,
                     "skipped_asserts": len(step.asserts),
                     "skipped_extractions": len(step.extract),
                 }

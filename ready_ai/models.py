@@ -378,7 +378,13 @@ class RunResult(BaseModel):
     run_id: str
     flow: Optional[str] = None
     url: str = ""
-    status: str = Field("passed", description="passed | failed | paused")
+    status: str = Field(
+        "passed",
+        description=(
+            "passed | failed | paused | pending_confirmation | "
+            "cancelled | error"
+        ),
+    )
     steps: List[RunStep] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
     artifacts: List[str] = Field(
