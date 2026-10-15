@@ -13,11 +13,19 @@ import time
 from typing import Any, Optional
 
 import litellm
-import openai._compat as openai_compat
 
 from ..observability import get_metrics, log_event
 
 logger = logging.getLogger(__name__)
+
+try:
+    import openai._compat as openai_compat
+except ImportError:  # pragma: no cover - openai>=3 dropped the shim
+    openai_compat = None  # type: ignore[assignment]
+    logger.warning(
+        "openai._compat is unavailable — skipping the model_dump "
+        "by_alias=None workaround"
+    )
 
 # Suppress litellm's verbose logging
 litellm.suppress_debug_info = True
@@ -33,7 +41,12 @@ def _patch_openai_model_dump() -> None:
     Some installed combinations call pydantic v2's model_dump(by_alias=None),
     which raises `TypeError: argument 'by_alias': 'NoneType' object cannot be
     converted to 'PyBool'`. Coerce None to False before delegating.
+
+    No-op when ``openai._compat`` is gone (openai>=3): the shim this
+    patches no longer exists, so there is nothing to work around.
     """
+    if openai_compat is None or not hasattr(openai_compat, "model_dump"):
+        return
     original_model_dump = openai_compat.model_dump
 
     def patched_model_dump(

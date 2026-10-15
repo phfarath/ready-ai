@@ -468,7 +468,11 @@ class RunResult(BaseModel):
     pause: Optional[Dict[str, Any]] = Field(
         None,
         description="Human-checkpoint block (reason, resume_when, checkpoint, "
-        "run_id, step_index) when status is paused; operator-authored, no secrets",
+        "run_id, step_index) when status is paused. reason/resume_when are "
+        "operator-authored; checkpoint is a LOCAL operational path reference "
+        "(needed for --resume-from), never a secret — the engine masks "
+        "typed text at the report boundary and checkpoints carry no "
+        "cookies or credentials",
     )
 
     @classmethod

@@ -1,4 +1,9 @@
-"""Prompt exports without eagerly importing the optional LiteLLM client."""
+"""Prompt exports plus a lazily-resolved LLM client.
+
+``LLMClient`` is resolved on first attribute access to keep
+``import src.llm`` cheap — but it requires ``litellm``, which is a
+mandatory runtime dependency, not an optional one.
+"""
 
 from typing import TYPE_CHECKING
 

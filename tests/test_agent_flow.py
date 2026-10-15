@@ -1385,6 +1385,99 @@ async def test_resume_rejects_incompatible_index(tmp_path):
         await loop.run_flow(_human_flow())
 
 
+async def test_resume_rejects_foreign_flow_fingerprint(tmp_path, monkeypatch):
+    """A checkpoint bound to one flow refuses a different flow (T-SDK-FOLLOWUPS).
+
+    Foreign flow has the same step count — without the fingerprint the
+    index check alone would accept it.
+    """
+    from src.agent.state import RunState, compute_flow_fingerprint
+
+    async def dispatch(payload, *args, **kwargs):
+        return "Observing current page state"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-4")
+    paused_result = await loop.run_flow(_human_flow())
+    assert paused_result["status"] == "paused"
+    assert loop._state.flow_fingerprint == compute_flow_fingerprint(
+        _human_flow()
+    )
+    checkpoint = tmp_path / "sso-4_state.json"
+    loop._state.to_file(checkpoint)
+
+    foreign = _flow(
+        [
+            FlowStepSpec(
+                name="Land",
+                actions=[FlowAction(action="observe")],
+            ),
+            FlowStepSpec(
+                name="Other step",
+                actions=[FlowAction(action="observe")],
+            ),
+            FlowStepSpec(
+                name="Verify",
+                actions=[FlowAction(action="observe")],
+            ),
+        ]
+    )
+    loop2, _p2, _r2, _i2 = _make_loop(tmp_path, run_id="sso-4")
+    loop2._state = RunState.from_file(checkpoint)
+    loop2.resume_from = str(checkpoint)
+    assert loop2._state is not None and loop2._state.status == "PAUSED"
+    with pytest.raises(ValueError, match="different flow"):
+        await loop2.run_flow(foreign)
+
+
+async def test_resume_accepts_legacy_checkpoint_without_fingerprint(
+    tmp_path, monkeypatch
+):
+    """Checkpoints written before the binding field skip the check (compat)."""
+    from src.agent.state import RunState
+
+    async def dispatch(payload, *args, **kwargs):
+        return "Observing current page state"
+
+    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    state = RunState(
+        run_id="sso-5",
+        goal="g",
+        url="https://app.example.com/start",
+        status="PAUSED",
+        current_step_index=2,
+        pause_reason="Finish SSO",
+        resume_when={"selector_visible": "#authed"},
+    )
+    assert state.flow_fingerprint == ""
+    checkpoint = tmp_path / "sso-5_state.json"
+    state.to_file(checkpoint)
+
+    loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-5")
+    loop.resume_from = str(checkpoint)
+    loop._state = RunState.from_file(checkpoint)
+    _runtime.evaluate = AsyncMock(return_value=True)
+    _runtime.query_selector = AsyncMock(return_value={"nodeId": 1})
+    result = await loop.run_flow(_human_flow())
+    assert result["status"] == "passed", result
+
+
+async def test_flow_fingerprint_ignores_runtime_knobs(tmp_path):
+    """headless/model/run_id toggles don't change the fingerprint."""
+    from src.agent.state import compute_flow_fingerprint
+
+    base = _human_flow()
+    toggled = _human_flow()
+    toggled.headless = not base.headless
+    toggled.run_id = "other-run"
+    toggled.model = "other-model"
+    assert compute_flow_fingerprint(base) == compute_flow_fingerprint(toggled)
+
+    changed = _human_flow()
+    changed.steps[0].name = "Different"
+    assert compute_flow_fingerprint(base) != compute_flow_fingerprint(changed)
+
+
 async def test_dialog_prompt_text_masked_in_reports(tmp_path, monkeypatch):
     flow = _flow(
         [

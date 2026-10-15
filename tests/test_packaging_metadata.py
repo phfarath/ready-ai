@@ -65,6 +65,17 @@ def test_distribution_metadata_declared():
         assert urls.get(key, "").startswith("https://")
 
 
+def test_api_extra_declared():
+    """The ``api`` subcommand's deps ship as an opt-in extra so a plain
+    wheel install fails with a hint instead of ModuleNotFoundError
+    (T-SDK-FOLLOWUPS/7)."""
+    optional = _read_pyproject().get("project", {}).get(
+        "optional-dependencies", {}
+    )
+    api = {dep.split(">=")[0].split("<")[0].strip() for dep in optional["api"]}
+    assert {"fastapi", "uvicorn"} <= api
+
+
 def test_runtime_deps_stay_minimal():
     """No broad transitive dependencies: runtime deps must stay the
     declared minimal set — new entries need explicit justification."""

@@ -1,4 +1,10 @@
-"""Public agent conveniences without eagerly loading optional LLM dependencies."""
+"""Public agent conveniences, imported lazily on attribute access.
+
+``AgenticLoop`` is resolved on first use (not at package import) to
+keep ``import src.agent`` cheap — but the loop itself pulls in
+``litellm`` via ``planner``/``llm.client``, which is a required
+runtime dependency, not an optional one.
+"""
 
 from typing import TYPE_CHECKING
 

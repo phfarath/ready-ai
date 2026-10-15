@@ -41,7 +41,7 @@ from typing import (
 
 import websockets
 from pydantic import ValidationError
-from src.agent.state import RunState
+from src.agent.state import RunState, compute_flow_fingerprint
 from src.agent.loop import AgenticLoop
 from src.cdp.exceptions import (
     CircuitOpenError,
@@ -627,9 +627,11 @@ class ReadyAI:
         The checkpoint lives at ``{output_dir}/{run_id}_state.json``
         (``output_dir`` is the flow's ``output`` or the instance
         default). Fail-closed: a missing checkpoint, a checkpoint that
-        is not ``PAUSED``, or a state whose ``run_id``/index does not
-        match raises ``PolicyViolationError`` — the engine never
-        silently re-executes a completed run.
+        is not ``PAUSED``, a state whose ``run_id``/index does not
+        match, or a flow whose fingerprint differs from the checkpoint's
+        originating flow raises ``PolicyViolationError`` — the engine
+        never silently re-executes a completed run or resumes a foreign
+        flow under another run's ``run_id``.
         """
         output_dir = flow.output or self.output_dir
         # The run token reaches a filesystem path — same charset as
@@ -653,9 +655,19 @@ class ReadyAI:
                 f"checkpoint for run_id={run_id!r} is not paused "
                 f"(status={status!r}); refusing to resume"
             )
+        # READY-AI-T-SDK-FOLLOWUPS: verify the flow binding at the SDK
+        # boundary against the same translated spec the engine will
+        # run — the engine re-verifies it before Chrome launches, so a
+        # foreign flow fails fast here with the public taxonomy.
         flow_spec, loop, out_dir, rid = self._prepare(
             flow, browser, run_id=run_id, resume_from=str(state_path)
         )
+        expected = getattr(state, "flow_fingerprint", "") or ""
+        if expected and compute_flow_fingerprint(flow_spec) != expected:
+            raise PolicyViolationError(
+                f"checkpoint for run_id={run_id!r} belongs to a different "
+                "flow; refusing to resume"
+            )
         return await self._execute(
             loop,
             flow_spec,
@@ -693,17 +705,31 @@ class ReadyAI:
         (before/after, PH3C ``zero_token``). Pass ``confirm`` for steps the
         manifest declares with ``confirm=True``.
         """
-        from src.agent.replay import read_manifest, run_replay
+        from src.agent.replay import (
+            manifest_to_flow_spec,
+            read_manifest,
+            run_replay,
+        )
 
         loaded: Mapping[str, Any]
         if isinstance(manifest, (str, Path)):
             try:
                 loaded = read_manifest(manifest)
-            except (OSError, ValueError, TypeError) as exc:
+            except (OSError, ValueError, TypeError, RecursionError) as exc:
                 raise FlowValidationError(
                     f"cannot read replay manifest {manifest!r}: {exc}"
                 ) from exc
         elif isinstance(manifest, Mapping):
+            # Validate at the SDK boundary — same constructor the path
+            # branch and the engine use — so a malformed mapping raises
+            # FlowValidationError here instead of a generic ReadyAIError
+            # from deep inside the replay path.
+            try:
+                manifest_to_flow_spec(manifest)
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise FlowValidationError(
+                    f"invalid replay manifest mapping: {exc}"
+                ) from exc
             loaded = manifest
         else:
             raise FlowValidationError(
