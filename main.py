@@ -70,7 +70,7 @@ def setup_logging(verbose: bool = False) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="🤖 ready-ai: Agentic browser automation for SaaS documentation",
+        description="ready-ai: Agentic browser automation for SaaS documentation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 

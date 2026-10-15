@@ -193,6 +193,19 @@ def test_run_flow_requires_config():
         parse_args(["run-flow"])
 
 
+def test_cli_help_encodes_on_windows_console():
+    """`ready-ai --help` must survive a cp1252 stdout (Windows console).
+
+    Regression: the parser description carried an emoji that crashed
+    --help under cp1252 with UnicodeEncodeError. The full help text
+    must encode cleanly in the Windows console codec.
+    """
+    from main import _build_parser
+
+    text = _build_parser().format_help()
+    text.encode("cp1252")
+
+
 @pytest.mark.asyncio
 async def test_run_flow_cli_prints_json_result(tmp_path, monkeypatch, capsys):
     """DoD1 — `run-flow` accepts a flow YAML and produces a JSON result."""

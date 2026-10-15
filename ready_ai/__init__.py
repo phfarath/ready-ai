@@ -67,7 +67,7 @@ from .models import (
     RunStep,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "EVENT_TYPES",
