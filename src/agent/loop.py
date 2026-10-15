@@ -36,7 +36,7 @@ from ..observability import (
 from . import planner, executor, critic, recovery, replay
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
-from .state import RunState, DocStepState
+from .state import RunState, DocStepState, compute_flow_fingerprint
 
 if TYPE_CHECKING:
     from ..api.models import (
@@ -526,6 +526,28 @@ class AgenticLoop:
                     f"the declared {len(flow.steps)} step(s); refusing "
                     "to resume an incompatible flow"
                 )
+            # READY-AI-T-SDK-FOLLOWUPS: the checkpoint is bound to the
+            # exact flow that created it — a foreign flow (even with
+            # enough steps) can never resume under another run's run_id.
+            # Legacy checkpoints (no fingerprint persisted) skip the
+            # check and log, preserving backward compatibility.
+            expected_fingerprint = self._state.flow_fingerprint or ""
+            if expected_fingerprint:
+                live_fingerprint = compute_flow_fingerprint(flow)
+                if live_fingerprint != expected_fingerprint:
+                    raise RunPolicyError(
+                        f"paused checkpoint flow fingerprint "
+                        f"{expected_fingerprint[:12]}… does not match "
+                        f"the resuming flow {live_fingerprint[:12]}…; "
+                        "refusing to resume a different flow under "
+                        f"run_id={self.run_id!r}"
+                    )
+            else:
+                logger.warning(
+                    "paused checkpoint has no flow fingerprint (legacy); "
+                    "resuming without flow binding under run_id=%r",
+                    self.run_id,
+                )
             start_index = paused_at
             resumed_from = self.resume_from
             # The checkpoint itself is the resume signal (not the
@@ -750,6 +772,11 @@ class AgenticLoop:
                         self._state.pause_reason = str(pause.get("reason", ""))
                         self._state.resume_when = dict(
                             pause.get("resume_when") or {}
+                        )
+                        # Bind the checkpoint to the flow that created it,
+                        # so only the originating flow can resume it.
+                        self._state.flow_fingerprint = compute_flow_fingerprint(
+                            flow
                         )
                         self._save_checkpoint(
                             "PAUSED" if overall_status == "paused" else "FAILED"

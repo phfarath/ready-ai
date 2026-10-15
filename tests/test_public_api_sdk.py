@@ -515,6 +515,44 @@ def _write_checkpoint(output_dir, run_id, status="PAUSED", step_index=2):
     state.to_file(output_dir / f"{run_id}_state.json")
 
 
+def _write_fingerprinted_checkpoint(output_dir, flow, run_id, step_index=1):
+    """Checkpoint bound to ``flow`` via the engine fingerprint helper."""
+    from src.agent.state import compute_flow_fingerprint
+    from src.api.models import (
+        FlowAction as _FlowAction,
+        FlowSpec as _FlowSpec,
+        FlowStepSpec as _FlowStepSpec,
+    )
+
+    spec = _FlowSpec(
+        name=flow.name,
+        url=flow.url,
+        steps=[
+            _FlowStepSpec(
+                name=step.name,
+                actions=[
+                    _FlowAction(**a.model_dump(exclude_none=True))
+                    for a in step.actions
+                ],
+                asserts=[],
+                extract=[],
+            )
+            for step in flow.steps
+        ],
+    )
+    state = RunState(
+        run_id=run_id,
+        goal=flow.name or "sdk-flow",
+        url=flow.url,
+        status="PAUSED",
+        current_step_index=step_index,
+        pause_reason="Finish SSO",
+        resume_when={"selector_visible": "#authed"},
+        flow_fingerprint=compute_flow_fingerprint(spec),
+    )
+    state.to_file(output_dir / f"{run_id}_state.json")
+
+
 @pytest.mark.parametrize("bad", ["../escape", "..\\win", "a b", "a/b", ""])
 async def test_resume_rejects_traversal_run_id(tmp_path, bad):
     """The run token reaches a filesystem path — validate its charset."""
@@ -548,6 +586,44 @@ async def test_resume_uses_run_id_token_only(tmp_path, monkeypatch):
     loop = factory.instances[0]
     assert loop.kwargs["run_id"] == "sso-1"
     assert loop.kwargs["resume_from"].endswith("sso-1_state.json")
+
+
+async def test_resume_refuses_foreign_flow_fingerprint(tmp_path, monkeypatch):
+    """A checkpoint bound to flow A refuses flow B at the SDK boundary."""
+    origin = _flow(run_id="sso-2")
+    _write_fingerprinted_checkpoint(tmp_path, origin, "sso-2")
+    _patch_loop(monkeypatch)
+    ai = ReadyAI(output_dir=str(tmp_path))
+
+    foreign = _flow(
+        run_id="sso-2",
+        steps=[
+            FlowStep(
+                name="Other",
+                actions=[
+                    FlowAction(
+                        action="navigate",
+                        url="https://app.example.com/other",
+                    )
+                ],
+            )
+        ],
+    )
+    with pytest.raises(PolicyViolationError, match="different flow"):
+        await ai.resume(foreign, run_id="sso-2")
+
+
+async def test_resume_accepts_matching_flow_fingerprint(tmp_path, monkeypatch):
+    """The originating flow resumes past the SDK boundary check."""
+    origin = _flow(run_id="sso-3")
+    _write_fingerprinted_checkpoint(tmp_path, origin, "sso-3")
+    factory = _patch_loop(monkeypatch)
+    ai = ReadyAI(output_dir=str(tmp_path))
+
+    result = await ai.resume(_flow(run_id="sso-3"), run_id="sso-3")
+
+    assert result.status == "passed"
+    assert factory.instances[0].kwargs["run_id"] == "sso-3"
 
 
 # ─── Public surface ──────────────────────────────────────────────────
@@ -650,6 +726,30 @@ async def test_replay_manifest_load_errors_map_to_flow_validation(tmp_path):
         await ai.replay_manifest(tmp_path / "nope_replay_manifest.json")
     with pytest.raises(FlowValidationError, match="path or a mapping"):
         await ai.replay_manifest(42)
+
+
+async def test_replay_manifest_invalid_mapping_maps_to_flow_validation(
+    tmp_path,
+):
+    """A malformed Mapping manifest is rejected at the SDK boundary —
+    not as a generic ReadyAIError from deep inside the replay path."""
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(FlowValidationError, match="invalid replay manifest"):
+        await ai.replay_manifest({"kind": "not-a-manifest"})
+
+
+async def test_replay_manifest_recursion_error_maps_to_flow_validation(
+    tmp_path, monkeypatch
+):
+    """A >1000-deep manifest mapping must not leak a raw RecursionError."""
+    def _boom(manifest):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    # replay_manifest imports the constructor locally from src.agent.replay.
+    monkeypatch.setattr("src.agent.replay.manifest_to_flow_spec", _boom)
+    ai = ReadyAI(output_dir=str(tmp_path))
+    with pytest.raises(FlowValidationError, match="invalid replay manifest"):
+        await ai.replay_manifest({"kind": "ready-ai-replay-manifest"})
 
 
 async def test_result_conversion_type_errors_map_to_flow_validation(

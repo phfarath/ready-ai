@@ -3,6 +3,7 @@ State management and checkpointing for AgenticLoop runs.
 Allows runs to be persisted to disk and resumed after a crash or for API polling.
 """
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, asdict
@@ -10,6 +11,36 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Flow fields that describe WHAT executes. Runtime knobs (headless,
+# run_id, output, model) and credential references (cookies_file,
+# username, password) are excluded on purpose: they must stay out of
+# any persisted hash input, and a resume that only toggles headless
+# must not be refused as a "different" flow.
+_FLOW_FINGERPRINT_EXCLUDE = frozenset(
+    {"headless", "run_id", "output", "model", "cookies_file", "username", "password"}
+)
+
+
+def compute_flow_fingerprint(flow: Any) -> str:
+    """Bind a checkpoint to the exact flow that created it (READY-AI-T-SDK-FOLLOWUPS).
+
+    sha256 over the flow's behavioral identity (name, url, steps,
+    retries, effect policy) as canonical JSON. Compared on resume
+    BEFORE Chrome launches: a different flow (even with enough steps)
+    can never resume under another run's ``run_id``.
+
+    Fail-closed by construction: any behavioral difference changes the
+    canonical JSON and is refused — the operator must resume with the
+    originating flow document.
+    """
+    try:
+        dumped = flow.model_dump(exclude=_FLOW_FINGERPRINT_EXCLUDE)
+    except AttributeError:
+        dumped = dict(flow) if isinstance(flow, dict) else flow
+    payload = json.dumps(dumped, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -120,6 +151,14 @@ class RunState:
     # here — never cookies, credentials, or typed values.
     pause_reason: str = ""
     resume_when: dict[str, Any] = field(default_factory=dict)
+
+    # Checkpoint→flow binding (READY-AI-T-SDK-FOLLOWUPS): sha256 of the
+    # originating flow spec, persisted on pause and verified on resume
+    # BEFORE Chrome launches. A foreign flow can never resume under
+    # another run's run_id. Empty for checkpoints written before this
+    # field existed — legacy checkpoints skip the check (fail-open for
+    # backward compatibility, logged at resume time).
+    flow_fingerprint: str = ""
 
     def to_file(self, path: str | Path) -> None:
         """Serialize state to a JSON file."""

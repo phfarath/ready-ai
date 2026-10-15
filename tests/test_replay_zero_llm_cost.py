@@ -148,6 +148,25 @@ async def test_author_metrics_artifact_enables_before_after_delta(tmp_path, monk
 # ─── SDK wiring (PH3C): ReadyAI.replay_manifest → run_replay + cost ────────
 
 
+def _sdk_manifest(**overrides):
+    """Minimal manifest valid at the SDK boundary (kind/version/url/steps).
+
+    The SDK now pre-validates Mapping manifests (T-SDK-FOLLOWUPS/2),
+    so plumbing tests must pass a well-formed manifest, not a stub.
+    """
+    from src.agent.replay import REPLAY_MANIFEST_KIND, REPLAY_MANIFEST_VERSION
+
+    manifest = {
+        "version": REPLAY_MANIFEST_VERSION,
+        "kind": REPLAY_MANIFEST_KIND,
+        "flow": "cost-flow",
+        "url": "https://app.example.com/start",
+        "steps": [{"name": "Land", "actions": [{"action": "observe"}]}],
+    }
+    manifest.update(overrides)
+    return manifest
+
+
 def _passthrough_step():
     return {
         "index": 1,
@@ -190,7 +209,7 @@ async def test_sdk_replay_manifest_forwards_fallback_and_exposes_replay_block(
     monkeypatch.setattr("ready_ai.client.AgenticLoop", lambda **kw: object())
 
     ai = ReadyAI(output_dir=str(tmp_path))
-    manifest = {"source_run_id": "author-123", "url": "https://app.example.com/start"}
+    manifest = _sdk_manifest(source_run_id="author-123")
     result = await ai.replay_manifest(
         manifest,
         fallback_agentic=True,
@@ -220,7 +239,7 @@ async def test_sdk_replay_manifest_defaults_are_fail_closed(tmp_path, monkeypatc
     monkeypatch.setattr("ready_ai.client.AgenticLoop", lambda **kw: object())
 
     ai = ReadyAI(output_dir=str(tmp_path))
-    await ai.replay_manifest({"url": "https://app.example.com/start"})
+    await ai.replay_manifest(_sdk_manifest())
 
     call = fake_run_replay.call_args
     assert call.kwargs["allow_fallback"] is False

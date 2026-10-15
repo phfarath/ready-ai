@@ -634,7 +634,16 @@ def cli() -> None:
     elif args.command == "test":
         asyncio.run(async_main_test(args))
     elif args.command == "api":
-        import uvicorn
+        try:
+            import uvicorn
+        except ModuleNotFoundError as exc:
+            print(
+                "error: the 'api' subcommand needs the API extra "
+                "(pip install 'ready-ai[api]'): "
+                f"{exc.name or exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
         logging.getLogger("main").info("🚀 Starting FastAPI Server on port %s", args.port)
         uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
