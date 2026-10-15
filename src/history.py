@@ -100,8 +100,8 @@ def get_aggregates(app_version: Optional[str] = None) -> dict:
         return {"total_runs": 0}
 
     total = len(history)
-    passed = sum(1 for m in history if m.status in ("PASSED", "completed", "success"))
-    broken = sum(1 for m in history if m.status in ("BROKEN", "failed"))
+    passed = sum(1 for m in history if m.status.lower() in ("passed", "completed", "success", "finished"))
+    broken = sum(1 for m in history if m.status.lower() in ("broken", "failed"))
     drifted = sum(m.drift_detected for m in history)
     auto_healed = sum(m.auto_healed for m in history)
     total_steps = sum(m.steps_count for m in history)

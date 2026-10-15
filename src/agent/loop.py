@@ -37,6 +37,7 @@ from . import planner, executor, critic, recovery, replay
 from .cursor import CursorAnimator, extract_selector
 from .browser_session import BrowserSession
 from .state import RunState, DocStepState, compute_flow_fingerprint
+from ..history import RunMetrics, record_run
 
 if TYPE_CHECKING:
     from ..api.models import (
@@ -1693,6 +1694,57 @@ class AgenticLoop:
         except Exception as exc:
             logger.warning(f"Failed to save flow result: {exc}")
 
+    def _record_history(
+        self,
+        run_ctx,
+        status: str,
+        steps_planned: int = 0,
+    ) -> None:
+        """Append this run's metrics to the history store (best-effort).
+
+        Maps ``run_ctx.run_summary()`` onto ``RunMetrics`` so
+        ``GET /history`` and ``GET /history/aggregates`` serve real data.
+        Never raises: history must not break a completed run.
+        """
+        try:
+            summary = run_ctx.run_summary(status=status.upper())
+            tokens = summary.get("llm_tokens") or {}
+            if isinstance(tokens, dict):
+                llm_tokens = int(tokens.get("prompt", 0)) + int(
+                    tokens.get("completion", 0)
+                )
+            else:
+                llm_tokens = int(tokens)
+            recovery_events = summary.get("recovery_events") or {}
+            healed = 0
+            drift = 0
+            if isinstance(recovery_events, dict):
+                healed = int(recovery_events.get("local_recovery", 0))
+                drift = int(recovery_events.get("spa_drift", 0)) + int(
+                    recovery_events.get("crash", 0)
+                )
+            record_run(
+                RunMetrics(
+                    run_id=self.run_id,
+                    goal=self.goal,
+                    url=self.url,
+                    status=status,
+                    steps_count=steps_planned
+                    or int(summary.get("steps_executed", 0)),
+                    steps_passed=int(summary.get("steps_succeeded", 0)),
+                    steps_broken=int(summary.get("steps_failed", 0)),
+                    drift_detected=drift,
+                    auto_healed=healed,
+                    llm_tokens=llm_tokens,
+                    duration_sec=float(summary.get("duration_s", 0.0)),
+                    app_version=self.app_version,
+                    git_commit=self.git_commit,
+                    deployed_at=self.deployed_at,
+                )
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to record run history: {exc}")
+
     def _save_flow_metrics(
         self,
         run_ctx,
@@ -1713,6 +1765,10 @@ class AgenticLoop:
                 json.dumps(summary, indent=2, default=str), encoding="utf-8"
             )
             logger.info("═══ Flow metrics saved to: %s", metrics_path)
+            if status in ("passed", "failed"):
+                self._record_history(
+                    run_ctx, status, steps_planned=len(step_results)
+                )
         except Exception as exc:
             logger.warning(f"Failed to save flow metrics: {exc}")
 
@@ -1728,6 +1784,12 @@ class AgenticLoop:
             summary_payload = {k: v for k, v in summary.items() if k != "event"}
             log_event("run_complete", **summary_payload)
             logger.info(f"═══ Metrics saved to: {metrics_path}")
+            if status in ("FINISHED", "FAILED"):
+                self._record_history(
+                    run_ctx,
+                    status="passed" if status == "FINISHED" else "failed",
+                    steps_planned=int(extra.get("steps_planned", 0)),
+                )
         except Exception as exc:
             logger.warning(f"Failed to save metrics: {exc}")
 

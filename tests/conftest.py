@@ -24,6 +24,19 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_history_store(tmp_path, monkeypatch):
+    """Redirect the history store to a per-test file.
+
+    Completing a run appends to the history store (READY-AI-T-API-HISTORY);
+    without isolation, loop/flow tests would pollute the real
+    ./output/.history.jsonl and leak state across tests.
+    """
+    import src.history as history_mod
+
+    monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+
+
+@pytest.fixture(autouse=True)
 def _restore_pil_module():
     """
     Ensure PIL modules are restored to their real implementations

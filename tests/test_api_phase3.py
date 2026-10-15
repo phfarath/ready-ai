@@ -7,9 +7,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.server import app
+from src.api.server import app, _rate_limiter
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limit_store():
+    yield
+    _rate_limiter._buckets.clear()
 
 
 @pytest.fixture
@@ -72,18 +78,52 @@ class TestListDocs:
 
 
 class TestHistory:
-    def test_empty_history(self):
+    def test_empty_history(self, tmp_path, monkeypatch):
+        import src.history as history_mod
+
+        monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
         response = client.get("/history")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
         assert data["records"] == []
 
-    def test_empty_aggregates(self):
+    def test_empty_aggregates(self, tmp_path, monkeypatch):
+        import src.history as history_mod
+
+        monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
         response = client.get("/history/aggregates")
         assert response.status_code == 200
         data = response.json()
         assert data["total_runs"] == 0
+
+    def test_history_serves_recorded_run(self, tmp_path, monkeypatch):
+        """A recorded run shows up in GET /history and /history/aggregates."""
+        import src.history as history_mod
+        from src.history import RunMetrics, record_run
+
+        monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+        record_run(
+            RunMetrics(
+                run_id="hist-1",
+                goal="prove history API",
+                url="https://example.com",
+                status="passed",
+                steps_count=3,
+                steps_passed=3,
+                duration_sec=7.5,
+            )
+        )
+
+        response = client.get("/history")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["records"][0]["run_id"] == "hist-1"
+
+        agg = client.get("/history/aggregates")
+        assert agg.status_code == 200
+        assert agg.json()["total_runs"] == 1
 
 
 class TestDocsVersionStatus:
