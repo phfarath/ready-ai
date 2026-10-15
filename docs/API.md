@@ -102,6 +102,279 @@ Retrieve observability metrics for a completed run.
 }
 ```
 
+**Error responses**:
+- `404 Not Found` — metrics not found for this run
+
+---
+
+### `GET /runs`
+
+List all documentation runs with optional filtering and pagination.
+
+**Query params**:
+- `status_filter` — filter by run status (e.g. `FINISHED`, `FAILED`)
+- `app_version` — filter by application version (from `manifest.json`)
+- `limit` (default `50`, max `200`) — page size
+- `offset` (default `0`) — page start
+
+**Response** (`200 OK`):
+```json
+{
+  "total": 2,
+  "runs": [
+    {
+      "run_id": "login",
+      "status": "FINISHED",
+      "goal": "Document login",
+      "url": "https://app.example.com/login",
+      "executed_steps": 5,
+      "total_planned_steps": 5,
+      "app_version": "2.3.1",
+      "git_commit": "abc1234",
+      "deployed_at": "2026-05-09T14:00:00Z",
+      "created_at": "2026-05-09T14:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /runs/{run_id}/diff`
+
+Textual diff between this run's `docs.md` and a previous version.
+
+**Query params**:
+- `previous_run_id` — explicit run to compare against. When omitted, the
+  server picks the most recent run with the same `app_version` (from
+  `manifest.json`), falling back to the most recent other run.
+
+**Response** (`200 OK`):
+```json
+{
+  "run_id": "login-v2",
+  "previous_version": "login-v1",
+  "current_version": "login-v2",
+  "changelog": "## Changelog\n\n...",
+  "diff_json": {}
+}
+```
+
+**Error responses**:
+- `404 Not Found` — run, `docs.md`, or any previous version not found
+- `500 Internal Server Error` — diff generation failed
+
+---
+
+### `POST /runs/{run_id}/export`
+
+Export a completed run to a static-site format.
+
+**Request body** (JSON):
+```json
+{
+  "format": "docusaurus",
+  "output_dir": null
+}
+```
+Supported `format` values: `markdown`, `docusaurus`, `nextra`,
+`mintlify`, `starlight`. When `output_dir` is omitted the export lands
+in `./output/{run_id}/export/{format}/`.
+
+**Response** (`200 OK`):
+```json
+{
+  "run_id": "login",
+  "format": "docusaurus",
+  "output_dir": "./output/login/export/docusaurus",
+  "files_created": ["./output/login/export/docusaurus/index.md"],
+  "success": true
+}
+```
+
+**Error responses**:
+- `404 Not Found` — run or `docs.md` not found
+- `409 Conflict` — run is not completed (export requires a finished run)
+- `400 Bad Request` — unknown format
+
+---
+
+## Flow Endpoints
+
+### `POST /flows/run`
+
+Execute a declarative run-flow (actions, asserts, extractions) over the
+same browser/CDP core as the documentation pipeline — without
+DocRenderer, screenshots, or annotation.
+
+**Request body** (JSON):
+```json
+{
+  "name": "login-smoke",
+  "url": "https://app.example.com/login",
+  "steps": [
+    {
+      "name": "Submit login",
+      "actions": [
+        {"action": "fill", "selector": "#email", "text": "user@example.com"},
+        {"action": "click", "selector": "#submit"}
+      ],
+      "asserts": [
+        {"type": "url_contains", "expected": "/dashboard"}
+      ],
+      "extract": []
+    }
+  ],
+  "retries": 1,
+  "headless": true,
+  "run_id": "login-smoke-1",
+  "effect_policy": "write"
+}
+```
+
+Each request gets its own browser port from the pool and runs under a
+300s budget — a timeout is reported as `503` instead of hanging.
+
+**Response** (`200 OK`):
+```json
+{
+  "run_id": "login-smoke-1",
+  "flow": "login-smoke",
+  "url": "https://app.example.com/login",
+  "status": "passed",
+  "steps": [],
+  "summary": {},
+  "failure_reason": null
+}
+```
+`status` is `passed` or `failed`.
+
+**Error responses**:
+- `422 Unprocessable Entity` — flow validation failed
+- `500 Internal Server Error` — run-flow failed
+- `503 Service Unavailable` — run-flow timed out after 300s
+
+---
+
+## Documentation Sets
+
+### `GET /doc-sets`
+
+List all generated documentation sets (one per run output directory).
+
+**Query params**:
+- `version` — filter by `app_version` (from `manifest.json`)
+- `status_filter` — filter by run status
+- `limit` (default `50`, max `200`)
+- `offset` (default `0`)
+
+**Response** (`200 OK`):
+```json
+{
+  "total": 1,
+  "docs": [
+    {
+      "run_id": "login",
+      "version": "2.3.1",
+      "goal": "Document login",
+      "url": "https://app.example.com/login",
+      "status": "FINISHED",
+      "files": ["docs.md", "manifest.json", "screenshots/step_01.png"],
+      "generated_at": "2026-05-09T14:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /docs/{version}/status`
+
+Health status of the documentation for a specific app version (most
+recent run carrying that `app_version`).
+
+**Response** (`200 OK`):
+```json
+{
+  "version": "2.3.1",
+  "run_id": "login",
+  "status": "FINISHED",
+  "steps_count": 5,
+  "screenshots_count": 5,
+  "has_manifest": true,
+  "has_metrics": true,
+  "last_tested": null,
+  "test_status": null
+}
+```
+
+**Error responses**:
+- `404 Not Found` — no documentation found for this version
+
+---
+
+## Historical Tracking
+
+Run metrics are appended to `./output/.history.jsonl` on every
+completed run (docs and flows), so these endpoints serve real data —
+not just the current session.
+
+### `GET /history`
+
+Retrieve historical run metrics, newest first.
+
+**Query params**:
+- `app_version` — filter by application version
+- `status` — filter by run status
+- `limit` (default `50`, max `200`)
+- `offset` (default `0`)
+
+**Response** (`200 OK`):
+```json
+{
+  "total": 1,
+  "records": [
+    {
+      "run_id": "login",
+      "goal": "Document login",
+      "status": "passed",
+      "steps_count": 5,
+      "llm_tokens": 1200,
+      "duration_sec": 45.2,
+      "app_version": "2.3.1",
+      "timestamp": "2026-05-09T14:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /history/aggregates`
+
+Aggregate statistics over all historical runs.
+
+**Query params**:
+- `app_version` — restrict to one application version
+
+**Response** (`200 OK`):
+```json
+{
+  "total_runs": 10,
+  "pass_rate": 0.9,
+  "broken_rate": 0.1,
+  "drift_events": 2,
+  "auto_healed": 1,
+  "total_steps": 48,
+  "avg_steps_per_run": 4.8,
+  "total_tokens": 12000,
+  "avg_tokens_per_run": 1200,
+  "total_duration_sec": 452.0,
+  "avg_duration_sec": 45.2
+}
+```
+When no runs are recorded the response is `{"total_runs": 0}`.
+
 ---
 
 ## Batch Endpoints
@@ -292,13 +565,50 @@ Poll the status of a batch run.
 
 ## Health Check
 
+### `GET /health`
+
+Liveness probe.
+
+**Response** (`200 OK`):
+```json
+{
+  "status": "healthy",
+  "service": "ready-ai",
+  "version": "0.1.0",
+  "timestamp": "2026-05-09T14:00:00Z"
+}
+```
+
+---
+
+### `GET /ready`
+
+Readiness probe — checks the output directory is writable.
+
+**Response** (`200 OK`):
+```json
+{
+  "status": "ready",
+  "checks": {
+    "output_dir": "ok",
+    "browser_pool": "ok"
+  },
+  "timestamp": "2026-05-09T14:00:00Z"
+}
+```
+
+**Error responses**:
+- `503 Service Unavailable` — output directory not writable
+
+---
+
 ### `GET /`
 
 Returns API info:
 ```json
 {
   "title": "ready-ai API",
-  "version": "0.2.0",
+  "version": "0.6.1",
   "docs_url": "/docs"
 }
 ```
