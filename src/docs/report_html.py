@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _STATUS_COLORS = {
     "PASSED": "#22c55e",
     "DRIFT": "#eab308",
+    "DRIFT_SUSPECTED": "#eab308",
     "BROKEN": "#ef4444",
     "DRIFT_DETECTED": "#eab308",
     "HEALED": "#3b82f6",
@@ -120,8 +121,10 @@ def render_html_report(report: "DocTestReport", output_path: str | Path) -> str:
         if r.error:
             card += f'\n<div class="error-msg">{_esc(r.error)}</div>'
 
-        # Diff images for drift steps
-        if r.status == "DRIFT" and r.diff_image_path:
+        # Diff images for drift steps — DRIFT_SUSPECTED renders the same
+        # baseline|current|diff triptych as DRIFT: a suspected step needs
+        # the visual evidence for human review, not a bare badge.
+        if r.status in ("DRIFT", "DRIFT_SUSPECTED") and r.diff_image_path:
             diff_uri = _img_to_data_uri(r.diff_image_path)
             if diff_uri:
                 card += f"""

@@ -153,7 +153,7 @@ class DocTestRunner:
             if not Path(self.doc_path).exists():
                 raise FileNotFoundError(f"Documentation file not found: {self.doc_path}")
             steps = parse_doc(self.doc_path)
-            self._enrich_from_checkpoint(steps)
+            dom_baselines = self._enrich_from_checkpoint(steps)
             logger.info(f"Parsed {len(steps)} steps from {self.doc_path}")
 
             # 2. Setup output dirs
@@ -240,7 +240,9 @@ class DocTestRunner:
             if self.auto_heal and (has_drift or has_healed):
                 from ..docs.auto_healer import DocAutoHealer
                 healer = DocAutoHealer(self.doc_path, llm)
-                healing = await healer.heal_report(report)
+                healing = await healer.heal_report(
+                    report, baseline_dom_hashes=dom_baselines
+                )
                 report.healing_report = healing
                 if healing.total_healed:
                     logger.info(
@@ -367,6 +369,14 @@ class DocTestRunner:
                             if retry_result.success:
                                 status = "HEALED"
                                 logger.info(f"  Step {step_num}: selector recovery verified ✓")
+                                # Persist the verified selector so the next
+                                # run does not break identically — via the
+                                # assertion-locked path (action line only).
+                                healer.persist_verified_selector(
+                                    step_num,
+                                    step_state.action_description,
+                                    heal.new_selector,
+                                )
                                 # Re-capture artifacts against the healed page
                                 # so the report reflects the successful state,
                                 # not the earlier failed attempt.
@@ -448,8 +458,17 @@ class DocTestRunner:
                 error=str(e),
             )
 
-    def _enrich_from_checkpoint(self, steps: list[DocStepState]) -> None:
-        """Enrich parsed steps with baseline data from checkpoint JSON if available."""
+    def _enrich_from_checkpoint(
+        self, steps: list[DocStepState]
+    ) -> dict[int, str]:
+        """Enrich parsed steps with baseline data from checkpoint JSON if available.
+
+        Returns the co-located DOM baseline hashes by step number — the
+        provenance map the healer uses to know whether the structural
+        channel can fire. Empty when no checkpoint carries DOM baselines
+        (e.g. docs-baseline/ exports), so the healer warns instead of
+        healing on visual evidence alone, silently.
+        """
         doc_dir = Path(self.doc_path).parent
         # Look for any checkpoint state file in the doc output directory.
         # Sort by mtime (newest first) so multiple runs in the same dir
@@ -462,15 +481,16 @@ class DocTestRunner:
         )
         if not state_files:
             logger.debug("No checkpoint state file found; DOM baselines unavailable")
-            return
+            return {}
 
         state = RunState.from_file(state_files[0])
         if not state or not state.doc_steps:
-            return
+            return {}
 
         # Build lookup by step number
         baseline_by_num = {ds.number: ds for ds in state.doc_steps}
         enriched = 0
+        dom_baselines: dict[int, str] = {}
         for step in steps:
             baseline = baseline_by_num.get(step.number)
             if baseline:
@@ -478,9 +498,11 @@ class DocTestRunner:
                 step.baseline_url = baseline.baseline_url
                 if baseline.baseline_dom_hash:
                     enriched += 1
+                    dom_baselines[step.number] = baseline.baseline_dom_hash
 
         if enriched:
             logger.info(f"Enriched {enriched} steps with baseline data from checkpoint")
+        return dom_baselines
 
     async def _inject_cookies(self, page: PageDomain) -> None:
         """Inject cookies from file using the shared normalization helper so

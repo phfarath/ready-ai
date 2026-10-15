@@ -136,6 +136,25 @@ def publish_healing(
         Clock function; injected for tests (defaults to UTC now).
     """
     if healing_report.total_healed == 0:
+        # A suspected-only run (gate refused every heal) publishes no
+        # files — but it is NOT a quiet no-op: N steps await human
+        # review in the gate_log/HTML report. Surface that distinctly so
+        # the CLI can point at the evidence instead of opening an empty
+        # review PR (zero changes would fight conservative staging).
+        suspected = [
+            entry.step_number
+            for entry in getattr(healing_report, "gate_log", [])
+            if getattr(entry, "decision", "") == "suspected"
+        ]
+        if suspected:
+            steps = ", ".join(f"step {n}" for n in suspected)
+            logger.info(
+                "publisher: %d suspected step(s) (%s) need human review — "
+                "nothing to publish (heal gate refused all fixes)",
+                len(suspected),
+                steps,
+            )
+            return PublishResult(skipped_reason="suspected-only")
         logger.info("publisher: nothing to publish (total_healed=0)")
         return PublishResult(skipped_reason="no-op")
 

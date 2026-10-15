@@ -120,6 +120,37 @@ def test_publish_no_changes_returns_noop(config, doc_test_report):
     assert runner.calls == []
 
 
+def test_publish_suspected_only_returns_review_reason(
+    config, doc_test_report
+):
+    """A suspected-only run (gate refused every heal) publishes nothing —
+    but must say so distinctly (T-US5-FOLLOWUPS/1).
+
+    "no-op" means nothing happened; "suspected-only" means N steps need
+    human review — the CLI surfaces the gate_log/HTML report instead of
+    opening an empty review PR (zero file changes would fight the
+    publisher's conservative staging).
+    """
+    from src.docs.auto_healer import DriftGateLogEntry, HealingReport
+
+    suspected = HealingReport()
+    suspected.gate_log = [
+        DriftGateLogEntry(
+            step_number=1,
+            decision="suspected",
+            channels_agreeing=["visual"],
+            channels_conflicting=["structural"],
+        )
+    ]
+    runner = FakeRunner()
+    result = publish_healing(
+        suspected, doc_test_report, None, config, runner=runner
+    )
+
+    assert result.skipped_reason == "suspected-only"
+    assert runner.calls == []
+
+
 def test_publish_creates_branch_commits_and_opens_pr(
     config, healing_report, doc_test_report
 ):

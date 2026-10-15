@@ -402,6 +402,12 @@ def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
         result = publish_healing(healing_report, report, html_report_path, cfg)
         if result.pr_url:
             logger.info(f"✅ PR created: {result.pr_url}")
+        elif result.skipped_reason == "suspected-only":
+            logger.info(
+                "⏭️  Skipped: suspected-only — the heal gate refused all "
+                "fixes; review the suspected steps in test_report.html "
+                "(baseline|current|diff triptych) instead"
+            )
         elif result.skipped_reason:
             logger.info(f"⏭️  Skipped: {result.skipped_reason}")
         else:
