@@ -14,6 +14,31 @@ deprecation: the old name keeps working for at least one minor release
 and is announced in this changelog. Internal modules (`src.*`) are not
 covered by this policy; consumers must not import them.
 
+## v0.6.1 — 2026-10 — SDK + healing review follow-ups (patch)
+
+- Checkpoint→flow binding (`READY-AI-T-SDK-FOLLOWUPS/1`): sha256 of the
+  flow's behavioral identity persisted in `RunState` on pause, verified
+  on resume before Chrome launches (engine) and at the SDK boundary
+  (`ReadyAI.resume`) — a foreign flow can never resume under another
+  run's `run_id`. Runtime knobs/credentials excluded from the hash;
+  legacy checkpoints skip with a warning.
+- `replay_manifest` boundary hardening (2/3): Mapping manifests
+  pre-validated at the SDK boundary (`FlowValidationError`, not generic
+  `ReadyAIError`); `RecursionError` wrapped on both branches.
+- `openai._compat` guarded import (6), new `api` extra + friendly error
+  on `ready-ai api` without it (7), honest lazy-import docstrings (8).
+- Healing follow-ups (`READY-AI-T-US5-FOLLOWUPS`, TDD): `suspected-only`
+  publish reason, DOM-baseline provenance warning, diff triptych for
+  `DRIFT_SUSPECTED`, `min_channels` upper clamp, verified selector
+  persistence to `docs.md`.
+- Fixes only, no public-surface change (per the versioning policy
+  above). PRs #51, #52; CI green (lint, strict mypy 3.10–3.12, pytest
+  3.10–3.12, e2e, regression, CodeQL).
+- Windows console fix: `ready-ai --help` no longer crashes with
+  `UnicodeEncodeError` under cp1252 (parser description de-emojified;
+  regression test `test_cli_help_encodes_on_windows_console`). Found by
+  the v0.6.1 clean-venv wheel smoke test.
+
 ## v0.6.0 — 2026-10 — Public async-first SDK + distribution contract (Fase 5)
 
 - Async-first public API: `ReadyAI.run()` / `run_sync()` /
