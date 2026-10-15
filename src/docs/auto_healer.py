@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_HEAL_GATE_MIN_CHANNELS = 2
 HEAL_GATE_MIN_CHANNELS_ENV = "READY_AI_HEAL_GATE_MIN_CHANNELS"
 
+# The gate only knows these two causal channels. A configured minimum
+# above this count can never agree — clamp loudly instead of failing
+# closed silently forever.
+KNOWN_HEAL_CHANNEL_COUNT = 2
+
 
 @dataclass
 class HealResult:
@@ -73,18 +78,32 @@ def _resolve_min_channels(min_channels: int | None) -> int:
     An explicit ``min_channels`` argument takes precedence. Otherwise the
     ``READY_AI_HEAL_GATE_MIN_CHANNELS`` environment variable is read
     (default 2). Invalid values fall back to the default; values below 1
-    clamp to 1 so the gate never requires zero agreement.
+    clamp to 1 so the gate never requires zero agreement. Values above
+    the known channel count clamp down with an explicit warning — the
+    gate would otherwise be unreachable, silently, forever.
     """
     if min_channels is not None:
-        return max(1, min_channels)
-    raw = os.environ.get(HEAL_GATE_MIN_CHANNELS_ENV, "").strip()
-    if not raw:
-        return DEFAULT_HEAL_GATE_MIN_CHANNELS
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_HEAL_GATE_MIN_CHANNELS
-    return max(1, value)
+        value = max(1, min_channels)
+    else:
+        raw = os.environ.get(HEAL_GATE_MIN_CHANNELS_ENV, "").strip()
+        if not raw:
+            return DEFAULT_HEAL_GATE_MIN_CHANNELS
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_HEAL_GATE_MIN_CHANNELS
+        value = max(1, value)
+    if value > KNOWN_HEAL_CHANNEL_COUNT:
+        logger.warning(
+            "%s=%s exceeds the %d known drift channels; clamped to %d — "
+            "the gate can never agree otherwise",
+            HEAL_GATE_MIN_CHANNELS_ENV,
+            value,
+            KNOWN_HEAL_CHANNEL_COUNT,
+            KNOWN_HEAL_CHANNEL_COUNT,
+        )
+        return KNOWN_HEAL_CHANNEL_COUNT
+    return value
 
 
 def evaluate_drift_gate(
@@ -109,7 +128,9 @@ def evaluate_drift_gate(
 
     Configuration: env var ``READY_AI_HEAL_GATE_MIN_CHANNELS`` sets the
     minimum number of agreeing channels (default 2). Invalid values fall
-    back to the default; values below 1 clamp to 1.
+    back to the default; values below 1 clamp to 1; values above the
+    known channel count clamp down with a warning (the gate would
+    otherwise be unreachable).
     """
     agreeing: list[str] = []
     conflicting: list[str] = []
@@ -191,6 +212,8 @@ class DocAutoHealer:
     async def heal_report(
         self,
         report: "DocTestReport",
+        *,
+        baseline_dom_hashes: dict[int, str] | None = None,
     ) -> HealingReport:
         """Heal drifted steps that pass the multi-channel drift gate.
 
@@ -198,8 +221,23 @@ class DocAutoHealer:
         healing happens. Steps confirmed by ≥2 independent channels are
         healed; single-channel drift is reclassified as ``DRIFT_SUSPECTED``
         on the result (docs.md untouched) and recorded in ``gate_log``.
+
+        ``baseline_dom_hashes`` maps step_number → co-located DOM baseline
+        hash (``None`` = provenance unknown, the historical default). When
+        explicitly empty, the structural channel cannot exist — the gate
+        degrades to visual-only and a warning is logged, so baselines
+        exported via ``docs-baseline/`` (DOM baseline never co-located)
+        never heal on a single channel silently.
         """
         healing = HealingReport()
+        dom_provenance_known = baseline_dom_hashes is not None
+        if dom_provenance_known and not baseline_dom_hashes:
+            logger.warning(
+                "auto-heal is running with no DOM baselines co-located "
+                "(e.g. baselines exported via docs-baseline/ carry no "
+                "DOM hash) — the structural channel cannot fire and the "
+                "gate degrades to visual-only evidence"
+            )
 
         for result in report.results:
             if result.status != "DRIFT" or not result.new_screenshot_path:
@@ -381,3 +419,31 @@ class DocAutoHealer:
                 new_part = f"{selector_re.group(1)}: {new_selector}"
                 new_action = original_action.replace(old_part, new_part)
                 self._doc_content = self._doc_content.replace(original_action, new_action, 1)
+
+    def persist_verified_selector(
+        self, step_number: int, original_action: str, new_selector: str,
+    ) -> bool:
+        """Persist a re-execution-verified recovered selector to docs.md.
+
+        Called by the test runner AFTER the recovered selector passes
+        re-execution — without this, the same step breaks identically on
+        the next run. ``recover_selector`` already applied the change to
+        the in-memory content via the assertion-locked ``_update_action_in_doc``
+        path (action line only, never asserts); this flushes that exact
+        content to disk. Returns True when the doc changed on disk.
+        """
+        if new_selector not in self._doc_content:
+            before = self._doc_content
+            self._update_action_in_doc(step_number, original_action, new_selector)
+            if self._doc_content == before:
+                logger.warning(
+                    f"  Step {step_number}: verified selector {new_selector!r} "
+                    "matched no action line — docs.md unchanged"
+                )
+                return False
+        self.doc_path.write_text(self._doc_content, encoding="utf-8")
+        logger.info(
+            f"  Step {step_number}: verified selector persisted "
+            f"({new_selector!r})"
+        )
+        return True

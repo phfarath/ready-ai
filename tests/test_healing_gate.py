@@ -105,6 +105,28 @@ class TestEvaluateDriftGate:
 
         assert decision.eligible is True
 
+    def test_min_channels_above_channel_count_clamps_with_warning(
+        self, monkeypatch, caplog
+    ):
+        """min_channels=3 with only 2 channels can never agree (T-US5-FOLLOWUPS/4).
+
+        The gate clamps to the available channel count and warns loudly
+        instead of failing closed silently forever.
+        """
+        import logging
+
+        monkeypatch.setenv(HEAL_GATE_MIN_CHANNELS_ENV, "3")
+
+        with caplog.at_level(logging.WARNING, logger="src.docs.auto_healer"):
+            decision = evaluate_drift_gate(0.50, 0.85, True)
+
+        assert decision.eligible is True
+        assert any(
+            "clamped" in record.getMessage()
+            and HEAL_GATE_MIN_CHANNELS_ENV in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_env_unset_defaults_to_two(self, monkeypatch):
         monkeypatch.delenv(HEAL_GATE_MIN_CHANNELS_ENV, raising=False)
 
@@ -140,6 +162,27 @@ def _make_report(doc_dir: Path, results: list[StepTestResult]) -> DocTestReport:
         timestamp="2026-08-22T12:00:00",
         threshold=0.85,
         results=results,
+    )
+
+
+@pytest.mark.asyncio
+async def test_heal_without_dom_baselines_warns(doc_dir, caplog):
+    """Auto-heal with no DOM baselines co-located degrades the gate to a
+    single channel (T-US5-FOLLOWUPS/2) — warn loudly instead of healing
+    on visual evidence alone, silently."""
+    import logging
+
+    result = _drift_result(1, doc_dir, visual_similarity=0.4, dom_changed=True)
+    report = _make_report(doc_dir, [result])
+    healer = DocAutoHealer(str(doc_dir / "docs.md"), _make_llm())
+
+    with caplog.at_level(logging.WARNING, logger="src.docs.auto_healer"):
+        healing = await healer.heal_report(report, baseline_dom_hashes={})
+
+    assert healing.total_healed == 1  # visual-only decision still heals
+    assert any(
+        "no DOM baselines" in record.getMessage()
+        for record in caplog.records
     )
 
 
@@ -289,6 +332,50 @@ async def test_recover_selector_works_independently_of_gate(doc_dir):
         "**Action executed:** Clicked element: button#new-login"
         in healer._doc_content
     )
+
+
+@pytest.mark.asyncio
+async def test_verified_selector_recovery_persists_to_doc(doc_dir):
+    """A verified recovered selector lands in docs.md (T-US5-FOLLOWUPS/5).
+
+    The runner verifies a recovered selector by re-execution — without
+    persistence the same step breaks identically on the next run.
+    Persistence goes through the assertion-locked _update_action_in_doc
+    path (action line only, never asserts).
+    """
+    import json
+
+    llm = _make_llm()
+    llm.complete = AsyncMock(
+        return_value=json.dumps(
+            {
+                "found": True,
+                "selector": "button#new-login",
+                "reason": "renamed id",
+            }
+        )
+    )
+    healer = DocAutoHealer(str(doc_dir / "docs.md"), llm)
+    heal = await healer.recover_selector(
+        1,
+        "Clicked element: button#login-btn",
+        '[{"tag": "button", "id": "new-login", "text": "Login"}]',
+    )
+    assert heal.selector_recovered is True
+
+    persisted = healer.persist_verified_selector(
+        1,
+        "Clicked element: button#login-btn",
+        heal.new_selector,
+    )
+
+    assert persisted is True
+    doc_text = (doc_dir / "docs.md").read_text(encoding="utf-8")
+    assert "Clicked element: button#new-login" in doc_text
+    assert "button#login-btn" not in doc_text
+    # Assertion-lock: annotation and step structure untouched.
+    assert "## Step 1: Click the Login button" in doc_text
+    assert "<details>" in doc_text and "</details>" in doc_text
 
 
 # ─── Downstream surfaces ──────────────────────────────────────────────────
