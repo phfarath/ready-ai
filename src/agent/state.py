@@ -170,7 +170,13 @@ class RunState:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Optional["RunState"]:
-        """Load state from a JSON file."""
+        """Load state from a JSON file.
+
+        Missing file → None (no checkpoint). Present-but-corrupt →
+        ValueError AFTER preserving the raw bytes in a ``<name>.corrupt``
+        sidecar, so callers can distinguish "fresh run" from "resume
+        data is damaged" and never silently overwrite partial progress.
+        """
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -188,4 +194,11 @@ class RunState:
             return None
         except Exception as e:
             logger.error(f"Failed to load checkpoint from {path}: {e}")
-            return None
+            try:
+                sidecar = Path(path).with_suffix(Path(path).suffix + ".corrupt")
+                if not sidecar.exists():
+                    sidecar.write_bytes(Path(path).read_bytes())
+                    logger.error(f"Corrupt checkpoint preserved at {sidecar}")
+            except OSError as side_err:
+                logger.error(f"Could not preserve corrupt checkpoint: {side_err}")
+            raise ValueError(f"corrupt checkpoint at {path}: {e}") from e

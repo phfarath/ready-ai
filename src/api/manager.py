@@ -206,8 +206,13 @@ class RunManager:
     def get_status(cls, run_id: str) -> Optional[RunStatusResponse]:
         """Fetch the current status of a run ID."""
         if run_id not in cls._states:
-            # Maybe it exists on disk? Try loading it.
-            state = RunState.from_file(cls._state_path(run_id))
+            # Maybe it exists on disk? Try loading it. A corrupt file
+            # (M9: from_file raises ValueError with a .corrupt sidecar)
+            # reads as "no status" here — status polling must not blow up.
+            try:
+                state = RunState.from_file(cls._state_path(run_id))
+            except ValueError:
+                return None
             if not state:
                 return None
             cls._states[run_id] = state
