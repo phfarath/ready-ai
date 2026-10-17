@@ -374,7 +374,7 @@ class PageDomain:
             params["promptText"] = prompt_text
         await self._conn.send("Page.handleJavaScriptDialog", params)
 
-    async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True) -> None:
+    async def navigate(self, url: str, wait_for_load: bool = True, wait_for_network: bool = True, timeout: float = 30.0) -> None:
         """
         Navigate to a URL and optionally wait for page load and network idle.
 
@@ -382,38 +382,56 @@ class PageDomain:
             url: Target URL
             wait_for_load: Whether to wait for Page.loadEventFired
             wait_for_network: Whether to wait for network idle (useful for SPAs)
+            timeout: Global deadline (seconds) for load + idle phases
+                combined. Each phase gets at most the remaining budget.
         """
         # Validate URL scheme - only allow http and https schemes
         from urllib.parse import urlparse
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'):
             raise ValueError(f"Invalid URL scheme: {parsed.scheme}. Only http and https schemes are allowed.")
-        
+
         event_cursor = self.event_cursor
         logger.info(f"Navigating to: {url}")
         await self._conn.send("Page.navigate", {"url": url})
-        
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        def _remaining() -> float:
+            return deadline - loop.time()
+
         if wait_for_load:
-            try:
-                await self._wait_event(
-                    "Page.loadEventFired", timeout=30.0, after_sequence=event_cursor
-                )
-            except TimeoutError:
-                logger.warning("Page load event timed out, continuing anyway")
-                
+            remaining = _remaining()
+            if remaining <= 0:
+                logger.warning("Navigate deadline exhausted before load wait, skipping")
+            else:
+                try:
+                    await self._wait_event(
+                        "Page.loadEventFired", timeout=min(30.0, remaining), after_sequence=event_cursor
+                    )
+                except TimeoutError:
+                    logger.warning("Page load event timed out, continuing anyway")
+
         if wait_for_network:
-            await self.wait_for_network_idle(
-                timeout=10.0, idle_time=0.5, after_sequence=event_cursor
-            )
+            remaining = _remaining()
+            if remaining <= 0:
+                logger.warning("Navigate deadline exhausted before network idle, skipping")
+            else:
+                await self.wait_for_network_idle(
+                    timeout=min(10.0, remaining), idle_time=0.5, after_sequence=event_cursor
+                )
         else:
             # Check for generic lifecycle events or basic readiness
-            try:
-                await self._wait_event(
-                    "Page.domContentEventFired", timeout=2.0, after_sequence=event_cursor
-                )
-            except TimeoutError:
-                pass
-            
+            remaining = _remaining()
+            if remaining > 0:
+                try:
+                    await self._wait_event(
+                        "Page.domContentEventFired", timeout=min(2.0, remaining), after_sequence=event_cursor
+                    )
+                except TimeoutError:
+                    pass
+
         logger.info("Navigation complete")
 
     async def wait_for_navigation_settled(
