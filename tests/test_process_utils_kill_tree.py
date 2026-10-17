@@ -10,8 +10,6 @@ import sys as _sys
 import types as _types
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.agent import process_utils
 
 
