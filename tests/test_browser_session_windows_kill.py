@@ -57,6 +57,9 @@ class TestTeardownWindowsSafe:
         # signal.SIGKILL does not exist on Windows; create it for the test
         mocker.patch.object(signal, "SIGKILL", 9, create=True)
         mock_kill = mocker.patch("src.agent.browser_session.os.kill")
+        mocker.patch(
+            "src.agent.browser_session.kill_process_tree", return_value=False
+        )
 
         bs = BrowserSession()
         bs._conn = None
@@ -100,6 +103,9 @@ class TestAtexitHandlerWindowsSafe:
         mocker.patch("sys.platform", "linux")
         mocker.patch.object(signal, "SIGKILL", 9, create=True)
         mock_kill = mocker.patch("src.agent.browser_session.os.kill")
+        mocker.patch(
+            "src.agent.browser_session.kill_process_tree", return_value=False
+        )
 
         _CHROME_PIDS.add(777777)
         try:
