@@ -197,14 +197,17 @@ class AgenticLoop:
         self._state_path = Path(self.output_dir) / f"{self.run_id}_state.json"
 
         if self.resume_from and Path(self.resume_from).exists():
+            # M9: from_file raises ValueError on corrupt checkpoints (with
+            # a .corrupt sidecar). That propagates — a damaged resume must
+            # fail loud, never silently start a fresh run that overwrites it.
             self._state = RunState.from_file(self.resume_from)
-            if self._state:
-                logger.info(f"Resuming run '{self._state.run_id}' from state file {self.resume_from}")
-            else:
+            if self._state is None:  # defensive: only missing-dir races land here
                 self._state = RunState(
                     run_id=self.run_id, goal=self.goal, url=self.url,
                     app_version=self.app_version, git_commit=self.git_commit, deployed_at=self.deployed_at,
                 )
+            else:
+                logger.info(f"Resuming run '{self._state.run_id}' from state file {self.resume_from}")
         else:
             self._state = RunState(
                 run_id=self.run_id, goal=self.goal, url=self.url,
