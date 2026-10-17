@@ -542,10 +542,49 @@ async def _try_scroll_into_view(selector: str, runtime: RuntimeDomain) -> None:
             f"pierce(document, {safe_sel})?.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }})()"
         )
         await runtime.evaluate(js)
-        await asyncio.sleep(0.1)  # tiny delay for UI to paint
+        await asyncio.sleep(0.1)
         logger.debug(f"  Scrolled '{selector}' into view for retry")
     except Exception:
         pass
+
+
+ALLOWED_KEYS: frozenset[str] = frozenset({
+    "Enter", "Tab", "Escape", "Esc", "Backspace", "Delete", "Insert",
+    "Home", "End", "PageUp", "PageDown",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+    "Up", "Down", "Left", "Right",
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    "Space", " ", "Shift", "Control", "Ctrl", "Alt", "Meta", "Command",
+    "CapsLock", "NumLock", "ScrollLock", "Pause", "PrintScreen",
+})
+
+
+def _normalize_key(key: object) -> str | None:
+    """Return the canonical key name when *key* is allowlisted, else None."""
+    if not isinstance(key, str) or not key:
+        return None
+    if key in ALLOWED_KEYS:
+        return "Escape" if key == "Esc" else "Control" if key == "Ctrl" else key
+    if len(key) == 1 and key.isprintable():
+        return key
+    lowered = key.lower()
+    aliases = {
+        "esc": "Escape", "escape": "Escape", "enter": "Enter", "return": "Enter",
+        "tab": "Tab", "space": " ", "spacebar": " ", "backspace": "Backspace",
+        "delete": "Delete", "del": "Delete", "insert": "Insert", "ins": "Insert",
+        "home": "Home", "end": "End", "pageup": "PageUp", "pagedown": "PageDown",
+        "up": "ArrowUp", "down": "ArrowDown", "left": "ArrowLeft", "right": "ArrowRight",
+        "arrowup": "ArrowUp", "arrowdown": "ArrowDown",
+        "arrowleft": "ArrowLeft", "arrowright": "ArrowRight",
+        "shift": "Shift", "control": "Control", "ctrl": "Control",
+        "alt": "Alt", "meta": "Meta", "command": "Meta",
+    }
+    if lowered in aliases:
+        return aliases[lowered]
+    fn = re.fullmatch(r"f(\d{1,2})", lowered)
+    if fn and 1 <= int(fn.group(1)) <= 12:
+        return f"F{int(fn.group(1))}"
+    return None
 
 
 def _parse_action(response: str) -> dict | None:
@@ -691,7 +730,9 @@ async def _dispatch_action(
             return f"Typed '{display_text}' into {target}"
 
         elif action_type == "press_key":
-            key = action["key"]
+            key = _normalize_key(action.get("key"))
+            if key is None:
+                return f"[Failed] press_key: unsupported key {action.get('key')!r}"
             await input_domain.press_key(key)
             return f"Pressed key: {key}"
 
