@@ -265,10 +265,17 @@ class _StubInput:
 class _UrlRuntime:
     def __init__(self, url="https://app.local/a"):
         self.url = url
+        self._calls = 0
 
     async def evaluate(self, expression):
-        assert expression == "window.location.href"
-        return self.url
+        self._calls += 1
+        if expression == "window.location.href":
+            return self.url
+        if expression == "document.title":
+            return "stub"
+        # DOMCache fingerprint probe: unique per call so every step
+        # misses the cache and refetches, preserving pre-cache semantics.
+        return f"fp-stub-{self._calls}"
 
     async def get_interactive_elements(self):
         return "[]"
