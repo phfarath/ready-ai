@@ -64,7 +64,7 @@ class CursorAnimator:
                 # If the connection is gone or stopped moving, sleep for
                 # longer each iteration. Bounded so we still respond
                 # promptly when a fresh connection is attached.
-                if not self._moving or not self._conn or self._conn._ws is None:
+                if not self._moving or not self._conn or not self._conn.is_alive:
                     consecutive_idle += 1
                     # 1s, 2s, 4s, 8s ... capped at 5s
                     sleep_s = min(5.0, 1.0 * (2 ** min(consecutive_idle, 3)))
@@ -75,7 +75,7 @@ class CursorAnimator:
                 # healthy again.
                 consecutive_idle = 0
                 await asyncio.sleep(random.uniform(1.0, 3.0))
-                if not self._moving or not self._conn or self._conn._ws is None:
+                if not self._moving or not self._conn or not self._conn.is_alive:
                     continue
 
                 curr_x += random.randint(-40, 40)
@@ -91,8 +91,8 @@ class CursorAnimator:
                         )
                     except Exception:
                         # Connection might have died mid-send; the next
-                        # iteration's `self._conn._ws is None` check (or
-                        # an exception in the recv loop) will reset state.
+                        # iteration's `is_alive` check (or an exception in
+                        # the recv loop) will reset state.
                         continue
             except asyncio.CancelledError:
                 break
@@ -151,10 +151,10 @@ class CursorAnimator:
 
 
 def extract_selector(action_desc: str) -> str | None:
-    """Extract CSS selector from an action description like 'Clicked element: #btn'."""
-    match = re.search(r"element(?:\s+via\s+\w+\s+fallback)?:\s*(.+?)(?:\n|$)", action_desc)
+    """Extract CSS selector (or clicked text) from an action description."""
+    match = re.search(r"element(?:\s+via\s+\w+\s+fallback)?(?:\s+by\s+text)?:\s*(.+?)(?:\n|$)", action_desc)
     if match:
-        selector = match.group(1).strip()
+        selector = match.group(1).strip().strip("'\"")
         if selector and not selector.startswith("[Failed") and not selector.startswith("[Error"):
             return selector
     return None
