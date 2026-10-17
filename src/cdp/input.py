@@ -16,6 +16,25 @@ from .accessibility import ActionValidator
 logger = logging.getLogger(__name__)
 
 
+def _quad_area(quad: object) -> float:
+    """Shoelace area of a CDP content quad; 0 for missing/degenerate quads."""
+    if not isinstance(quad, list) or len(quad) < 8:
+        return 0.0
+    try:
+        xs = [float(quad[0]), float(quad[2]), float(quad[4]), float(quad[6])]
+        ys = [float(quad[1]), float(quad[3]), float(quad[5]), float(quad[7])]
+    except (TypeError, ValueError):
+        return 0.0
+    return abs(sum(xs[i] * ys[(i + 1) % 4] - xs[(i + 1) % 4] * ys[i] for i in range(4)) / 2.0)
+
+
+def _quad_center(quad: list) -> tuple[float, float]:
+    return (
+        (quad[0] + quad[2] + quad[4] + quad[6]) / 4,
+        (quad[1] + quad[3] + quad[5] + quad[7]) / 4,
+    )
+
+
 class InputDomain:
     """Simulate mouse clicks, keyboard input, and scrolling via CDP."""
 
@@ -93,9 +112,47 @@ class InputDomain:
             return False
 
         # Box model content quad: [x1,y1, x2,y2, x3,y3, x4,y4]
-        quad = box["model"]["content"]
-        center_x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4
-        center_y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4
+        quad = (box.get("model") or {}).get("content")
+        if _quad_area(quad) <= 0:
+            logger.warning(f"Element has zero-area/hidden quad: {selector}")
+            return False
+        center_x, center_y = _quad_center(quad)
+
+        try:
+            viewport = await self._conn.send(
+                "Runtime.evaluate",
+                {"expression": "({w: window.innerWidth, h: window.innerHeight})", "returnByValue": True},
+                session_id=session_id,
+            )
+            size = (viewport.get("result") or {}).get("value") or {}
+            vw, vh = float(size.get("w", 0) or 0), float(size.get("h", 0) or 0)
+        except Exception:
+            vw, vh = 0.0, 0.0
+
+        if vw > 0 and vh > 0 and not (0 <= center_x <= vw and 0 <= center_y <= vh):
+            await self._conn.send(
+                "Runtime.evaluate",
+                {"expression": f"""(() => {{
+                    const el = document.querySelector({json.dumps(selector)});
+                    el?.scrollIntoView({{behavior: 'instant', block: 'center'}});
+                }})()""", "returnByValue": True},
+                session_id=session_id,
+            )
+            try:
+                box = await self._conn.send(
+                    "DOM.getBoxModel", {"nodeId": node_id}, session_id=session_id
+                )
+            except RuntimeError:
+                logger.warning(f"getBoxModel failed after scroll for: {selector}")
+                return False
+            quad = (box.get("model") or {}).get("content")
+            if _quad_area(quad) <= 0:
+                logger.warning(f"Element has zero-area/hidden quad after scroll: {selector}")
+                return False
+            center_x, center_y = _quad_center(quad)
+            if not (0 <= center_x <= vw and 0 <= center_y <= vh):
+                logger.warning(f"Element still outside viewport after scroll: {selector}")
+                return False
 
         logger.info(f"Clicking '{selector}' at ({center_x:.0f}, {center_y:.0f})")
 
