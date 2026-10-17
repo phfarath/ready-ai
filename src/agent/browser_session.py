@@ -26,6 +26,7 @@ from ..cdp.page import PageDomain
 from ..cdp.input import InputDomain
 from ..cdp.runtime import RuntimeDomain
 from ..observability import log_event
+from .process_utils import kill_process_tree
 
 if TYPE_CHECKING:
     from ..llm.client import LLMClient
@@ -50,13 +51,14 @@ def _kill_all_orphan_chrome() -> None:
     """Emergency cleanup — called by atexit to prevent zombie Chrome."""
     for pid in list(_CHROME_PIDS):
         try:
-            if sys.platform == "win32":
-                # signal.SIGKILL does not exist on Windows; os.kill with
-                # any non-console signal calls TerminateProcess (hard kill).
-                os.kill(pid, signal.SIGTERM)
-            else:
-                os.kill(pid, signal.SIGKILL)  # force kill
-            time.sleep(0.1)
+            # C2: kill the whole tree (renderer/GPU children), not just
+            # the parent. Falls back to os.kill when psutil is absent.
+            if not kill_process_tree(pid):
+                if sys.platform == "win32":
+                    os.kill(pid, signal.SIGTERM)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+                time.sleep(0.1)
         except (OSError, ProcessLookupError, AttributeError):
             pass
     _CHROME_PIDS.clear()
@@ -266,14 +268,16 @@ class BrowserSession:
                     self._chrome_proc.kill()
                     self._chrome_proc.wait(timeout=2)
                 except Exception:
-                    # Last resort: os-level SIGKILL (POSIX only).
+                    # Last resort: whole-tree kill (renderer/GPU children
+                    # on Windows), then os-level signal as fallback.
                     # On Windows signal.SIGKILL does not exist and
                     # proc.kill() above already calls TerminateProcess.
-                    if sys.platform != "win32":
-                        try:
-                            os.kill(self._chrome_proc.pid, signal.SIGKILL)
-                        except (OSError, ProcessLookupError):
-                            pass
+                    try:
+                        if not kill_process_tree(self._chrome_proc.pid):
+                            if sys.platform != "win32":
+                                os.kill(self._chrome_proc.pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
             finally:
                 _unregister_chrome_pid(self._chrome_proc.pid)
                 self._chrome_proc = None
