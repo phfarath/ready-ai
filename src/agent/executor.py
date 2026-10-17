@@ -548,28 +548,46 @@ async def _try_scroll_into_view(selector: str, runtime: RuntimeDomain) -> None:
         pass
 
 
+def _extract_balanced_json(text: str) -> dict | None:
+    """Return the first balanced JSON object in *text*, or None.
+
+    Walks every ``{`` and lets ``json.JSONDecoder().raw_decode`` do the
+    brace matching — strings/escapes handled by the real parser, so
+    nested objects (e.g. ``dialog`` with ``then``) and braces inside
+    string values both survive. Replaces the old ``\\{[^{}]+\\}`` regex
+    that could never match nesting.
+    """
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            obj, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
 def _parse_action(response: str) -> dict | None:
     """Parse JSON action from LLM response."""
     try:
-        return json.loads(response.strip())
+        parsed = json.loads(response.strip())
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
         pass
 
-    # Try to extract JSON from markdown code block
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
+    # Try JSON inside markdown code fences (fence content first, so a
+    # nested object is not cut by a non-greedy brace regex).
+    for fence in re.finditer(r"```(?:json)?\s*(.*?)```", response, re.DOTALL | re.IGNORECASE):
+        candidate = _extract_balanced_json(fence.group(1))
+        if candidate is not None:
+            return candidate
 
-    # Try to find any JSON object
-    match = re.search(r"\{[^{}]+\}", response)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
+    # Fallback: first balanced JSON object anywhere in the prose.
+    found = _extract_balanced_json(response)
+    if found is not None:
+        return found
 
     logger.error(f"Failed to parse action JSON: {response[:200]}")
     return None
