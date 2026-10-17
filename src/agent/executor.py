@@ -145,6 +145,7 @@ async def execute_step(
     runtime: RuntimeDomain,
     previous_failures: list[str] | None = None,
     current_url: str | None = None,
+    dom_cache=None,
 ) -> StepResult:
     """
     Execute a single documentation step with post-action verification and retries.
@@ -166,6 +167,11 @@ async def execute_step(
 
     Returns:
         StepResult with success status and action description
+
+    When ``dom_cache`` (DOMCache) is given, retries refresh through it:
+    unchanged pages hit the cache (no CDP round-trips) and the executed
+    action type drives invalidation — mutating actions drop entries,
+    read actions keep them.
     """
     failures = list(previous_failures or [])
     last_action_desc = ""
@@ -195,6 +201,8 @@ async def execute_step(
         # Execute the action
         action_desc = await _dispatch_action(action, page, input_domain, runtime)
         last_action_desc = action_desc
+        if dom_cache is not None:
+            dom_cache.invalidate(action.get("action", "observe"))
         try:
             expectations = _parse_expectations(action)
         except ValueError as exc:
@@ -239,8 +247,12 @@ async def execute_step(
                 logger.warning("  [Attempt %s] ✗ passive HTTP failure: %s", attempt, statuses)
                 # Continue through the normal retry refresh below instead of
                 # accepting a DOM change as proof of success.
-                dom_html = await page.get_dom_html(max_length=4000)
-                interactive_elements = await runtime.get_interactive_elements()
+                if dom_cache is not None:
+                    refreshed = await dom_cache.get(page, runtime)
+                    dom_html, interactive_elements = refreshed.dom_html, refreshed.elements
+                else:
+                    dom_html = await page.get_dom_html(max_length=4000)
+                    interactive_elements = await runtime.get_interactive_elements()
                 all_evidence.extend(evidence)
                 continue
 
@@ -278,8 +290,12 @@ async def execute_step(
                 f"Attempt {attempt}: expectation failed: "
                 + "; ".join(item.observed for item in failed)
             )
-            dom_html = await page.get_dom_html(max_length=4000)
-            interactive_elements = await runtime.get_interactive_elements()
+            if dom_cache is not None:
+                refreshed = await dom_cache.get(page, runtime)
+                dom_html, interactive_elements = refreshed.dom_html, refreshed.elements
+            else:
+                dom_html = await page.get_dom_html(max_length=4000)
+                interactive_elements = await runtime.get_interactive_elements()
             all_evidence.extend(evidence)
             continue
 
@@ -353,9 +369,13 @@ async def execute_step(
             failures.append(failure_msg)
             logger.warning(f"  [Attempt {attempt}] ✗ DOM unchanged after action")
 
-        # Refresh DOM state for next attempt
-        dom_html = await page.get_dom_html(max_length=4000)
-        interactive_elements = await runtime.get_interactive_elements()
+        # Refresh DOM state for next attempt (via cache when available)
+        if dom_cache is not None:
+            refreshed = await dom_cache.get(page, runtime)
+            dom_html, interactive_elements = refreshed.dom_html, refreshed.elements
+        else:
+            dom_html = await page.get_dom_html(max_length=4000)
+            interactive_elements = await runtime.get_interactive_elements()
 
         # Try fallback: scroll element into view before retrying click
         if action_type == "click" and attempt < MAX_RETRIES:

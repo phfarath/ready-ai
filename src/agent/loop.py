@@ -35,6 +35,7 @@ from ..observability import (
 )
 from . import planner, executor, critic, recovery, replay
 from .cursor import CursorAnimator, extract_selector
+from .dom_cache import DOMCache
 from .browser_session import BrowserSession
 from .state import RunState, DocStepState, compute_flow_fingerprint
 from ..history import RunMetrics, record_run
@@ -179,6 +180,7 @@ class AgenticLoop:
         self._cursor = CursorAnimator()
         self._last_url: Optional[str] = None
         self._max_replans_per_step = 2
+        self._dom_cache = DOMCache()
 
         # READY-AI-T-3: full-respawn budget for the whole run (spanning
         # multiple `_execute_steps` invocations), so a flapping CDP
@@ -1856,12 +1858,10 @@ class AgenticLoop:
 
     async def _get_page_context(self, max_length: int = 4000) -> tuple[str, str, str]:
         """Get DOM HTML, interactive elements, and current URL in one call."""
-        page = self._session.page
-        runtime = self._session.runtime
-        dom_html = await page.get_dom_html(max_length=max_length)
-        elements = await runtime.get_interactive_elements()
-        url = await runtime.evaluate("window.location.href")
-        return dom_html, elements, url
+        state = await self._dom_cache.get(
+            self._session.page, self._session.runtime, max_length=max_length
+        )
+        return state.dom_html, state.elements, state.url
 
     @staticmethod
     def _format_step_action_details(result: executor.StepResult) -> str:
@@ -2005,10 +2005,9 @@ class AgenticLoop:
                 step_start = time.monotonic()
                 logger.info(f"═══ Step {i}: {step}")
 
-                # Get fresh DOM state and current URL
-                dom_html = await page.get_dom_html(max_length=4000)
-                elements = await runtime.get_interactive_elements()
-                pre_url = await runtime.evaluate("window.location.href")
+                # Get fresh DOM state and current URL (cached when unchanged)
+                dom_state = await self._dom_cache.get(page, runtime, max_length=4000)
+                dom_html, elements, pre_url = dom_state.dom_html, dom_state.elements, dom_state.url
                 pre_fingerprint = await recovery.dom_fingerprint(runtime)
 
                 # URL drift detection with replanning
@@ -2038,6 +2037,7 @@ class AgenticLoop:
                 result = await executor.execute_step(
                     step, dom_html, elements, llm, page, input_domain, runtime,
                     current_url=pre_url,
+                    dom_cache=self._dom_cache,
                 )
 
                 logger.info(
