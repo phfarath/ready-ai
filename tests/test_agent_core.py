@@ -135,18 +135,258 @@ class TestPlanner:
         assert steps[0] == "First step"
 
 
-# ─── placeholder for executor / loop tests (next commit) ───────────────────
+# ─── executor.py tests (T1 — PLAN_FASE_A Task 5) ─────────────────────────
 
-class TestExecutorPlaceholder:
-    async def test_todo(self):
-        """Executor tests will be added in the next iteration."""
-        assert True
+def _executor_doubles(**overrides):
+    """Page/input/runtime/llm doubles wired for execute_step (no Chrome)."""
+    page = MagicMock()
+    page.event_cursor = 0
+    page.wait_for_navigation_settled = AsyncMock(return_value=False)
+    page.http_failures_since = MagicMock(return_value=[])
+    page.get_dom_html = AsyncMock(return_value="<html>after</html>")
+    runtime = MagicMock()
+    runtime.get_state_fingerprint = AsyncMock(return_value="fp")
+    runtime.evaluate = AsyncMock(return_value="https://app.test")
+    runtime.get_interactive_elements = AsyncMock(return_value="[]")
+    input_domain = MagicMock()
+    llm = MagicMock()
+    llm.complete = AsyncMock(return_value='{"action": "observe"}')
+    doubles = {
+        "page": page,
+        "input_domain": input_domain,
+        "runtime": runtime,
+        "llm": llm,
+    }
+    doubles.update(overrides)
+    return doubles
 
 
-class TestLoopPlaceholder:
-    async def test_todo(self):
-        """Loop tests will be added in the next iteration."""
-        assert True
+class TestExecutor:
+    async def test_observe_succeeds_first_attempt(self):
+        from unittest.mock import patch
+
+        from src.agent.executor import execute_step
+
+        d = _executor_doubles()
+        with patch(
+            "src.agent.executor._dispatch_action",
+            AsyncMock(return_value="Observing current page state"),
+        ):
+            result = await execute_step(
+                "look", "<html></html>", "[]", d["llm"],
+                d["page"], d["input_domain"], d["runtime"],
+            )
+        assert result.success is True
+        assert result.attempts == 1
+
+    async def test_click_with_dom_change_succeeds(self):
+        from unittest.mock import patch
+
+        from src.agent.executor import execute_step
+
+        d = _executor_doubles()
+        d["runtime"].get_state_fingerprint = AsyncMock(
+            side_effect=["before", "after"]
+        )
+        with patch(
+            "src.agent.executor._get_action",
+            AsyncMock(return_value={"action": "click", "selector": "#go"}),
+        ), patch(
+            "src.agent.executor._dispatch_action",
+            AsyncMock(return_value="Clicked element: #go"),
+        ):
+            result = await execute_step(
+                "click go", "<html></html>", "[]", d["llm"],
+                d["page"], d["input_domain"], d["runtime"],
+            )
+        assert result.success is True
+        assert "Clicked element: #go" in result.action_desc
+
+    async def test_unchanged_dom_retries_then_fails(self):
+        from unittest.mock import patch
+
+        from src.agent.executor import MAX_RETRIES, execute_step
+
+        d = _executor_doubles()
+        d["runtime"].get_state_fingerprint = AsyncMock(return_value="same")
+        with patch(
+            "src.agent.executor._get_action",
+            AsyncMock(return_value={"action": "click", "selector": "#stale"}),
+        ), patch(
+            "src.agent.executor._dispatch_action",
+            AsyncMock(return_value="Clicked element: #stale"),
+        ):
+            result = await execute_step(
+                "click stale", "<html></html>", "[]", d["llm"],
+                d["page"], d["input_domain"], d["runtime"],
+            )
+        assert result.success is False
+        assert result.attempts == MAX_RETRIES
+        assert "FAILED" in result.action_desc
+
+    async def test_unparseable_action_exhausts_retries(self):
+        from unittest.mock import patch
+
+        from src.agent.executor import MAX_RETRIES, execute_step
+
+        d = _executor_doubles()
+        with patch(
+            "src.agent.executor._get_action", AsyncMock(return_value=None)
+        ):
+            result = await execute_step(
+                "mystery", "<html></html>", "[]", d["llm"],
+                d["page"], d["input_domain"], d["runtime"],
+            )
+        assert result.success is False
+        assert result.attempts == MAX_RETRIES
+        assert "unparseable" in result.failure_reason
+
+    async def test_previous_failures_feed_retry_prompt(self):
+        from unittest.mock import patch
+
+        from src.agent.executor import execute_step
+
+        d = _executor_doubles()
+        seen: list = []
+        orig_get_action = __import__(
+            "src.agent.executor", fromlist=["_get_action"]
+        )._get_action
+
+        async def _spy(step, dom, els, llm, failures, url=None):
+            seen.append(list(failures))
+            return await orig_get_action(step, dom, els, llm, failures, url)
+
+        with patch("src.agent.executor._get_action", _spy), patch(
+            "src.agent.executor._dispatch_action",
+            AsyncMock(return_value="Observing current page state"),
+        ):
+            result = await execute_step(
+                "look", "<html></html>", "[]", d["llm"],
+                d["page"], d["input_domain"], d["runtime"],
+                previous_failures=["Attempt 1: boom"],
+            )
+        assert result.success is True
+        assert seen and seen[0] == ["Attempt 1: boom"]
+
+
+# ─── loop.py tests (T2 — PLAN_FASE_A Task 5) ─────────────────────────────────
+
+def _loop_with_session(tmp_path: Path, monkeypatch):
+    """AgenticLoop with stub session domains (no Chrome, no LLM calls)."""
+    from src.agent.loop import AgenticLoop
+
+    loop = AgenticLoop(
+        goal="T1T2 core",
+        url="https://app.test",
+        output_dir=str(tmp_path),
+        headless=True,
+    )
+    loop._save_checkpoint = lambda *a, **k: None
+    page = MagicMock()
+    page.get_dom_html = AsyncMock(return_value="<html>stub</html>")
+    page.wait_for_network_idle = AsyncMock(return_value=None)
+    page.wait_for_navigation_settled = AsyncMock(return_value=False)
+    page.event_cursor = 0
+    page.http_failures_since = MagicMock(return_value=[])
+    page.screenshot = AsyncMock(return_value="dGVzdA==")
+    runtime = MagicMock()
+    runtime.get_interactive_elements = AsyncMock(return_value="[]")
+    runtime.get_state_fingerprint = AsyncMock(return_value="fp")
+    runtime.evaluate = AsyncMock(return_value="https://app.test")
+    monkeypatch.setattr(loop._session, "_page", page)
+    monkeypatch.setattr(loop._session, "_input", MagicMock())
+    monkeypatch.setattr(loop._session, "_runtime", runtime)
+    return loop, page, runtime
+
+
+class TestLoop:
+    async def test_execute_steps_runs_each_planned_step(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        from src.agent.executor import StepResult
+        from src.docs.renderer import DocRenderer
+
+        loop, _, _ = _loop_with_session(tmp_path, monkeypatch)
+        calls: list[str] = []
+
+        async def _fake_execute(step, *a, **k):
+            calls.append(step)
+            return StepResult(
+                action_desc=f"Clicked element: #{step}",
+                success=True,
+                retry_needed=False,
+                attempts=1,
+            )
+
+        monkeypatch.setattr("src.agent.loop.executor.execute_step", _fake_execute)
+        monkeypatch.setattr(
+            "src.agent.loop.CursorAnimator.highlight_element", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "src.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
+        )
+        annotation = MagicMock()
+        annotation.complete_with_vision = AsyncMock(return_value="note")
+        with patch(
+            "src.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
+        ):
+            results = await loop._execute_steps(
+                ["one", "two"], MagicMock(), annotation, DocRenderer("G")
+            )
+        assert calls == ["one", "two"]
+        assert all(r.success for r in results)
+        assert loop._state.current_step_index == 2
+
+    async def test_execute_steps_records_failure_and_continues(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        from src.agent.executor import StepResult
+        from src.docs.renderer import DocRenderer
+
+        loop, _, _ = _loop_with_session(tmp_path, monkeypatch)
+
+        async def _fake_execute(step, *a, **k):
+            ok = step != "bad"
+            return StepResult(
+                action_desc=f"Step {step}",
+                success=ok,
+                retry_needed=False,
+                attempts=1,
+                failure_reason="" if ok else "boom",
+            )
+
+        monkeypatch.setattr("src.agent.loop.executor.execute_step", _fake_execute)
+        monkeypatch.setattr(
+            "src.agent.loop.CursorAnimator.highlight_element", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "src.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
+        )
+        annotation = MagicMock()
+        annotation.complete_with_vision = AsyncMock(return_value="note")
+        with patch(
+            "src.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
+        ):
+            results = await loop._execute_steps(
+                ["good", "bad"], MagicMock(), annotation, DocRenderer("G")
+            )
+        assert [r.success for r in results] == [True, False]
+        assert "boom" in results[1].failure_reason
+
+    async def test_execute_steps_empty_plan_returns_empty(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from src.docs.renderer import DocRenderer
+
+        loop, _, _ = _loop_with_session(tmp_path, monkeypatch)
+        results = await loop._execute_steps(
+            [], MagicMock(), MagicMock(), DocRenderer("G")
+        )
+        assert results == []
 
 
 # ─── Locator / Action Fixtures (READY-AI-T-5) ────────────────────────────
