@@ -78,11 +78,14 @@ class TestStatePersistence:
         assert RunState.from_file(path) is None
 
     def test_run_state_corrupted_json_logs_error(self, tmp_path: Path, caplog):
+        import pytest
+
         path = tmp_path / "bad.json"
         path.write_text("not json")
-        result = RunState.from_file(path)
-        assert result is None
+        with pytest.raises(ValueError, match="corrupt"):
+            RunState.from_file(path)
         assert "Failed to load checkpoint" in caplog.text
+        assert (tmp_path / "bad.json.corrupt").exists()
 
     def test_run_state_confirmed_effects_roundtrip(self, tmp_path: Path):
         state = RunState(run_id="r", goal="g", url="https://example.com")
