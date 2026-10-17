@@ -8,7 +8,6 @@ compares screenshots with baselines, and produces a DocTestReport.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -606,12 +605,14 @@ class DocTestRunner:
         if self._chrome_proc:
             try:
                 self._chrome_proc.terminate()
-                self._chrome_proc.poll()  # update returncode
-                await asyncio.sleep(0.5)
-                if self._chrome_proc.returncode is None:
-                    self._chrome_proc.kill()
+                self._chrome_proc.wait(timeout=2)
             except Exception:
-                pass
+                try:
+                    self._chrome_proc.kill()
+                    self._chrome_proc.wait(timeout=2)
+                except Exception:
+                    pass
             finally:
                 if self._chrome_proc.pid:
                     _unregister_chrome_pid(self._chrome_proc.pid)
+                self._chrome_proc = None

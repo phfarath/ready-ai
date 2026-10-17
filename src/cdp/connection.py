@@ -1214,6 +1214,11 @@ class CDPConnection:
             self.targets.update_url(tid, url)
 
     @property
+    def is_alive(self) -> bool:
+        """True when the socket exists and the FSM is not terminal."""
+        return self._ws is not None and not self.is_disconnected
+
+    @property
     def is_disconnected(self) -> bool:
         """True when the FSM is in a terminal-ish state.
 
@@ -1307,14 +1312,19 @@ class CDPConnection:
         self._intentional_close = True
 
         # Cancel any pending reconnect so the backoff sleep doesn't
-        # outlive the close.
-        if self._reconnect_task and not self._reconnect_task.done():
-            self._reconnect_task.cancel()
+        # outlive the close. Awaiting also retrieves a done task's
+        # exception so it is logged here instead of surfacing as
+        # "Task exception was never retrieved".
+        reconnect_task, self._reconnect_task = self._reconnect_task, None
+        if reconnect_task is not None:
+            if not reconnect_task.done():
+                reconnect_task.cancel()
             try:
-                await self._reconnect_task
-            except (asyncio.CancelledError, Exception):
+                await reconnect_task
+            except asyncio.CancelledError:
                 pass
-        self._reconnect_task = None
+            except Exception as exc:
+                logger.warning(f"reconnect task ended with error during close: {exc}")
 
         if self._recv_task:
             self._recv_task.cancel()
