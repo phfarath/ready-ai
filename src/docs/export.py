@@ -15,14 +15,17 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
-from src.docs.parser import extract_goal
+from src.docs.parser import extract_goal, parse_doc
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +282,122 @@ tableOfContents:
     created = [dest]
     created += _copy_screenshots(screenshots_src, content_dir / "screenshots")
     return created
+
+
+# ─── Agent Skill exporter (US9, experimental) ───────────────────────────
+
+
+SKILL_EXPERIMENTAL_ENV = "READY_AI_EXPERIMENTAL"
+
+
+def _require_skill_experimental() -> None:
+    """Fail closed unless the experimental skill export is opted in."""
+    if os.getenv(SKILL_EXPERIMENTAL_ENV, "").lower() not in ("1", "true", "yes"):
+        raise ValueError(
+            "Agent Skill export is experimental (US9): set "
+            f"{SKILL_EXPERIMENTAL_ENV}=1 to opt in"
+        )
+
+
+def export_skill(
+    doc_path: str | Path,
+    output_dir: str | Path,
+    screenshots_dir: str | Path | None = None,
+    *,
+    run_id: Optional[str] = None,
+    app_version: Optional[str] = None,
+    verified_at: Optional[str] = None,
+    result: Optional[str] = None,
+) -> list[Path]:
+    """Export a verified docs.md as an Agent Skill (agentskills.io).
+
+    Layout: ``<output_dir>/<slug>/SKILL.md`` + ``assets/`` (screenshots)
+    + ``skill.json`` binding the skill to its last verification
+    (run_id, app_version, verified_at, result). Steps come from
+    ``parse_doc`` — the exporter round-trips the parser, so a doc
+    that cannot be parsed cannot become a skill.
+
+    Verification metadata is *declared* by the caller (CLI flags /
+    API body), never inferred: ``result`` defaults to ``"unknown"``
+    and ``verified_at`` to now. Experimental: requires
+    ``READY_AI_EXPERIMENTAL=1``.
+    """
+    _require_skill_experimental()
+
+    doc_path = Path(doc_path)
+    if not doc_path.exists():
+        raise FileNotFoundError(f"Documentation not found: {doc_path}")
+
+    steps = parse_doc(doc_path)  # ValueError when the doc has no steps
+    title = _extract_title(doc_path)
+    slug = _slugify(title)
+
+    if screenshots_dir is None:
+        screenshots_dir = doc_path.parent / "screenshots"
+    else:
+        screenshots_dir = Path(screenshots_dir)
+
+    skill_dir = Path(output_dir) / slug
+    assets_dir = skill_dir / "assets"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "---",
+        f"name: {slug}",
+        f"description: {title}",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        "> EXPERIMENTAL (US9): auto-generated from a ready-ai run. "
+        "Verify against the live app before trusting it.",
+        "",
+    ]
+    for step in steps:
+        lines.append(f"## Step {step.number}: {step.title}")
+        lines.append("")
+        if step.annotation:
+            lines.append(step.annotation)
+            lines.append("")
+        if step.action_description:
+            lines.append(f"Action: {step.action_description}")
+            lines.append("")
+        shot = Path(step.screenshot_path).name
+        lines.append(f"![{step.title}](./assets/{shot})")
+        lines.append("")
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("\n".join(lines), encoding="utf-8")
+
+    created: list[Path] = [skill_md]
+    created += _copy_screenshots(screenshots_dir, assets_dir)
+
+    manifest = {
+        "skill": slug,
+        "run_id": run_id,
+        "app_version": app_version,
+        "verified_at": verified_at
+        or datetime.now(timezone.utc).isoformat(),
+        "result": result or "unknown",
+        "steps": len(steps),
+    }
+    manifest_path = skill_dir / "skill.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    created.append(manifest_path)
+
+    logger.info(f"Exported skill '{slug}' ({len(steps)} steps) to {skill_dir}")
+    return created
+
+
+@register("skill")
+def _export_skill_registry(
+    doc_path: Path, output_dir: Path, screenshots_src: Path
+) -> list[Path]:
+    """Registry entry: same exporter, verification declared unknown.
+
+    The HTTP/CLI batch path has no verification flags; the manifest
+    stays honest (``result: "unknown"``) instead of inventing a pass.
+    """
+    return export_skill(doc_path, output_dir, screenshots_src)
 
 
 # ─── Public API ─────────────────────────────────────────────────────────
