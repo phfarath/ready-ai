@@ -19,6 +19,7 @@ async def plan(
     interactive_elements: str,
     llm: LLMClient,
     language: str | None = None,
+    webmcp_context: str | None = None,
 ) -> list[str]:
     """
     Generate a numbered plan of UI steps to accomplish the documentation goal.
@@ -29,6 +30,8 @@ async def plan(
         interactive_elements: JSON list of interactive elements on page
         llm: LLM client instance
         language: Output language override (e.g. "English", "Portuguese")
+        webmcp_context: Optional pre-formatted WebMCP tools section
+            (US8, via ``format_webmcp_context``). None/empty omits it.
 
     Returns:
         List of step strings (without numbering prefix)
@@ -37,8 +40,10 @@ async def plan(
         f"GOAL: {goal}\n\n"
         f"INTERACTIVE ELEMENTS ON PAGE:\n{interactive_elements}\n\n"
         f"PAGE HTML (truncated):\n{dom_html[:3000]}\n\n"
-        f"Create the step-by-step plan:"
     )
+    if webmcp_context:
+        user_prompt += f"{webmcp_context}\n\n"
+    user_prompt += "Create the step-by-step plan:"
     if language:
         user_prompt += f"\nIMPORTANT: Write all output in {language}."
 
@@ -55,6 +60,29 @@ async def plan(
         logger.debug(f"  Step {i}: {step}")
 
     return steps
+
+
+def format_webmcp_context(tools: list[dict]) -> str:
+    """Format detected WebMCP tools as a planner prompt section (US8).
+
+    Returns ``""`` when there are no tools so callers can omit the
+    section entirely. Schemas are page-declared capabilities: names
+    and short descriptions only, marked opportunistic — the planner
+    must still verify against the live DOM before acting.
+    """
+    if not tools:
+        return ""
+    lines = [
+        "WEBMCP TOOLS (page-declared, opportunistic — verify on the live page before acting):"
+    ]
+    for tool in tools:
+        name = tool.get("name", "?")
+        description = (tool.get("description") or "").strip()
+        entry = f"- {name}"
+        if description:
+            entry += f": {description}"
+        lines.append(entry)
+    return "\n".join(lines)
 
 
 def _parse_steps(response: str) -> list[str]:

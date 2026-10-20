@@ -70,12 +70,38 @@ document.getElementById('shadow-mirror-btn').addEventListener('click', () => {
 </script>
 </body></html>"""
 
+WEBMCP_HTML = """<!doctype html><html><body>
+<h1>WebMCP fixture (polyfill)</h1>
+<div id="webmcp-status">no-tools-called</div>
+<script>
+// Polyfill simulating a WebMCP-enabled page (navigator.modelContext).
+// Covers both draft shapes the detector handles: a .tools array and
+// an async getTools() function.
+const WEBMCP_TOOLS = [
+  {name: "shop.search", description: "Search the catalog",
+   input: {type: "object", properties: {q: {type: "string"}}}},
+  {name: "shop.buy", description: "Buy an item by id",
+   input: {type: "object", properties: {id: {type: "string"}}}},
+];
+try {
+  navigator.modelContext = {
+    tools: WEBMCP_TOOLS,
+    getTools: async () => WEBMCP_TOOLS,
+  };
+  document.getElementById('webmcp-status').textContent = 'polyfill-ready';
+} catch (e) {
+  document.getElementById('webmcp-status').textContent = 'polyfill-failed';
+}
+</script>
+</body></html>"""
+
 _ROUTES = {
     "/": INDEX_HTML,
     "/healthz": "ok",
     "/spa": SPA_HTML,
     "/spa/products": SPA_HTML,
     "/shadow": SHADOW_HTML,
+    "/webmcp": WEBMCP_HTML,
     "/landing": """<!doctype html><html><body>
 <h1>Landing</h1>
 <div id="landing-status">Welcome</div>

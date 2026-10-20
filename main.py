@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,7 @@ RUN_DEFAULTS = {
     "app_version": None,
     "git_commit": None,
     "deployed_at": None,
+    "webmcp_ingest": False,
 }
 
 CONFIG_KEYS = set(RUN_DEFAULTS) - {"config"}
@@ -106,6 +108,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--run-id", default=argparse.SUPPRESS, help="Run identifier for checkpoints")
     run_parser.add_argument("--resume", action="store_true", default=argparse.SUPPRESS, help="Resume from an existing checkpoint")
     run_parser.add_argument("--plan-only", action="store_true", default=argparse.SUPPRESS, help="Generate a plan without executing steps")
+    run_parser.add_argument("--webmcp-ingest", action="store_true", default=argparse.SUPPRESS, help="Ingest page-declared WebMCP tools (navigator.modelContext) as extra planner context (US8, default off)")
     run_parser.add_argument("--app-version", default=argparse.SUPPRESS, help="Application version (e.g., 2.3.1)")
     run_parser.add_argument("--git-commit", default=argparse.SUPPRESS, help="Git commit hash")
     run_parser.add_argument("--deployed-at", default=argparse.SUPPRESS, help="Deployment ISO timestamp")
@@ -236,6 +239,8 @@ def resolve_run_args(raw_args: argparse.Namespace) -> argparse.Namespace:
     merged.update(config_values)
     merged.update({key: value for key, value in cli_values.items() if key != "command"})
     merged["command"] = "run"
+    if not merged.get("webmcp_ingest") and os.getenv("READY_AI_WEBMCP_INGEST", "").lower() in ("1", "true", "yes"):
+        merged["webmcp_ingest"] = True
 
     missing = [name for name in ("goal", "url") if not merged.get(name)]
     if missing:
@@ -277,6 +282,7 @@ async def async_main_run(args: argparse.Namespace) -> None:
         app_version=getattr(args, "app_version", None),
         git_commit=getattr(args, "git_commit", None),
         deployed_at=getattr(args, "deployed_at", None),
+        webmcp_ingest=getattr(args, "webmcp_ingest", False),
     )
 
     try:

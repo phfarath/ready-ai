@@ -152,6 +152,7 @@ class AgenticLoop:
         app_version: Optional[str] = None,
         git_commit: Optional[str] = None,
         deployed_at: Optional[str] = None,
+        webmcp_ingest: bool = False,
     ):
         self.run_id = run_id
         self.resume_from = resume_from
@@ -168,6 +169,7 @@ class AgenticLoop:
         self.app_version = app_version or ""
         self.git_commit = git_commit or ""
         self.deployed_at = deployed_at or ""
+        self.webmcp_ingest = webmcp_ingest
 
         self._session = BrowserSession(
             port=port,
@@ -1846,7 +1848,12 @@ class AgenticLoop:
         runtime = self._session.runtime
         dom_html = await page.get_dom_html(max_length=4000)
         elements = await runtime.get_interactive_elements()
-        steps = await planner.plan(self.goal, dom_html, elements, llm, language=self.language)
+        webmcp_context = await self._webmcp_context(runtime)
+        steps = await planner.plan(
+            self.goal, dom_html, elements, llm,
+            language=self.language,
+            webmcp_context=webmcp_context or None,
+        )
         self._cursor.moving = False
 
         self._state.planned_steps = steps
@@ -1855,6 +1862,18 @@ class AgenticLoop:
         self._state.doc_steps = []
         self._save_checkpoint("PLANNED" if self.plan_only else "EXECUTING")
         return steps
+
+    async def _webmcp_context(self, runtime) -> str:
+        """US8: page-declared WebMCP tools as planner context, flag-gated.
+
+        Returns ``""`` when ingestion is off (no detection round-trip)
+        or when the page exposes nothing — the planner prompt is then
+        byte-identical to the pre-US8 shape.
+        """
+        if not self.webmcp_ingest:
+            return ""
+        tools = await runtime.detect_model_context()
+        return planner.format_webmcp_context(tools)
 
     async def _get_page_context(self, max_length: int = 4000) -> tuple[str, str, str]:
         """Get DOM HTML, interactive elements, and current URL in one call."""
