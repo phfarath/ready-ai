@@ -170,12 +170,19 @@ def _free_port() -> int:
 
 
 def test_live_health_against_real_server():
-    """Prova viva barata: RemoteClient fala com o FastAPI real."""
+    """Prova viva barata: RemoteClient fala com o FastAPI real.
+
+    Roda num subprocesso com interpretador limpo porque a suite
+    completa polui ``sys.modules['aiohttp']`` (test_api_batch); aqui
+    o client usa o aiohttp de verdade contra o server real.
+    """
+    import subprocess
     import uvicorn
 
     from src.api.server import app
 
     port = _free_port()
+    repo_root = str(Path(__file__).parent.parent)
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -187,21 +194,34 @@ def test_live_health_against_real_server():
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
+    probe = "\n".join(
+        [
+            "import asyncio, sys",
+            f"sys.path.insert(0, {repo_root!r})",
+            "from ready_ai.remote import RemoteClient",
+            "async def main():",
+            "    async with RemoteClient(sys.argv[1]) as c:",
+            "        r = await c.health()",
+            "        assert r['status'] == 'healthy', r",
+            "        assert r['service'] == 'ready-ai', r",
+            "        print('LIVE_OK')",
+            "asyncio.run(main())",
+        ]
+    )
     try:
         deadline = time.time() + 15
         while not server.started and time.time() < deadline:
             time.sleep(0.05)
         assert server.started, "uvicorn nao subiu a tempo"
 
-        import asyncio
-
-        async def _probe():
-            async with RemoteClient(f"http://127.0.0.1:{port}") as client:
-                return await client.health()
-
-        resp = asyncio.run(_probe())
-        assert resp["status"] == "healthy"
-        assert resp["service"] == "ready-ai"
+        proc = subprocess.run(
+            [sys.executable, "-c", probe, f"http://127.0.0.1:{port}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=repo_root,
+        )
+        assert "LIVE_OK" in proc.stdout, proc.stderr[-2000:]
     finally:
         server.should_exit = True
         thread.join(timeout=10)
