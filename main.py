@@ -190,8 +190,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- EXPORT Command ---
     export_parser = subparsers.add_parser("export", help="Export generated docs to a static-site format")
     export_parser.add_argument("--run-id", "-r", required=True, help="Run ID to export")
-    export_parser.add_argument("--format", "-f", required=True, choices=["markdown", "docusaurus", "nextra", "mintlify", "starlight"], help="Export format")
+    export_parser.add_argument("--format", "-f", required=True, choices=["markdown", "docusaurus", "nextra", "mintlify", "starlight", "skill"], help="Export format (skill is experimental, US9)")
     export_parser.add_argument("--output-dir", "-o", default=argparse.SUPPRESS, help="Custom output directory")
+    export_parser.add_argument("--app-version", default=argparse.SUPPRESS, help="App version the exported docs were verified against (skill manifest only)")
+    export_parser.add_argument("--verified-result", default=argparse.SUPPRESS, help="Verification result to bind in the skill manifest (skill only): passed|failed|unknown")
     export_parser.add_argument("--verbose", "-v", action="store_true", default=argparse.SUPPRESS, help="Verbose debug logging")
 
     return parser
@@ -609,6 +611,29 @@ async def async_main_export(args: argparse.Namespace) -> None:
         export_output_dir = Path(args.output_dir)
     else:
         export_output_dir = Path("./output") / args.run_id / "export" / format_name
+
+    if format_name == "skill":
+        from datetime import datetime, timezone
+        from src.docs.export import export_skill
+
+        try:
+            created = export_skill(
+                doc_path,
+                export_output_dir,
+                run_output_dir / "screenshots",
+                run_id=args.run_id,
+                app_version=getattr(args, "app_version", None),
+                verified_at=datetime.now(timezone.utc).isoformat(),
+                result=getattr(args, "verified_result", None),
+            )
+        except Exception as e:
+            logger.error("❌ Export failed: %s", e)
+            sys.exit(1)
+        logger.info("✅ Exported skill to %s", export_output_dir)
+        logger.info("   Files created: %d", len(created))
+        for f in created:
+            logger.info("   - %s", f)
+        return
 
     try:
         result = export_docs(

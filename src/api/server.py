@@ -492,7 +492,7 @@ async def export_run(
     """
     Export a completed documentation run to a static-site format.
 
-    Supported formats: markdown, docusaurus, nextra, mintlify, starlight.
+    Supported formats: markdown, docusaurus, nextra, mintlify, starlight, skill (experimental, US9).
     """
     # Validate run exists
     status = RunManager.get_status(run_id)

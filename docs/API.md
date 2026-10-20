@@ -178,8 +178,15 @@ Export a completed run to a static-site format.
 }
 ```
 Supported `format` values: `markdown`, `docusaurus`, `nextra`,
-`mintlify`, `starlight`. When `output_dir` is omitted the export lands
+`mintlify`, `starlight`, `skill`. When `output_dir` is omitted the export lands
 in `./output/{run_id}/export/{format}/`.
+
+`skill` is experimental (US9): exports an Agent Skill (`SKILL.md` +
+`screenshots as assets/` + `skill.json` verification manifest) and
+requires `READY_AI_EXPERIMENTAL=1` on the server. The manifest binds
+the skill to declared verification metadata (`run_id`,
+`app_version`, `verified_at`, `result`) — `result` stays `"unknown"`
+unless the caller declares otherwise.
 
 **Response** (`200 OK`):
 ```json
