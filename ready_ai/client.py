@@ -61,6 +61,7 @@ from .exceptions import (
     UnknownProfileError,
 )
 from .models import BrowserOptions, EffectPolicy, Flow, Profile, RunResult
+from .remote import RemoteClient
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,15 @@ class ReadyAI:
             serializable through the SDK models.
         browser: Default ``BrowserOptions`` used when a call does not
             provide its own.
+        base_url: Optional API base URL (e.g.
+            ``"http://127.0.0.1:8000"``). When set, the instance is a
+            read-only remote client (``self.remote``) — execution
+            methods raise ``PolicyViolationError`` fail-closed and only
+            the ``remote.*`` readers are available. ``None`` (default)
+            runs the engine locally, unchanged.
+        api_key: Optional API key sent as ``X-API-Key`` by the remote
+            client (forward-compatible with the server's auth
+            middleware; ignored in local mode).
 
     Example:
         >>> flow = Flow(url="https://app.example.com", steps=[FlowStep()])
@@ -270,9 +280,17 @@ class ReadyAI:
         output_dir: str = "./output",
         profiles: Optional[Mapping[str, Optional[Profile] | str]] = None,
         browser: Optional[BrowserOptions] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
     ):
         self.model = model
         self.output_dir = output_dir
+        self.base_url = base_url
+        self.remote: Optional[RemoteClient] = (
+            RemoteClient(base_url, api_key=api_key) if base_url else None
+        )
+        # Back-compat alias used by tests/consumers probing remote mode.
+        self._remote = self.remote
         self._default_browser = browser or BrowserOptions()
         self._profiles: dict[str, Profile] = {}
         for name, value in (profiles or {}).items():
@@ -309,6 +327,15 @@ class ReadyAI:
                 f"registered profiles: {registered}"
             )
         return self._profiles[profile]
+
+    def _require_local(self, method: str) -> None:
+        """Fail closed when the instance is a read-only remote client."""
+        if self.remote is not None:
+            raise PolicyViolationError(
+                f"{method}() is unavailable in remote mode "
+                f"(base_url={self.base_url!r}); remote instances are "
+                "read-only in this iteration — use `remote.*` readers"
+            )
 
     def _prepare(
         self,
@@ -483,6 +510,7 @@ class ReadyAI:
         connection lost ...")`` — ``ConnectionLostError`` covers
         disconnects that escape the flow loop (setup/teardown).
         """
+        self._require_local("run")
         flow_spec, loop, output_dir, rid = self._prepare(flow, browser)
         return await self._execute(
             loop,
@@ -550,6 +578,7 @@ class ReadyAI:
         ``RunResult`` via ``result()``, and supports cooperative
         cancellation via ``cancel()``.
         """
+        self._require_local("start")
         try:
             running = asyncio.get_running_loop()
         except RuntimeError as exc:
@@ -633,6 +662,7 @@ class ReadyAI:
         never silently re-executes a completed run or resumes a foreign
         flow under another run's ``run_id``.
         """
+        self._require_local("resume")
         output_dir = flow.output or self.output_dir
         # The run token reaches a filesystem path — same charset as
         # ``Flow.run_id``, validated here because ``resume`` takes it as
@@ -705,6 +735,7 @@ class ReadyAI:
         (before/after, PH3C ``zero_token``). Pass ``confirm`` for steps the
         manifest declares with ``confirm=True``.
         """
+        self._require_local("replay_manifest")
         from src.agent.replay import (
             manifest_to_flow_spec,
             read_manifest,
