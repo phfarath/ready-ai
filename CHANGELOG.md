@@ -14,6 +14,26 @@ deprecation: the old name keeps working for at least one minor release
 and is announced in this changelog. Internal modules (`src.*`) are not
 covered by this policy; consumers must not import them.
 
+## v0.7.0 — 2026-10 — Engine stability + API expansion (minor)
+
+- API expansion A (PR #54): `_record_history()` wired at run completion,
+  so `GET /history` serves real data; `get_aggregates` case-insensitive
+  (pass_rate fix); history-store test isolation in conftest.
+- API expansion C (PR #55): `docs/API.md` 8 → 18 routes from live shapes
+  + `tests/test_api_docs_coverage.py` as permanent guard.
+- Engine stability lote (PRs #56–#62, TDD strict): quick-wins
+  M15/M10/H8/M5/R6; M4 balanced-JSON parse via `raw_decode`; M9 corrupt
+  checkpoint raises `ValueError` (sidecar `.corrupt`) instead of
+  masquerading as "no checkpoint"; R1 global deadline on navigate; R7
+  click gates on quad/viewport (scroll + revalidate); P1/P2 per-step DOM
+  cache (`src/agent/dom_cache.py`, TTL 5s, LRU 10); C2 Chrome tree kill
+  with optional psutil (`src/agent/process_utils.py`); T1/T2 real
+  executor/loop tests replacing placeholders (Fase A Task 5).
+- Minor (not patch) because of behavior changes: DOM cache, navigate
+  timeout, click visibility gate, tree kill, and `/history` now populated.
+- Verified on release branch: focused lote suite 62 passed, ruff clean
+  on touched modules (full CI matrix runs on the PR).
+
 ## v0.6.1 — 2026-10 — SDK + healing review follow-ups (patch)
 
 - Checkpoint→flow binding (`READY-AI-T-SDK-FOLLOWUPS/1`): sha256 of the
