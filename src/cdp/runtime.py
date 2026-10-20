@@ -71,6 +71,68 @@ class RuntimeDomain:
 
         return remote_obj.get("description", str(remote_obj))
 
+    async def detect_model_context(
+        self, session_id: Optional[str] = None
+    ) -> list[dict]:
+        """Opportunistically detect WebMCP (``navigator.modelContext``).
+
+        US8: the page may declare model-usable tools (W3C CG draft).
+        When present, their schemas become extra planner context
+        (names/types/intent) and an additional verification channel.
+        When absent (or on any evaluation error), returns ``[]`` and
+        the engine behaves exactly as before.
+
+        Returns:
+            List of ``{"name", "description", "input"}`` dicts (empty
+            when WebMCP is unavailable). Capped and truncated: tool
+            schemas describe page capabilities, but unbounded page
+            content never reaches the planner prompt.
+        """
+        js = """
+        (() => {
+            try {
+                const mc = navigator.modelContext;
+                if (!mc) return {present: false, tools: []};
+                const listed = mc.tools;
+                if (Array.isArray(listed)) {
+                    return {present: true, tools: listed};
+                }
+                if (typeof mc.getTools === 'function') {
+                    return mc.getTools().then(
+                        (t) => ({present: true, tools: Array.isArray(t) ? t : []}),
+                        () => ({present: true, tools: []})
+                    );
+                }
+                return {present: true, tools: []};
+            } catch (e) {
+                return {present: false, tools: []};
+            }
+        })()
+        """
+        try:
+            result = await self.evaluate(js, session_id=session_id)
+        except Exception:
+            logger.debug("WebMCP detection failed; treating as absent")
+            return []
+        if not isinstance(result, dict) or not result.get("present"):
+            return []
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            return []
+        normalized: list[dict] = []
+        for tool in tools[:20]:
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name")
+            if not name:
+                continue
+            description = str(tool.get("description") or "")[:200]
+            normalized.append(
+                {"name": str(name), "description": description,
+                 "input": tool.get("input")}
+            )
+        return normalized
+
     async def query_selector(
         self, selector: str, session_id: Optional[str] = None
     ) -> Optional[str]:
