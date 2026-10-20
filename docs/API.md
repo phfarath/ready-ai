@@ -614,3 +614,46 @@ Returns API info:
 ```
 
 > Note: FastAPI auto-generates OpenAPI docs at `/docs` and `/redoc`.
+
+---
+
+## Remote SDK mode (read-only)
+
+`ReadyAI` can talk to a running API server instead of driving the
+engine locally. Pass `base_url` (and optionally `api_key`, sent as
+`X-API-Key`):
+
+```python
+import asyncio
+from ready_ai import ReadyAI
+
+async def main():
+    ai = ReadyAI(base_url="http://127.0.0.1:8000", api_key="secret")
+    print(await ai.remote.health())      # GET /health
+    print(await ai.remote.get_runs())    # GET /runs
+    print(await ai.remote.get_history()) # GET /history
+
+asyncio.run(main())
+```
+
+Available readers on `ai.remote` (all read-only):
+
+| Method | Route |
+|---|---|
+| `health()` | `GET /health` |
+| `ready()` | `GET /ready` |
+| `get_runs()` | `GET /runs` |
+| `get_run(run_id)` | `GET /runs/{run_id}` |
+| `get_output(run_id)` | `GET /runs/{run_id}/output` |
+| `get_metrics(run_id)` | `GET /runs/{run_id}/metrics` |
+| `export_run(run_id)` | `POST /runs/{run_id}/export` (read-only effect) |
+| `diff_run(run_id)` | `GET /runs/{run_id}/diff` |
+| `list_doc_sets()` | `GET /doc-sets` |
+| `doc_status(version)` | `GET /docs/{version}/status` |
+| `get_history()` | `GET /history` |
+| `get_aggregates()` | `GET /history/aggregates` |
+
+Execution methods (`run`, `run_flow`, `run_sync`, `start`, `resume`,
+`replay_manifest`) raise `PolicyViolationError` in remote mode —
+remote instances are read-only in this iteration. Transport failures
+raise `ConnectionLostError`; HTTP errors raise `ReadyAIError`.

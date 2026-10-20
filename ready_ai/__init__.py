@@ -66,6 +66,7 @@ from .models import (
     RunResult,
     RunStep,
 )
+from .remote import RemoteClient
 
 __version__ = "0.7.0"
 
@@ -85,6 +86,7 @@ __all__ = [
     "Profile",
     "ReadyAI",
     "ReadyAIError",
+    "RemoteClient",
     "RunCancelledError",
     "RunEvent",
     "RunHandle",
