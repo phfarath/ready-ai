@@ -64,6 +64,42 @@ class RunConfigError(ValueError):
     """Raised when the CLI run config is invalid."""
 
 
+def _configure_stdio() -> None:
+    """Keep CLI output readable AND capturable on any platform.
+
+    Log lines carry emoji. Two failure modes on Windows (dogfood 2026-10-21,
+    byte 0x8f):
+    - piped/captured output (non-tty): the parent may decode our bytes with
+      a legacy codepage (cp1252) and crash with UnicodeDecodeError. Fix:
+      ``ascii`` + ``backslashreplace`` -- every byte stays ASCII-safe, so any
+      parent codec (cp1252, utf-8, latin-1) decodes it.
+    - interactive console (tty): keep the console encoding so output stays
+      human-readable, but switch to ``errors="replace"`` so an emoji the
+      console cannot represent becomes "?" instead of crashing the child.
+    Best-effort: must never break startup (pythonw, captured streams, test
+    doubles without reconfigure/isatty).
+    """
+    for stream_name in ("stdout", "stderr"):
+        try:
+            stream = getattr(sys, stream_name, None)
+            if stream is None:
+                continue
+            reconfigure = getattr(stream, "reconfigure", None)
+            if not callable(reconfigure):
+                continue
+            isatty = getattr(stream, "isatty", None)
+            try:
+                tty = bool(isatty() if callable(isatty) else False)
+            except Exception:  # noqa: BLE001 - a broken isatty means non-tty
+                tty = False
+            if tty:
+                reconfigure(errors="replace")
+            else:
+                reconfigure(encoding="ascii", errors="backslashreplace")
+        except Exception:  # noqa: BLE001 - startup hardening must not fail
+            pass
+
+
 def setup_logging(verbose: bool = False) -> None:
     """Configure logging with structured output and observability."""
     from src.observability import setup_observability
@@ -653,6 +689,7 @@ async def async_main_export(args: argparse.Namespace) -> None:
 
 def cli() -> None:
     """Entry point for pyproject.toml scripts."""
+    _configure_stdio()
     raw_args = parse_args()
 
     if raw_args.command == "run":
