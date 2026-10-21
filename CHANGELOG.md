@@ -14,6 +14,26 @@ deprecation: the old name keeps working for at least one minor release
 and is announced in this changelog. Internal modules (`src.*`) are not
 covered by this policy; consumers must not import them.
 
+## v0.8.0 — 2026-10-21 — Remote run + SQLite history + CLI hardening (minor)
+
+- API expansion B parte 2 (PR #68): modelos remotos tipados
+  (`ready_ai/remote_models.py`), `get_output` em bytes, execução remota
+  (`run`/`run_flow` via `POST /flows/run` com tradutor por whitelist,
+  perfis locais recusados no modo remoto). E2E de run remoto verde.
+- History store SQLite WAL (PR #69): backend `sqlite3` da stdlib no lugar
+  do JSONL, mesma API pública (`loop.py` e `server.py` intocados);
+  migração 1x do `.history.jsonl` legado (rename para `.migrated`),
+  override por env `READY_AI_HISTORY_DB`, default `./output/.history.db`.
+- CLI stdio hardening (PR #70): `_configure_stdio()` no início do `cli()` —
+  saída sob pipe é ASCII-safe (decodificável por qualquer codepage, ex.
+  cp1252), console interativo degrada emoji para `?` em vez de crashar.
+- Dogfood fora da CI: `run-flow --emit-manifest` + `--replay-manifest`
+  zero-LLM + API real servindo `/history` (2 runs, `pass_rate` 1.0,
+  `total_tokens` 0) e suite e2e 28/28 no Chrome real.
+- Minor (not patch) porque há mudanças de comportamento: backend default
+  do history agora é SQLite em `./output/.history.db`, e a saída do CLI
+  sob pipe escapa não-ASCII.
+
 ## v0.7.0 — 2026-10 — Engine stability + API expansion (minor)
 
 - API expansion A (PR #54): `_record_history()` wired at run completion,
