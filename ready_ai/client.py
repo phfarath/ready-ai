@@ -329,12 +329,12 @@ class ReadyAI:
         return self._profiles[profile]
 
     def _require_local(self, method: str) -> None:
-        """Fail closed when the instance is a read-only remote client."""
+        """Fail closed when the method has no remote equivalent."""
         if self.remote is not None:
             raise PolicyViolationError(
                 f"{method}() is unavailable in remote mode "
-                f"(base_url={self.base_url!r}); remote instances are "
-                "read-only in this iteration — use `remote.*` readers"
+                f"(base_url={self.base_url!r}); only run/run_flow execute "
+                "remotely — start/resume/replay_manifest need the local engine"
             )
 
     def _prepare(
@@ -489,6 +489,58 @@ class ReadyAI:
         self._resolve_profile(merged.profile)
         return None
 
+    async def _run_remote(
+        self,
+        flow: Flow,
+        *,
+        browser: Optional[BrowserOptions] = None,
+        confirm: Collection[str] | None = None,
+    ) -> RunResult:
+        """Execute a flow on the remote API server (API B parte 2).
+
+        The public flow is translated to a server ``FlowSpec`` by
+        whitelist — local paths, profile references and credentials
+        never travel. Confirm-gated steps cannot run remotely (the
+        server has no confirmation channel), and local profiles have
+        no meaning server-side: both fail closed before any HTTP.
+        """
+        from .remote import _require_remote_capable, public_flow_to_server_spec
+
+        assert self.remote is not None
+        merged = self._merge_browser(browser)
+        _require_remote_capable(profile=merged.profile, confirm=confirm)
+        spec = public_flow_to_server_spec(flow, headless=merged.headless)
+        remote_result = await self.remote.run_flow(spec)
+        return self._remote_result_to_run_result(remote_result)
+
+    @staticmethod
+    def _remote_result_to_run_result(remote_result: Any) -> RunResult:
+        """Translate a remote ``FlowRunResult`` into a public ``RunResult``.
+
+        Step reports already match ``RunStep`` keys; unknown keys are
+        ignored and ``None`` failure reasons become ``""``. Remote runs
+        write no local files, so ``artifacts`` is empty and there is no
+        replay block. Validation runs the same sanitizers as local runs.
+        """
+        data = remote_result.model_dump()
+        steps = [
+            {**step, "failure_reason": step.get("failure_reason") or ""}
+            for step in data.get("steps", [])
+        ]
+        return RunResult.model_validate(
+            {
+                "run_id": data.get("run_id", ""),
+                "flow": data.get("flow"),
+                "url": data.get("url", ""),
+                "status": data.get("status", "passed"),
+                "steps": steps,
+                "summary": data.get("summary", {}),
+                "artifacts": [],
+                "failure_reason": data.get("failure_reason"),
+                "replay": None,
+            }
+        )
+
     async def run(
         self,
         flow: Flow,
@@ -510,7 +562,8 @@ class ReadyAI:
         connection lost ...")`` — ``ConnectionLostError`` covers
         disconnects that escape the flow loop (setup/teardown).
         """
-        self._require_local("run")
+        if self.remote is not None:
+            return await self._run_remote(flow, browser=browser, confirm=confirm)
         flow_spec, loop, output_dir, rid = self._prepare(flow, browser)
         return await self._execute(
             loop,

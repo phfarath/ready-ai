@@ -624,7 +624,7 @@ Returns API info:
 
 ---
 
-## Remote SDK mode (read-only)
+## Remote SDK mode
 
 `ReadyAI` can talk to a running API server instead of driving the
 engine locally. Pass `base_url` (and optionally `api_key`, sent as
@@ -636,12 +636,20 @@ from ready_ai import ReadyAI
 
 async def main():
     ai = ReadyAI(base_url="http://127.0.0.1:8000", api_key="secret")
-    print(await ai.remote.health())      # GET /health
-    print(await ai.remote.get_runs())    # GET /runs
-    print(await ai.remote.get_history()) # GET /history
+    health = await ai.remote.health()    # GET /health -> RemoteHealth
+    print(health.status, health.service)
+    result = await ai.run(flow)          # POST /flows/run -> RunResult
+    print(result.status)
 
 asyncio.run(main())
 ```
+
+Readers on `ai.remote` return typed models (`ready_ai.remote_models`,
+`extra="ignore"` for forward compatibility); a shape the server
+changed incompatibly raises `FlowValidationError` instead of
+propagating half-parsed dicts. `get_metrics()` stays a loose mapping
+(the metrics file has no schema contract) and `get_output()` returns
+raw `bytes` (ZIP archive).
 
 Available readers on `ai.remote` (all read-only):
 
@@ -660,7 +668,14 @@ Available readers on `ai.remote` (all read-only):
 | `get_history()` | `GET /history` |
 | `get_aggregates()` | `GET /history/aggregates` |
 
-Execution methods (`run`, `run_flow`, `run_sync`, `start`, `resume`,
-`replay_manifest`) raise `PolicyViolationError` in remote mode —
-remote instances are read-only in this iteration. Transport failures
-raise `ConnectionLostError`; HTTP errors raise `ReadyAIError`.
+Execution in remote mode: `run`, `run_flow` (and `run_sync`, which
+delegates to `run`) execute via `POST /flows/run` and return a public
+`RunResult` translated from the server's `FlowRunResult`. The public
+flow is translated by whitelist (`name`, `url`, `steps`, `retries`,
+`run_id`, `effect_policy` mapped to the server vocabulary, `headless`
+from the call browser) — local profile references, output paths and
+credentials never travel, and runs with a profile or `confirm` keys
+fail closed with `PolicyViolationError` before any HTTP. `start`,
+`resume` and `replay_manifest` have no server equivalent and stay
+blocked in remote mode. Transport failures raise `ConnectionLostError`;
+HTTP errors raise `ReadyAIError`.

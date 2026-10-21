@@ -100,13 +100,11 @@ def _dummy_flow() -> Flow:
     return Flow(url="https://example.com", steps=[FlowStep(name="x", actions=[])])
 
 
-@pytest.mark.parametrize("method", ["run", "start", "resume", "replay_manifest"])
-async def test_execution_methods_fail_closed_in_remote_mode(method):
+@pytest.mark.parametrize("method", ["start", "resume", "replay_manifest"])
+async def test_execution_methods_still_blocked_in_remote_mode(method):
     ai = ReadyAI(base_url="http://api:8000")
     with pytest.raises(PolicyViolationError):
-        if method == "run":
-            await ai.run(_dummy_flow())
-        elif method == "start":
+        if method == "start":
             ai.start(_dummy_flow())
         elif method == "resume":
             await ai.resume(_dummy_flow(), run_id="run-1")
@@ -114,23 +112,20 @@ async def test_execution_methods_fail_closed_in_remote_mode(method):
             await ai.replay_manifest({"manifest_version": "x"})
 
 
-async def test_run_flow_delegates_to_run_guard():
-    ai = ReadyAI(base_url="http://api:8000")
-
-    with pytest.raises(PolicyViolationError):
-        await ai.run_flow(_dummy_flow())
-
-
 async def test_get_json_returns_payload():
-    client, session = _client({"runs": []})
-    assert await client.get_runs() == {"runs": []}
+    client, session = _client({"total": 0, "runs": []})
+    result = await client.get_runs()
+    assert result.total == 0
+    assert result.runs == []
     assert session.calls[0]["url"] == "http://api:8000/runs"
     assert session.closed
 
 
 async def test_get_run_by_id():
-    client, session = _client({"run_id": "r1"})
-    assert await client.get_run("r1") == {"run_id": "r1"}
+    client, session = _client({"run_id": "r1", "status": "FINISHED"})
+    result = await client.get_run("r1")
+    assert result.run_id == "r1"
+    assert result.status == "FINISHED"
     assert session.calls[0]["url"] == "http://api:8000/runs/r1"
 
 
@@ -152,13 +147,13 @@ async def test_connection_failure_maps_to_connection_lost():
 
 
 async def test_api_key_sent_as_header():
-    client, session = _client({"status": "healthy"}, api_key="secret")
+    client, session = _client({"status": "healthy", "service": "ready-ai"}, api_key="secret")
     await client.health()
     assert session.calls[0]["headers"]["X-API-Key"] == "secret"
 
 
 async def test_no_api_key_no_header():
-    client, session = _client({"status": "healthy"})
+    client, session = _client({"status": "healthy", "service": "ready-ai"})
     await client.health()
     assert "X-API-Key" not in session.calls[0].get("headers", {})
 
@@ -200,11 +195,11 @@ def test_live_health_against_real_server():
             f"sys.path.insert(0, {repo_root!r})",
             "from ready_ai.remote import RemoteClient",
             "async def main():",
-            "    async with RemoteClient(sys.argv[1]) as c:",
-            "        r = await c.health()",
-            "        assert r['status'] == 'healthy', r",
-            "        assert r['service'] == 'ready-ai', r",
-            "        print('LIVE_OK')",
+                "    async with RemoteClient(sys.argv[1]) as c:",
+                "        r = await c.health()",
+                "        assert r.status == 'healthy', r",
+                "        assert r.service == 'ready-ai', r",
+                "        print('LIVE_OK')",
             "asyncio.run(main())",
         ]
     )
