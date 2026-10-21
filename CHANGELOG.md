@@ -33,6 +33,12 @@ covered by this policy; consumers must not import them.
   timeout, click visibility gate, tree kill, and `/history` now populated.
 - Verified on release branch: focused lote suite 62 passed, ruff clean
   on touched modules (full CI matrix runs on the PR).
+- Shipped in the v0.7.0 tag after the release PR (noted here for
+  accuracy — the tag, not the release branch, is authoritative):
+  API expansion B (PR #64): optional remote SDK (`ReadyAI(base_url,
+  api_key)`, read-only readers, fail-closed execution guards);
+  US8 WebMCP ingestion (PR #65, experimental flag); US9 Agent Skills
+  export (PR #66, experimental flag). Full CI matrix green on each.
 
 ## v0.6.1 — 2026-10 — SDK + healing review follow-ups (patch)
 
