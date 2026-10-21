@@ -1219,6 +1219,15 @@ class CDPConnection:
         return self._ws is not None and not self.is_disconnected
 
     @property
+    def event_queue(self) -> asyncio.Queue:
+        """Public accessor for the raw protocol event stream (REF-02).
+
+        Replaces direct ``conn._events`` reaches from the domain layer;
+        part of the Transport contract.
+        """
+        return self._events
+
+    @property
     def is_disconnected(self) -> bool:
         """True when the FSM is in a terminal-ish state.
 

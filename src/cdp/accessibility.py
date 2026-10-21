@@ -16,7 +16,7 @@ bounded (max_nodes default 200) to keep prompt costs predictable.
 import logging
 from typing import Any, Optional
 
-from .connection import CDPConnection
+from .transport import Transport
 from .sanitize import is_raw_mode as _is_raw_mode
 from .locator import Locator, NodeRef, ActionValidator
 
@@ -139,7 +139,7 @@ def _format_node(node: dict[str, Any], raw: bool) -> Optional[str]:
 
 
 async def get_ax_snapshot(
-    conn: CDPConnection,
+    conn: Transport,
     max_nodes: int = 200,
     interesting_only: bool = True,
 ) -> str:
@@ -151,7 +151,7 @@ async def get_ax_snapshot(
     at least once per session.
 
     Args:
-        conn: An active CDPConnection.
+        conn: An active Transport.
         max_nodes: Cap on the number of lines returned.
         interesting_only: Pass `interestingOnly` to the CDP method (filters
             out non-semantic noise at the source — cheaper on large pages).
@@ -185,9 +185,9 @@ async def get_ax_snapshot(
 
 
 class AccessibilityDomain:
-    """High-level Accessibility domain operations over a CDPConnection."""
+    """High-level Accessibility domain operations over a Transport."""
 
-    def __init__(self, conn: CDPConnection):
+    def __init__(self, conn: Transport):
         self._conn = conn
 
     async def enable(self) -> None:

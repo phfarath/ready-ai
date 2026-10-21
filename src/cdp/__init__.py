@@ -1,4 +1,5 @@
 from .connection import CDPConnection
+from .transport import Transport
 from .browser import launch_chrome, get_ws_url
 from .page import PageDomain
 from .input import InputDomain
@@ -32,6 +33,7 @@ from .sanitize import (
 
 __all__ = [
     "CDPConnection",
+    "Transport",
     "launch_chrome",
     "get_ws_url",
     "PageDomain",
