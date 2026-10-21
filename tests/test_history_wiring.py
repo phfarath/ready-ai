@@ -48,7 +48,7 @@ def test_save_flow_metrics_records_history(tmp_path, monkeypatch):
     """Completing a flow run appends a RunMetrics entry to the history store."""
     import src.history as history_mod
 
-    monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+    monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
     monkeypatch.chdir(tmp_path)
 
     loop = _new_loop(tmp_path)
@@ -73,7 +73,7 @@ def test_aggregates_count_lowercase_flow_statuses(tmp_path, monkeypatch):
     import src.history as history_mod
     from src.history import RunMetrics, record_run
 
-    monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+    monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
     for rid, status in (("r1", "passed"), ("r2", "failed")):
         record_run(
             RunMetrics(

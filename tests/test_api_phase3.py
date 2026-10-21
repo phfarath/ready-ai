@@ -81,7 +81,7 @@ class TestHistory:
     def test_empty_history(self, tmp_path, monkeypatch):
         import src.history as history_mod
 
-        monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+        monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
         response = client.get("/history")
         assert response.status_code == 200
         data = response.json()
@@ -91,7 +91,7 @@ class TestHistory:
     def test_empty_aggregates(self, tmp_path, monkeypatch):
         import src.history as history_mod
 
-        monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+        monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
         response = client.get("/history/aggregates")
         assert response.status_code == 200
         data = response.json()
@@ -102,7 +102,7 @@ class TestHistory:
         import src.history as history_mod
         from src.history import RunMetrics, record_run
 
-        monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+        monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
         record_run(
             RunMetrics(
                 run_id="hist-1",

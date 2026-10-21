@@ -29,11 +29,13 @@ def _isolate_history_store(tmp_path, monkeypatch):
 
     Completing a run appends to the history store (READY-AI-T-API-HISTORY);
     without isolation, loop/flow tests would pollute the real
-    ./output/.history.jsonl and leak state across tests.
+    ./output/.history.db and leak state across tests. The SQLite
+    backend resolves this path at call time, so patching the module
+    constant is enough (env override takes precedence when set).
     """
     import src.history as history_mod
 
-    monkeypatch.setattr(history_mod, "_HISTORY_FILE", tmp_path / ".history.jsonl")
+    monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
 
 
 @pytest.fixture(autouse=True)
