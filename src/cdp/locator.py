@@ -6,6 +6,8 @@ and action validation (visibility, stability, hit-target).
 import logging
 from typing import Optional, Dict, Any
 
+from .transport import Transport
+
 logger = logging.getLogger(__name__)
 
 _RESOLUTION_ORDER = [
@@ -65,7 +67,7 @@ class NodeRef:
 
 
 class Locator:
-    def __init__(self, conn):
+    def __init__(self, conn: Transport):
         self._conn = conn
 
     async def resolve(
@@ -157,7 +159,7 @@ class Locator:
 
 
 class ActionValidator:
-    def __init__(self, conn):
+    def __init__(self, conn: Transport):
         self._conn = conn
 
     async def check_visible(self, selector: str) -> bool:

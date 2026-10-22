@@ -1,0 +1,53 @@
+# Camadas da arquitetura (REF-02) — Flow -> run_flow -> AgenticLoop ->
+# executor -> CDP. O CI falha em violacao (`lint-imports` no job lint).
+#
+# - `src.cdp` e o protocolo Transport nao conhecem as camadas de cima:
+#   nenhum import de agent/llm/api/docs, do pacote publico `ready_ai`
+#   nem do `main` (CLI) — nem mesmo sob TYPE_CHECKING.
+# - `src.agent` esta acima de `src.cdp` (pode importar para baixo).
+#   Modulos fora do contrato (llm, api.models, observability, history)
+#   sao ignorados aqui; o isolamento do cdp e do llm e travado pelos
+#   contratos `forbidden` acima. Excecao conhecida e documentada:
+#   `src.agent.replay` importa `src.api.models` em runtime (modelos
+#   compartilhados do FlowSpec) — por isso `src.api` fica fora do
+#   contrato `layers`.
+
+[importlinter]
+root_package = src
+include_external_packages = True
+
+[importlinter:contract:1]
+name = Camada CDP independente (REF-02)
+type = forbidden
+source_modules =
+    src.cdp
+forbidden_modules =
+    src.agent
+    src.llm
+    src.api
+    src.docs
+    ready_ai
+    main
+ignore_type_checking_imports = true
+
+[importlinter:contract:2]
+name = Camada LLM independente (REF-02)
+type = forbidden
+source_modules =
+    src.llm
+forbidden_modules =
+    src.agent
+    src.api
+    src.cdp
+    src.docs
+    ready_ai
+    main
+ignore_type_checking_imports = true
+
+[importlinter:contract:3]
+name = Camadas: agent -> cdp (REF-02)
+type = layers
+layers =
+    src.agent
+    src.cdp
+ignore_type_checking_imports = true

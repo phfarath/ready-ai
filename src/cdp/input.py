@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Optional
 
-from .connection import CDPConnection
+from .transport import Transport
 from .accessibility import ActionValidator
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def _quad_center(quad: list) -> tuple[float, float]:
 class InputDomain:
     """Simulate mouse clicks, keyboard input, and scrolling via CDP."""
 
-    def __init__(self, conn: CDPConnection):
+    def __init__(self, conn: Transport):
         self._conn = conn
         
     async def move_cursor(self, x: float, y: float) -> None:

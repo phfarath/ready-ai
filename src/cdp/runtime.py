@@ -19,7 +19,7 @@ import logging
 from typing import Any, Optional
 
 from ..observability import get_metrics
-from .connection import CDPConnection
+from .transport import Transport
 from .sanitize import (
     is_raw_mode,
     resolve_value_max,
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class RuntimeDomain:
     """Execute JavaScript in the browser context via Runtime.evaluate."""
 
-    def __init__(self, conn: CDPConnection):
+    def __init__(self, conn: Transport):
         self._conn = conn
 
     async def evaluate(

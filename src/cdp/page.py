@@ -13,7 +13,8 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ..observability import get_metrics
-from .connection import CDPConnection, CDPEventContext
+from .connection import CDPEventContext
+from .transport import Transport
 from .sanitize import (
     is_raw_mode,
     resolve_value_max,
@@ -163,11 +164,11 @@ async def register_cursor_script(conn, session_id=None) -> None:
 
 
 class PageDomain:
-    """High-level Page domain operations over a CDPConnection."""
+    """High-level Page domain operations over a Transport."""
 
     def __init__(
         self,
-        conn: CDPConnection,
+        conn: Transport,
         context: Optional[CDPEventContext] = None,
     ):
         self._conn = conn
@@ -531,7 +532,7 @@ class PageDomain:
                     break
                 try:
                     event = await asyncio.wait_for(
-                        self._conn._events.get(), timeout=peek_remaining
+                        self._conn.event_queue.get(), timeout=peek_remaining
                     )
                 except asyncio.TimeoutError:
                     break
@@ -598,7 +599,7 @@ class PageDomain:
         finally:
             # Only re-queue non-nav events; consumed nav events stay dropped.
             for ev in stashed_non_nav:
-                await self._conn._events.put(ev)
+                await self._conn.event_queue.put(ev)
 
     async def wait_for_network_idle(
         self,
@@ -663,7 +664,7 @@ class PageDomain:
                     chunk = min(remaining, 0.5)
                     try:
                         event = await asyncio.wait_for(
-                            self._conn._events.get(), timeout=chunk
+                            self._conn.event_queue.get(), timeout=chunk
                         )
                         if (
                             event.get("method") == "Page.lifecycleEvent"
@@ -679,7 +680,7 @@ class PageDomain:
             finally:
                 # Re-queue non-matching events so other waiters see them.
                 for ev in stashed:
-                    await self._conn._events.put(ev)
+                    await self._conn.event_queue.put(ev)
 
             if found_idle:
                 logger.debug("wait_for_network_idle: networkIdle lifecycle event received")
@@ -710,7 +711,7 @@ class PageDomain:
 
                 try:
                     # Wait for next event up to `idle_time`
-                    event = await asyncio.wait_for(self._conn._events.get(), timeout=idle_time)
+                    event = await asyncio.wait_for(self._conn.event_queue.get(), timeout=idle_time)
                     method = event.get("method", "")
 
                     if method == "Network.requestWillBeSent":
@@ -732,7 +733,7 @@ class PageDomain:
         finally:
             # Re-queue non-network events so other waiters aren't starved
             for ev in stashed:
-                await self._conn._events.put(ev)
+                await self._conn.event_queue.put(ev)
             # Only cache when the network was actually detected as idle.
             # Caching on timeout would cause subsequent calls within the
             # TTL to return a stale 'idle' result even though requests

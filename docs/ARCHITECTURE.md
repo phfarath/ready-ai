@@ -4,11 +4,18 @@ The product is the automation engine. Documentation generation is one consumer o
 Read with the code open: every section names the module that owns the behavior.
 
 ```
-Flow (ready_ai.models) ──► ReadyAI.run_flow ──► AgenticLoop.run_flow ──► executor ──► CDP ──► Chrome
-        ▲ validates                    │ translates to              │ asserts + extracts
-        │ policy/url/timeouts          │ src.api.models.FlowSpec    ▼
-        └────────────────────────── RunResult (sanitized) ◄── structured step outcomes
+Flow (ready_ai.models) ──► ReadyAI.run_flow ──► AgenticLoop.run_flow ──► executor ──► Transport ──► CDPConnection ──► Chrome
+        ▲ validates                    │ translates to              │ asserts + extracts       ▲ Protocol        │ concrete
+        │ policy/url/timeouts          │ src.api.models.FlowSpec    ▼                          │ (REF-02)        ▼
+        └────────────────────────── RunResult (sanitized) ◄── structured step outcomes        └── domains receive Transport, never the concrete class
 ```
+
+Layer rule (machine-checked, REF-02): `ready_ai` → `src.agent` → `src.cdp`;
+`src.cdp` and `src.llm` import nothing from the layers above (no
+`agent`/`llm`/`api`/`docs`, no `ready_ai`, no `main` — not even under
+`TYPE_CHECKING`). Enforced by `.importlinter` (`lint-imports` in the CI
+`lint` job). Known exception: `src.agent.replay` imports `src.api.models`
+at runtime (shared `FlowSpec` models).
 
 ## 1. Public boundary — `ready_ai/`
 
@@ -51,6 +58,16 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
   native setter), key press. No visibility pre-check on first click — retry path
   scrolls into view; pre-check is Fase 2 work.
 - `locator.py` — semantic locators (role/label/test-id first) with safe-action fallback.
+- `transport.py` — `Transport`, the substitutable seam (REF-02): a
+  `runtime_checkable` `typing.Protocol` with `send` / `subscribe_events` /
+  `wait_for_event` / `events_since`, target+session management
+  (`ensure_targets`, `list_targets`, `attach_to_target`, `close_target`,
+  `switch_session`, `session_id`), `is_alive`, `event_cursor` and the shared
+  `event_queue`. `CDPConnection` satisfies it structurally; domains
+  (`PageDomain`, `RuntimeDomain`, `InputDomain`, `AccessibilityDomain`,
+  `Locator`, `ActionValidator`) and `CursorAnimator.start` receive
+  `Transport`. Tested by `tests/test_cdp_transport.py` (including a stub
+  transport proving substitutability — the BiDi door stays open).
 - `sanitize.py` — LGPD-safe snapshots by default: sensitive fields always redacted,
   long values truncated. `READY_AI_RAW_DOM=true` is debug-only and bypasses cosmetic
   passes (sensitive redaction must still apply — see audit S3/S4).

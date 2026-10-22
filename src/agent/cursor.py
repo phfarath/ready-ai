@@ -11,8 +11,8 @@ import logging
 import re
 from typing import Optional
 
-from ..cdp.connection import CDPConnection
 from ..cdp.runtime import RuntimeDomain
+from ..cdp.transport import Transport
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class CursorAnimator:
 
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
-        self._conn: Optional[CDPConnection] = None
+        self._conn: Optional[Transport] = None
         self._moving = False
 
     @property
@@ -33,7 +33,7 @@ class CursorAnimator:
     def moving(self, value: bool) -> None:
         self._moving = value
 
-    def start(self, conn: CDPConnection) -> None:
+    def start(self, conn: Transport) -> None:
         """Spawn the background cursor animation task."""
         self._conn = conn
         self._task = asyncio.create_task(self._loop())
