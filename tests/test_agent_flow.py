@@ -284,6 +284,8 @@ async def test_run_flow_never_instantiates_doc_renderer(tmp_path, monkeypatch):
     )
     runtime.query_selector.return_value = "object-id-1"  # #app exists
 
+    # LLMClient is imported lazily inside loop methods, so patch its source
+    # module to intercept every local `from ..llm.client import LLMClient`.
     with patch("src.agent.loop.DocRenderer") as doc_renderer_cls, patch(
         "src.llm.client.LLMClient"
     ) as llm_cls:
