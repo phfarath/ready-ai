@@ -119,7 +119,7 @@ TOOLS = [
 
 async def _handle_generate_docs(params: dict[str, Any]) -> dict[str, Any]:
     """Execute a documentation run and return the result."""
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     goal = params["goal"]
     url = params["url"]
@@ -159,7 +159,7 @@ async def _handle_generate_docs(params: dict[str, Any]) -> dict[str, Any]:
 
 async def _handle_test_docs(params: dict[str, Any]) -> dict[str, Any]:
     """Test documentation and return the report."""
-    from src.agent.test_runner import DocTestRunner
+    from ready_ai._engine.agent.test_runner import DocTestRunner
 
     doc_path = params["doc_path"]
     url = params["url"]

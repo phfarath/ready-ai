@@ -2,7 +2,7 @@
 
 import pytest
 from pathlib import Path
-from src.docs.parser import parse_doc, extract_goal
+from ready_ai._engine.docs.parser import parse_doc, extract_goal
 
 
 # ─── Fixtures ───────────────────────────────────────────────────────────

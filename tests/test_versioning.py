@@ -1,6 +1,6 @@
 """Tests for the versioning module (src/versioning.py)."""
 
-from src.versioning import (
+from ready_ai._engine.versioning import (
     resolve_app_version,
     resolve_git_commit,
     resolve_deployed_at,

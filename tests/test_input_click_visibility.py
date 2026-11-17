@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.cdp.input import InputDomain
+from ready_ai._engine.cdp.input import InputDomain
 
 
 def _conn_for(getbox_sequence, viewport=(1280, 800)):

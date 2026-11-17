@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.server import app, _rate_limiter
+from ready_ai._engine.api.server import app, _rate_limiter
 
 client = TestClient(app)
 
@@ -79,7 +79,7 @@ class TestListDocs:
 
 class TestHistory:
     def test_empty_history(self, tmp_path, monkeypatch):
-        import src.history as history_mod
+        import ready_ai._engine.history as history_mod
 
         monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
         response = client.get("/history")
@@ -89,7 +89,7 @@ class TestHistory:
         assert data["records"] == []
 
     def test_empty_aggregates(self, tmp_path, monkeypatch):
-        import src.history as history_mod
+        import ready_ai._engine.history as history_mod
 
         monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
         response = client.get("/history/aggregates")
@@ -99,8 +99,8 @@ class TestHistory:
 
     def test_history_serves_recorded_run(self, tmp_path, monkeypatch):
         """A recorded run shows up in GET /history and /history/aggregates."""
-        import src.history as history_mod
-        from src.history import RunMetrics, record_run
+        import ready_ai._engine.history as history_mod
+        from ready_ai._engine.history import RunMetrics, record_run
 
         monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
         record_run(

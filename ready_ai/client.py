@@ -2,7 +2,7 @@
 
 ``ReadyAI`` is the importable entry point. It translates the stable
 public models (``ready_ai.models``) onto the internal engine
-(``src.agent.loop.AgenticLoop``) without exposing ``src.*`` to
+(``ready_ai._engine.agent.loop.AgenticLoop``) without exposing ``ready_ai._engine.*`` to
 consumers:
 
 - Profiles are *references* resolved through an explicit allowlist
@@ -17,7 +17,7 @@ consumers:
   ``run_id`` token alone — no engine internals required.
 - Engine failures surface as the public exception taxonomy in
   ``ready_ai.exceptions`` (validation / policy / cancellation /
-  timeout / connection) — never as internal ``src.*`` types.
+  timeout / connection) — never as internal ``ready_ai._engine.*`` types.
 """
 
 from __future__ import annotations
@@ -41,14 +41,14 @@ from typing import (
 
 import websockets
 from pydantic import ValidationError
-from src.agent.state import RunState, compute_flow_fingerprint
-from src.agent.loop import AgenticLoop
-from src.cdp.exceptions import (
+from ready_ai._engine.agent.state import RunState, compute_flow_fingerprint
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.cdp.exceptions import (
     CircuitOpenError,
     RunPolicyError,
     WebSocketDisconnected,
 )
-from src.observability import _redact
+from ready_ai._engine.observability import _redact
 
 from .events import RunEvent
 from .exceptions import (
@@ -130,7 +130,7 @@ def _to_flow_spec(
     local: the engine's flow models are an implementation detail and
     stay out of the SDK's public surface.
     """
-    from src.api.models import (
+    from ready_ai._engine.api.models import (
         FlowAction as _FlowAction,
         FlowAssertion as _FlowAssertion,
         FlowExtraction as _FlowExtraction,
@@ -438,7 +438,7 @@ class ReadyAI:
             ) from exc
         except Exception as exc:
             # The taxonomy stays total: uncategorized engine failures
-            # still surface as a public error, never a raw src.* type.
+            # still surface as a public error, never a raw ready_ai._engine.* type.
             raise ReadyAIError(
                 f"run {run_id!r} failed: "
                 f"{type(exc).__name__}: {exc}"
@@ -789,7 +789,7 @@ class ReadyAI:
         manifest declares with ``confirm=True``.
         """
         self._require_local("replay_manifest")
-        from src.agent.replay import (
+        from ready_ai._engine.agent.replay import (
             manifest_to_flow_spec,
             read_manifest,
             run_replay,

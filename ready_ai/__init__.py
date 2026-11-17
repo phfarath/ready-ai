@@ -1,7 +1,7 @@
 """ready_ai — public Python SDK for the ready-ai automation engine.
 
 This package is the stable, importable façade for the engine, which
-internally ships as ``src``. Consume ONLY this package::
+internally ships as ``ready_ai._engine``. Consume ONLY this package::
 
     from ready_ai import ReadyAI, Flow, FlowStep, RunResult, BrowserOptions
 
@@ -18,7 +18,7 @@ Public surface
   ``status``, ``steps`` and only the allowed ``artifacts`` written
   inside the output directory.
 - ``ReadyAI`` — the entry point; runs flows on the engine behind a
-  profile allowlist registry. No ``src.*`` imports are ever needed on
+  profile allowlist registry. No ``ready_ai._engine.*`` imports are ever needed on
   the consumer side.
 
 Minimal example::
@@ -68,7 +68,7 @@ from .models import (
 )
 from .remote import RemoteClient
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "EVENT_TYPES",

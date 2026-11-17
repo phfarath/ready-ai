@@ -127,7 +127,7 @@ def compare_docs(
     """
     Compare two documentation Markdown files and return a structured diff.
     """
-    from src.docs.parser import parse_doc  # lazy import to avoid circular deps
+    from ready_ai._engine.docs.parser import parse_doc  # lazy import to avoid circular deps
 
     baseline_steps = parse_doc(baseline_doc_path)
     current_steps = parse_doc(current_doc_path)

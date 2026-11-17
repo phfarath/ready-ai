@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from src.cdp.connection import CDPConnection, CDPEventContext
-from src.cdp.exceptions import WebSocketDisconnected
+from ready_ai._engine.cdp.connection import CDPConnection, CDPEventContext
+from ready_ai._engine.cdp.exceptions import WebSocketDisconnected
 
 
 def _event(method: str, *, session: str, frame: str | None = None, **params):

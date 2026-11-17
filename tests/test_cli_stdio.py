@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import main as cli_main
+import ready_ai.cli as cli_main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,7 +60,7 @@ def test_cli_error_path_decodable_under_cp1252_and_utf8():
     """
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.run(
-        [sys.executable, "main.py", "run-flow", "--config", "nonexistent-dogfood.yaml"],
+        [sys.executable, "-m", "ready_ai", "run-flow", "--config", "nonexistent-dogfood.yaml"],
         cwd=str(REPO_ROOT),
         env=env,
         capture_output=True,

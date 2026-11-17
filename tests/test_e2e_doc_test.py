@@ -26,7 +26,7 @@ from PIL import Image
 # Ensure format plugins (PNG, JPEG, …) are registered on Windows
 Image.init()
 
-from src.agent.test_runner import DocTestRunner
+from ready_ai._engine.agent.test_runner import DocTestRunner
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "sample_doc"
@@ -124,15 +124,15 @@ class TestE2EAllPassed:
         step_result = MagicMock()
         step_result.success = True
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
-             patch("src.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor:
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+             patch("ready_ai._engine.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor:
 
             mock_executor.execute_step = AsyncMock(return_value=step_result)
 
@@ -176,15 +176,15 @@ class TestE2EDriftDetected:
         step_result = MagicMock()
         step_result.success = True
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
-             patch("src.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor:
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+             patch("ready_ai._engine.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor:
 
             mock_executor.execute_step = AsyncMock(return_value=step_result)
 
@@ -234,15 +234,15 @@ class TestE2EBrokenStep:
         success_result = MagicMock()
         success_result.success = True
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
-             patch("src.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor:
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+             patch("ready_ai._engine.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor:
 
             mock_executor.execute_step = AsyncMock(
                 side_effect=[failed_result, success_result]
@@ -276,15 +276,15 @@ class TestE2EReportStructure:
         step_result = MagicMock()
         step_result.success = True
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
-             patch("src.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor:
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+             patch("ready_ai._engine.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor:
 
             mock_executor.execute_step = AsyncMock(return_value=step_result)
 
@@ -337,15 +337,15 @@ class TestE2EMissingBaseline:
         step_result = MagicMock()
         step_result.success = True
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
-             patch("src.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor:
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+             patch("ready_ai._engine.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor:
 
             mock_executor.execute_step = AsyncMock(return_value=step_result)
 
@@ -371,15 +371,15 @@ class TestE2EStepException:
         page.screenshot = AsyncMock(return_value=_make_screenshot_b64((30, 60, 180)))
         dom_fp_mock = AsyncMock(return_value="abc123")
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
-             patch("src.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor:
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+             patch("ready_ai._engine.agent.test_runner.get_ws_url", new_callable=AsyncMock, return_value="ws://localhost:9222"), \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor:
 
             mock_executor.execute_step = AsyncMock(
                 side_effect=RuntimeError("CDP connection lost")

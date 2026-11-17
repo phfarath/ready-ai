@@ -1,8 +1,8 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from src.api.manager import RunManager
-from src.api.server import app
+from ready_ai._engine.api.manager import RunManager
+from ready_ai._engine.api.server import app
 
 
 @pytest.mark.asyncio

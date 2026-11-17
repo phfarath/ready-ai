@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.docs import export as export_mod
+from ready_ai._engine.docs import export as export_mod
 
 DOC_MD = """# Login Guide
 
@@ -99,7 +99,7 @@ def test_skill_export_creates_valid_layout(tmp_path, monkeypatch):
 
 def test_skill_manifest_binds_verification(tmp_path, monkeypatch):
     _enable_experimental(monkeypatch)
-    from src.docs.export import export_skill
+    from ready_ai._engine.docs.export import export_skill
 
     doc, shots = _fixture_run(tmp_path)
     out = tmp_path / "out"
@@ -123,7 +123,7 @@ def test_skill_manifest_binds_verification(tmp_path, monkeypatch):
 
 def test_round_trip_parse_export(tmp_path, monkeypatch):
     _enable_experimental(monkeypatch)
-    from src.docs.parser import parse_doc
+    from ready_ai._engine.docs.parser import parse_doc
 
     doc, shots = _fixture_run(tmp_path)
     steps = parse_doc(doc)
@@ -136,7 +136,7 @@ def test_round_trip_parse_export(tmp_path, monkeypatch):
 
 
 def test_cli_accepts_skill_format():
-    import main as main_mod
+    import ready_ai.cli as main_mod
 
     args = main_mod.parse_args(["export", "--run-id", "r1", "--format", "skill"])
     assert args.format == "skill"

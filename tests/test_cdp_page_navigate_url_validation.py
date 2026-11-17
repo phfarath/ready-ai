@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
-from src.cdp.connection import CDPConnection
-from src.cdp.page import PageDomain
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.page import PageDomain
 
 
 @pytest.mark.asyncio

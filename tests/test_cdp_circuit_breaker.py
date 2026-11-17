@@ -14,9 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
-from src.cdp.connection_state import CB_THRESHOLD, ConnectionState
-from src.cdp.exceptions import WebSocketDisconnected
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection_state import CB_THRESHOLD, ConnectionState
+from ready_ai._engine.cdp.exceptions import WebSocketDisconnected
 
 
 def _ws_mock() -> AsyncMock:
@@ -35,7 +35,7 @@ def _ws_mock() -> AsyncMock:
 class TestCircuitBreakerOpens:
     @pytest.mark.asyncio
     async def test_circuit_opens_after_threshold_failures(self):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-cb-opens")
         conn = CDPConnection()
@@ -50,7 +50,7 @@ class TestCircuitBreakerOpens:
 
     @pytest.mark.asyncio
     async def test_single_failure_keeps_circuit_closed(self):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-cb-single")
         conn = CDPConnection()
@@ -65,7 +65,7 @@ class TestCircuitBreakerOpens:
         # After a few failures, a successful reconnect should reset
         # the counter. We simulate that path by manually setting
         # _state back to HEALTHY (the way _reconnect does internally).
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-cb-reset")
         conn = CDPConnection()
@@ -91,7 +91,7 @@ class TestSlidingWindow:
         # We have one failure 100s ago, then a new one. The window
         # expired so the counter should be 1 (just the new one),
         # not 2.
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-cb-window")
         conn = CDPConnection()
@@ -164,7 +164,7 @@ class TestWaitDisconnected:
 class TestSendFailsFastWhenCircuitOpen:
     @pytest.mark.asyncio
     async def test_send_raises_when_circuit_just_opened(self):
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-cb-send")
         conn = CDPConnection()

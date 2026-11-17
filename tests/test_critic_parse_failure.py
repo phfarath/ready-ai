@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.critic import CriticFeedback, review  # noqa: E402
+from ready_ai._engine.agent.critic import CriticFeedback, review  # noqa: E402
 
 
 def _make_llm(response_text: str):

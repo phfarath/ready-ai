@@ -83,10 +83,10 @@ runs:
       run: |
         # If using local checkout, install from current repo
         if [ -f "pyproject.toml" ]; then
-          pip install ready-ai
+          pip install 'ready-ai[all]'
         else
           # Otherwise install from PyPI (once published)
-          pip install ready-ai
+          pip install 'ready-ai[all]'
         fi
 
     - name: Configure API key

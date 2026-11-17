@@ -9,26 +9,46 @@ for rate limit errors.
 import asyncio
 import importlib
 import logging
+import sys
 import time
 from typing import Any, Optional
-
-import litellm
 
 from ..observability import get_metrics, log_event
 
 logger = logging.getLogger(__name__)
 
 try:
-    import openai._compat as openai_compat
-except ImportError:  # pragma: no cover - openai>=3 dropped the shim
-    openai_compat = None  # type: ignore[assignment]
-    logger.warning(
-        "openai._compat is unavailable — skipping the model_dump "
-        "by_alias=None workaround"
-    )
+    import litellm
+except ImportError:  # optional extra: pip install 'ready-ai[llm]'
+    litellm = None  # type: ignore[assignment]
 
-# Suppress litellm's verbose logging
-litellm.suppress_debug_info = True
+LLM_EXTRA_MISSING = (
+    "this command needs the LLM extra (pip install 'ready-ai[llm]')"
+)
+
+
+def require_llm() -> None:
+    """Raise ``ImportError`` when the ``[llm]`` extra is not installed."""
+    if litellm is None:
+        raise ImportError(LLM_EXTRA_MISSING)
+
+
+try:
+    import openai._compat as openai_compat
+except ImportError:
+    openai_compat = None  # type: ignore[assignment]
+    # The extra is optional. Warn only when openai itself imported and
+    # the shim is gone (openai>=3). A base install has neither package,
+    # and the deterministic CLI must stay quiet.
+    if sys.modules.get("openai") is not None:  # pragma: no cover
+        logger.warning(
+            "openai._compat is unavailable — skipping the model_dump "
+            "by_alias=None workaround"
+        )
+
+# Suppress litellm's verbose logging when the extra is installed.
+if litellm is not None:
+    litellm.suppress_debug_info = True
 
 MAX_LLM_RETRIES = 5
 INITIAL_RETRY_DELAY = 1.0  # seconds
@@ -103,6 +123,7 @@ class LLMClient:
         temperature: float = 0.2,
         max_tokens: int = 4096,
     ):
+        require_llm()
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens

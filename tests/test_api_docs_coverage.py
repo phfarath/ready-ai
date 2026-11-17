@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.api.server import app
+from ready_ai._engine.api.server import app
 
 _DOC_PATH = Path(__file__).parent.parent / "docs" / "API.md"
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection import CDPConnection
 
 
 class TestCDPConnection:
@@ -137,7 +137,7 @@ class TestDocRenderer:
     """Test the markdown documentation renderer."""
 
     def test_render_basic(self):
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         doc = DocRenderer("Test Goal")
         doc.add_step(
@@ -157,7 +157,7 @@ class TestDocRenderer:
         assert "Clicked element: #login-btn" in markdown
 
     def test_render_multiple_steps_has_toc(self):
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         doc = DocRenderer("Multi Step Test")
         for i in range(5):
@@ -172,7 +172,7 @@ class TestDocRenderer:
         assert "## Index" in markdown
 
     def test_render_portuguese_labels(self):
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         doc = DocRenderer("Objetivo", language="portuguese")
         for i in range(5):
@@ -183,7 +183,7 @@ class TestDocRenderer:
         assert "## Índice" in markdown
 
     def test_render_language_alias(self):
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         # 2-letter alias "pt" should resolve to Portuguese labels
         doc = DocRenderer("Goal", language="pt")
@@ -194,7 +194,7 @@ class TestDocRenderer:
         assert "## Índice" in markdown
 
     def test_screenshots_dict(self):
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         doc = DocRenderer("Test")
         doc.add_step(1, "Step 1", "abc123", "Annotation")
@@ -207,7 +207,7 @@ class TestPlannerParse:
     """Test the planner's step parser."""
 
     def test_parse_numbered_steps(self):
-        from src.agent.planner import _parse_steps
+        from ready_ai._engine.agent.planner import _parse_steps
 
         response = """1. Click the login button
 2. Enter email address
@@ -220,7 +220,7 @@ class TestPlannerParse:
         assert steps[2] == "Click submit"
 
     def test_parse_parenthesis_numbering(self):
-        from src.agent.planner import _parse_steps
+        from ready_ai._engine.agent.planner import _parse_steps
 
         response = """1) First step
 2) Second step"""
@@ -229,7 +229,7 @@ class TestPlannerParse:
         assert len(steps) == 2
 
     def test_parse_dash_list(self):
-        from src.agent.planner import _parse_steps
+        from ready_ai._engine.agent.planner import _parse_steps
 
         response = """- Step one
 - Step two"""
@@ -238,7 +238,7 @@ class TestPlannerParse:
         assert len(steps) == 2
 
     def test_parse_empty(self):
-        from src.agent.planner import _parse_steps
+        from ready_ai._engine.agent.planner import _parse_steps
 
         assert _parse_steps("") == []
         assert _parse_steps("\n\n") == []
@@ -248,20 +248,20 @@ class TestExecutorParse:
     """Test the executor's action parser."""
 
     def test_parse_json_action(self):
-        from src.agent.executor import _parse_action
+        from ready_ai._engine.agent.executor import _parse_action
 
         result = _parse_action('{"action": "click", "selector": "#btn"}')
         assert result == {"action": "click", "selector": "#btn"}
 
     def test_parse_json_in_code_block(self):
-        from src.agent.executor import _parse_action
+        from ready_ai._engine.agent.executor import _parse_action
 
         result = _parse_action('```json\n{"action": "type", "text": "hello"}\n```')
         assert result["action"] == "type"
         assert result["text"] == "hello"
 
     def test_parse_invalid_returns_none(self):
-        from src.agent.executor import _parse_action
+        from ready_ai._engine.agent.executor import _parse_action
 
         assert _parse_action("not json at all") is None
 
@@ -328,26 +328,26 @@ class TestSelectorExtraction:
     """Test the extract_selector helper for visual highlighting (Gap C)."""
 
     def test_extract_click_selector(self):
-        from src.agent.cursor import extract_selector
+        from ready_ai._engine.agent.cursor import extract_selector
         assert extract_selector("Clicked element: #login-btn") == "#login-btn"
 
     def test_extract_js_fallback_selector(self):
-        from src.agent.cursor import extract_selector
+        from ready_ai._engine.agent.cursor import extract_selector
         assert extract_selector(
             "Clicked element via JS fallback: [data-testid=\"submit\"]"
         ) == "[data-testid=\"submit\"]"
 
     def test_extract_scroll_to_selector(self):
-        from src.agent.cursor import extract_selector
+        from ready_ai._engine.agent.cursor import extract_selector
         assert extract_selector("Scrolled to element: .footer-link") == ".footer-link"
 
     def test_returns_none_for_non_element_actions(self):
-        from src.agent.cursor import extract_selector
+        from ready_ai._engine.agent.cursor import extract_selector
         assert extract_selector("Observing current page state") is None
         assert extract_selector("Navigated to: https://example.com") is None
 
     def test_returns_none_for_failed_actions(self):
-        from src.agent.cursor import extract_selector
+        from ready_ai._engine.agent.cursor import extract_selector
         assert extract_selector("[Failed] Element not found: #btn") is None
 
 

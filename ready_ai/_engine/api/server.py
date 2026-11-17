@@ -19,7 +19,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Reques
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from src.api.models import (
+from ready_ai._engine.api.models import (
     RunRequest, RunStatusResponse,
     ExportRequest, ExportResponse,
     RunListItem, RunListResponse,
@@ -28,9 +28,9 @@ from src.api.models import (
     DocsVersionStatus,
     FlowSpec, FlowRunResult,
 )
-from src.api.manager import RunManager
-from src.docs.export import export_docs, SUPPORTED_FORMATS
-from src.history import get_history, get_aggregates
+from ready_ai._engine.api.manager import RunManager
+from ready_ai._engine.docs.export import export_docs, SUPPORTED_FORMATS
+from ready_ai._engine.history import get_history, get_aggregates
 
 logger = logging.getLogger(__name__)
 
@@ -373,8 +373,8 @@ async def run_flow(flow: FlowSpec):
     leaving the request hanging.
     """
     import uuid
-    from src.agent.loop import AgenticLoop
-    from src.api.manager import RunManager
+    from ready_ai._engine.agent.loop import AgenticLoop
+    from ready_ai._engine.api.manager import RunManager
 
     run_id = flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
     port = await RunManager._acquire_port()
@@ -685,8 +685,8 @@ async def get_run_diff(
     previous_doc = Path(f"./output/{previous_run_id}") / "docs.md"
 
     try:
-        from src.docs.text_diff import compare_docs
-        from src.docs.manifest import DocManifest
+        from ready_ai._engine.docs.text_diff import compare_docs
+        from ready_ai._engine.docs.manifest import DocManifest
         result = compare_docs(str(previous_doc), str(doc_path))
         
         # Build changelog markdown

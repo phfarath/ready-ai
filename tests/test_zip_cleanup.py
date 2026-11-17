@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.server import app
+from ready_ai._engine.api.server import app
 
 client = TestClient(app)
 

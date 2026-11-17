@@ -30,10 +30,10 @@ import socket
 from pathlib import Path
 from typing import Optional
 
-from src.agent.browser_session import BrowserSession
-from src.agent.dom_utils import FP_ERROR_PREFIX, dom_fingerprint
-from src.docs.report_html import render_healer_scorecard
-from src.docs.visual_diff import compare_screenshots
+from ready_ai._engine.agent.browser_session import BrowserSession
+from ready_ai._engine.agent.dom_utils import FP_ERROR_PREFIX, dom_fingerprint
+from ready_ai._engine.docs.report_html import render_healer_scorecard
+from ready_ai._engine.docs.visual_diff import compare_screenshots
 
 from .mutations import DrillConfig, load_config
 from .scorecard import MutationOutcome, compute_scorecard

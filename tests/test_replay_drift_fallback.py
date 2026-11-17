@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from src.agent.loop import AgenticLoop
-from src.agent.replay import (
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.agent.replay import (
     DRIFT_SUSPECTED,
     compile_manifest,
     run_replay,
 )
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 
 def _flow():
@@ -78,7 +78,7 @@ async def _author(tmp_path, monkeypatch, run_id="drift-author"):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id=run_id)
     result = await loop.run_flow(_flow())
     assert result["status"] == "passed", result
@@ -94,7 +94,7 @@ async def test_gate_blocks_actuation_on_drift(tmp_path, monkeypatch):
         calls.append(payload)
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="drift-replay")
     expected = [manifest["steps"][0]["fingerprint_pre"], "tampered-fingerprint"]
     result = await loop.run_flow(
@@ -108,7 +108,7 @@ async def test_gate_blocks_actuation_on_drift(tmp_path, monkeypatch):
     assert step2["drift"]["signal"] == DRIFT_SUSPECTED
     assert step2["drift"]["expected"] == "tampered-fingerprint"
 
-    from src.observability import get_metrics
+    from ready_ai._engine.observability import get_metrics
 
     assert get_metrics().get_counter("replay.drift_suspected") >= 1
 
@@ -119,7 +119,7 @@ async def test_matching_fingerprints_pass_silently(tmp_path, monkeypatch):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="drift-clean")
     expected = [s["fingerprint_pre"] for s in manifest["steps"]]
     result = await loop.run_flow(
@@ -138,24 +138,24 @@ async def test_run_replay_falls_back_and_heals_mutated_page(
     def _boom(*args, **kwargs):
         raise AssertionError("LLM must never be constructed without credentials")
 
-    monkeypatch.setattr("src.llm.client.LLMClient", _boom)
+    monkeypatch.setattr("ready_ai._engine.llm.client.LLMClient", _boom)
     manifest = await _author(tmp_path, monkeypatch)
 
     async def mutated_fingerprint(runtime):
         return "mutated-page-state"
 
     monkeypatch.setattr(
-        "src.agent.recovery.dom_fingerprint", mutated_fingerprint
+        "ready_ai._engine.agent.recovery.dom_fingerprint", mutated_fingerprint
     )
     # NOTE: loop.py holds the same module object, so the gate sees it too.
-    import src.agent.loop as loop_module
+    import ready_ai._engine.agent.loop as loop_module
 
     assert loop_module.recovery.dom_fingerprint is mutated_fingerprint
 
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="drift-heal")
     result = await run_replay(manifest=manifest, loop=loop)
     assert result["status"] == "passed", result
@@ -177,13 +177,13 @@ async def test_run_replay_without_fallback_reports_drift(tmp_path, monkeypatch):
         return "mutated-page-state"
 
     monkeypatch.setattr(
-        "src.agent.recovery.dom_fingerprint", mutated_fingerprint
+        "ready_ai._engine.agent.recovery.dom_fingerprint", mutated_fingerprint
     )
 
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="drift-nofallback")
     result = await run_replay(
         manifest=manifest, loop=loop, allow_fallback=False
@@ -210,7 +210,7 @@ async def test_failed_step_without_drift_triggers_fallback(tmp_path, monkeypatch
             return "[Failed] element not found"
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="drift-failstep-heal")
     result = await run_replay(manifest=manifest, loop=loop)
     assert result["status"] == "passed", result

@@ -16,8 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
-from src.observability import init_run_context
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.observability import init_run_context
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +48,7 @@ async def _resolve_after_send(conn: CDPConnection, msg_id: int, result: dict | N
 class TestCDPInstrumentation:
     @pytest.mark.asyncio
     async def test_success_emits_histogram_and_counter(self):
-        from src.observability import get_metrics
+        from ready_ai._engine.observability import get_metrics
 
         conn = _make_conn()
         metrics = get_metrics()
@@ -70,7 +70,7 @@ class TestCDPInstrumentation:
 
     @pytest.mark.asyncio
     async def test_cdp_error_records_error_status(self):
-        from src.observability import get_metrics
+        from ready_ai._engine.observability import get_metrics
 
         conn = _make_conn()
         metrics = get_metrics()
@@ -86,7 +86,7 @@ class TestCDPInstrumentation:
 
     @pytest.mark.asyncio
     async def test_timeout_records_timeout_status(self):
-        from src.observability import get_metrics
+        from ready_ai._engine.observability import get_metrics
 
         conn = _make_conn()
         metrics = get_metrics()
@@ -100,11 +100,11 @@ class TestCDPInstrumentation:
 
     @pytest.mark.asyncio
     async def test_not_connected_does_not_record_metrics(self):
-        from src.observability import get_metrics
+        from ready_ai._engine.observability import get_metrics
 
         # No RunContext means get_metrics() returns None and the
         # instrumentation must degrade gracefully (no crash).
-        from src.observability import get_run_context
+        from ready_ai._engine.observability import get_run_context
         get_run_context  # silence unused warning
         conn = CDPConnection()  # _ws is None
 
@@ -119,7 +119,7 @@ class TestCDPInstrumentation:
     @pytest.mark.asyncio
     async def test_send_still_works_without_run_context(self):
         # Simulate the "no RunContext" case by clearing the contextvar.
-        from src.observability import _run_context_var
+        from ready_ai._engine.observability import _run_context_var
 
         saved = _run_context_var.get()
         _run_context_var.set(None)

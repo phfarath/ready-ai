@@ -1,6 +1,6 @@
 """SDK-side replay interpretation (Fase 3 — PH3B drift gate + PH3C custo).
 
-O motor (compilar/executar) mora no engine (``src.agent.replay`` +
+O motor (compilar/executar) mora no engine (``ready_ai._engine.agent.replay`` +
 ``AgenticLoop.run_flow(allow_llm=False)``); este módulo interpreta o
 resultado no lado do SDK, sem nenhum import do engine no load:
 

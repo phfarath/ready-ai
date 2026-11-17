@@ -143,12 +143,14 @@ def _assemble_fallback_wheel(work: Path, outdir: Path) -> Path:
     find_cfg = setuptools_cfg.get("packages", {}).get("find", {})
     include = find_cfg.get("include") or ["*"]
     packages = sorted(find_packages(where=str(work), include=include))
-    # The pyproject ``include = ["src*", "ready_ai*"]`` must discover the
-    # new public package — this is exactly what the real backend would ship.
+    # The pyproject ``include = ["ready_ai*"]`` must discover the
+    # public package — this is exactly what the real backend would ship.
     assert "ready_ai" in packages, (
         f"package discovery did not find ready_ai (found: {packages})"
     )
     py_modules = setuptools_cfg.get("py-modules") or []
+    assert py_modules == []
+    assert not any(pkg == "src" or pkg.startswith("src.") for pkg in packages), packages
 
     files: list[Path] = []
     for pkg in packages:
@@ -241,11 +243,23 @@ def test_wheel_contains_public_package_and_engine(wheel):
         names = zf.namelist()
     assert any(n.startswith("ready_ai/") for n in names), "wheel must ship ready_ai/"
     assert "ready_ai/__init__.py" in names
+    assert "ready_ai/__main__.py" in names
     assert "ready_ai/models.py" in names
     assert "ready_ai/client.py" in names
-    assert "src/agent/loop.py" in names, "wheel must still ship the engine under src/"
-    assert "src/api/models.py" in names
-    assert "main.py" in names, "CLI entry module must remain in the wheel"
+    assert "ready_ai/cli.py" in names
+    assert "ready_ai/_engine/agent/loop.py" in names
+    assert "ready_ai/_engine/api/models.py" in names
+    assert "main.py" not in names
+    assert not any(n == "src" or n.startswith("src/") for n in names)
+    top_levels = {
+        n.split("/", 1)[0]
+        for n in names
+        if not n.endswith(".dist-info/RECORD")
+        and not n.endswith("/")
+        and "/" in n
+    }
+    packages = {name for name in top_levels if not name.endswith(".dist-info")}
+    assert packages == {"ready_ai"}, packages
 
 
 def test_wheel_contains_py_typed_marker(wheel):

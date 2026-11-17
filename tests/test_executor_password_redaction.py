@@ -3,7 +3,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock
 
-from src.agent.executor import _dispatch_action
+from ready_ai._engine.agent.executor import _dispatch_action
 
 
 def _make_evaluator(return_value, *, expected_selector=None):

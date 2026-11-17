@@ -18,11 +18,11 @@ sys.modules["selenium.webdriver.chrome.options"] = MagicMock()
 
 import pytest  # noqa: E402
 
-from src.api.models import (  # noqa: E402
+from ready_ai._engine.api.models import (  # noqa: E402
     RunRequest, FlowConfig, DeployWebhookPayload, BatchRunResponse, BatchConfig, BatchConfigFlow,
 )
-from src.api.batch_loader import _parse_dict  # noqa: E402
-from src.api.manager import RunManager  # noqa: E402
+from ready_ai._engine.api.batch_loader import _parse_dict  # noqa: E402
+from ready_ai._engine.api.manager import RunManager  # noqa: E402
 
 
 # ─── Model Validation Tests ───────────────────────────────────────────

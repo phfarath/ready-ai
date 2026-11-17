@@ -15,9 +15,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent import dom_utils, recovery
-from src.agent.dom_utils import FP_ERROR_PREFIX, dom_fingerprint
-from src.observability import init_run_context
+from ready_ai._engine.agent import dom_utils, recovery
+from ready_ai._engine.agent.dom_utils import FP_ERROR_PREFIX, dom_fingerprint
+from ready_ai._engine.observability import init_run_context
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +59,7 @@ class TestFingerprintSentinel:
 
     @pytest.mark.asyncio
     async def test_failure_increments_metric(self):
-        from src.observability import get_metrics
+        from ready_ai._engine.observability import get_metrics
 
         metrics = get_metrics()
         before = metrics.get_counter("fingerprint.errors")

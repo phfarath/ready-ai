@@ -21,7 +21,7 @@ import subprocess
 
 def test_doctest_report_has_healing_report_default_none():
     """DocTestReport must have a healing_report attribute defaulting to None."""
-    from src.agent.test_runner import DocTestReport
+    from ready_ai._engine.agent.test_runner import DocTestReport
 
     report = DocTestReport(
         doc_path="test.md",
@@ -35,8 +35,8 @@ def test_doctest_report_has_healing_report_default_none():
 
 def test_doctest_report_healing_report_settable():
     """healing_report can be set to a HealingReport after construction."""
-    from src.agent.test_runner import DocTestReport
-    from src.docs.auto_healer import HealingReport
+    from ready_ai._engine.agent.test_runner import DocTestReport
+    from ready_ai._engine.docs.auto_healer import HealingReport
 
     healing = HealingReport(doc_rewritten=True)
     report = DocTestReport(
@@ -54,8 +54,8 @@ def test_doctest_report_healing_report_settable():
 
 def test_maybe_publish_healing_skipped_when_no_healing(tmp_path, caplog):
     """--open-pr without healing logs 'skipped' and does not crash."""
-    import main as main_module
-    from src.agent.test_runner import DocTestReport
+    import ready_ai.cli as main_module
+    from ready_ai._engine.agent.test_runner import DocTestReport
 
     report = DocTestReport(
         doc_path=str(tmp_path / "docs.md"),
@@ -91,9 +91,9 @@ def test_maybe_publish_healing_calls_publish_with_correct_args(
     tmp_path, monkeypatch
 ):
     """With healing present, publish_healing is called with correct 4-arg signature."""
-    import main as main_module
-    from src.agent.test_runner import DocTestReport
-    from src.docs.auto_healer import HealingReport
+    import ready_ai.cli as main_module
+    from ready_ai._engine.agent.test_runner import DocTestReport
+    from ready_ai._engine.docs.auto_healer import HealingReport
 
     # Set up a fake git repo so repo-root discovery works
     repo = tmp_path / "repo"
@@ -119,7 +119,7 @@ def test_maybe_publish_healing_calls_publish_with_correct_args(
         captured["doc_test_report"] = doc_test_report
         captured["html_report_path"] = html_report_path
         captured["config"] = config
-        from src.docs.healing_publisher import PublishResult
+        from ready_ai._engine.docs.healing_publisher import PublishResult
 
         return PublishResult(
             branch_name="auto-heal/docs/docs-test",
@@ -129,7 +129,7 @@ def test_maybe_publish_healing_calls_publish_with_correct_args(
         )
 
     monkeypatch.setattr(
-        "src.docs.healing_publisher.publish_healing", fake_publish
+        "ready_ai._engine.docs.healing_publisher.publish_healing", fake_publish
     )
 
     args = argparse.Namespace(

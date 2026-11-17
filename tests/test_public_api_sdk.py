@@ -4,7 +4,7 @@ The façade exposes async ``run()``/``start()``, an explicit ``run_sync()``
 adapter, cooperative cancellation, an ordered/sanitized event stream,
 checkpoint resume by ``run_id`` token, and a public exception taxonomy
 (validation / policy / cancellation / timeout / connection) — no
-``src.*`` types cross the boundary.
+``ready_ai._engine.*`` types cross the boundary.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from ready_ai import (
     RunResult,
     RunTimeoutError,
 )
-from src.agent.state import RunState
-from src.cdp.exceptions import (
+from ready_ai._engine.agent.state import RunState
+from ready_ai._engine.cdp.exceptions import (
     CircuitOpenError,
     RunPolicyError,
     WebSocketDisconnected,
@@ -517,8 +517,8 @@ def _write_checkpoint(output_dir, run_id, status="PAUSED", step_index=2):
 
 def _write_fingerprinted_checkpoint(output_dir, flow, run_id, step_index=1):
     """Checkpoint bound to ``flow`` via the engine fingerprint helper."""
-    from src.agent.state import compute_flow_fingerprint
-    from src.api.models import (
+    from ready_ai._engine.agent.state import compute_flow_fingerprint
+    from ready_ai._engine.api.models import (
         FlowAction as _FlowAction,
         FlowSpec as _FlowSpec,
         FlowStepSpec as _FlowStepSpec,
@@ -745,8 +745,8 @@ async def test_replay_manifest_recursion_error_maps_to_flow_validation(
     def _boom(manifest):
         raise RecursionError("maximum recursion depth exceeded")
 
-    # replay_manifest imports the constructor locally from src.agent.replay.
-    monkeypatch.setattr("src.agent.replay.manifest_to_flow_spec", _boom)
+    # replay_manifest imports the constructor locally from ready_ai._engine.agent.replay.
+    monkeypatch.setattr("ready_ai._engine.agent.replay.manifest_to_flow_spec", _boom)
     ai = ReadyAI(output_dir=str(tmp_path))
     with pytest.raises(FlowValidationError, match="invalid replay manifest"):
         await ai.replay_manifest({"kind": "ready-ai-replay-manifest"})

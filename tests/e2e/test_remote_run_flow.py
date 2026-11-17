@@ -28,7 +28,7 @@ def _free_port() -> int:
 async def test_remote_run_flow_passed(e2e_server):
     import uvicorn
 
-    from src.api.server import app
+    from ready_ai._engine.api.server import app
 
     port = _free_port()
     server = uvicorn.Server(

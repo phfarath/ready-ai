@@ -26,8 +26,8 @@ import json
 
 import pytest
 
-from src.agent.loop import AgenticLoop
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 pytestmark = pytest.mark.e2e
 
@@ -104,7 +104,7 @@ async def test_chrome_kill_reports_terminal_disconnect(e2e_server, tmp_path, cdp
     # machines — the kill then lands in setup, which is a DIFFERENT
     # contract (run-level exception propagates out of run_flow instead of
     # a per-step terminal failure) and is out of scope here.
-    from src.agent import executor
+    from ready_ai._engine.agent import executor
 
     step2_in_flight = asyncio.Event()
     real_dispatch = executor._dispatch_action

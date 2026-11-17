@@ -1,5 +1,5 @@
 """
-Unit tests for `src.docs.healing_publisher`.
+Unit tests for `ready_ai._engine.docs.healing_publisher`.
 
 All git/gh interaction goes through the injected `runner` callable so these
 tests never touch a real repository.
@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from src.docs.auto_healer import HealingReport, HealResult
-from src.docs.healing_publisher import (
+from ready_ai._engine.docs.auto_healer import HealingReport, HealResult
+from ready_ai._engine.docs.healing_publisher import (
     HealingPublishError,
     PublishConfig,
     _render_pr_body,
@@ -131,7 +131,7 @@ def test_publish_suspected_only_returns_review_reason(
     opening an empty review PR (zero file changes would fight the
     publisher's conservative staging).
     """
-    from src.docs.auto_healer import DriftGateLogEntry, HealingReport
+    from ready_ai._engine.docs.auto_healer import DriftGateLogEntry, HealingReport
 
     suspected = HealingReport()
     suspected.gate_log = [
@@ -316,7 +316,7 @@ def test_main_maybe_publish_healing_dry_run(
     import argparse
     import subprocess
 
-    import main as main_module
+    import ready_ai.cli as main_module
 
     # Initialize a real git repo so `_find_repo_root` succeeds.
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -333,7 +333,7 @@ def test_main_maybe_publish_healing_dry_run(
         captured["doc_test_report"] = doc_test_report
         captured["html_report_path"] = html_report_path
         captured["cfg"] = config
-        from src.docs.healing_publisher import PublishResult
+        from ready_ai._engine.docs.healing_publisher import PublishResult
         return PublishResult(
             branch_name="auto-heal/docs/docs-test",
             commit_sha="abcdef",
@@ -342,7 +342,7 @@ def test_main_maybe_publish_healing_dry_run(
         )
 
     monkeypatch.setattr(
-        "src.docs.healing_publisher.publish_healing", fake_publish
+        "ready_ai._engine.docs.healing_publisher.publish_healing", fake_publish
     )
 
     args = argparse.Namespace(
@@ -365,7 +365,7 @@ def test_main_maybe_publish_healing_dry_run(
 
 def test_run_wraps_missing_executable_in_publish_error(tmp_path):
     """Missing `git`/`gh` binary must be raised as HealingPublishError, not FileNotFoundError."""
-    from src.docs.healing_publisher import _run
+    from ready_ai._engine.docs.healing_publisher import _run
 
     with pytest.raises(HealingPublishError, match="command not found"):
         _run(["definitely-not-a-real-binary-xyz"], tmp_path)

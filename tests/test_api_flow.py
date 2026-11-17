@@ -13,7 +13,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock
 
-from src.api.models import (
+from ready_ai._engine.api.models import (
     FlowSpec,
     FlowStepSpec,
     FlowAction,
@@ -23,8 +23,8 @@ from src.api.models import (
     FlowAssertionResult,
     FlowExtractionResult,
 )
-from src.api.batch_loader import load_flow_config
-from src.api.server import app
+from ready_ai._engine.api.batch_loader import load_flow_config
+from ready_ai._engine.api.server import app
 
 
 SAMPLE_FLOW_YAML = """
@@ -224,7 +224,7 @@ class TestFlowLoader:
 
 @pytest.mark.asyncio
 async def test_flows_run_endpoint_returns_structured_result(monkeypatch):
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     fake_result = {
         "run_id": "flow-abc",
@@ -290,7 +290,7 @@ async def test_flows_run_endpoint_returns_structured_result(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_flows_run_endpoint_returns_500_on_execution_error(monkeypatch):
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     monkeypatch.setattr(
         AgenticLoop,
@@ -310,7 +310,7 @@ async def test_flows_run_endpoint_returns_500_on_execution_error(monkeypatch):
 
 def test_flow_rate_tier_maps_flows_to_run():
     """B2 — /flows/run sits on the expensive "run" tier, not "standard"."""
-    from src.api.server import _rate_limiter
+    from ready_ai._engine.api.server import _rate_limiter
 
     assert _rate_limiter.path_tiers["/flows"] == "run"
     assert _rate_limiter._get_tier("/flows/run") == "run"
@@ -319,7 +319,7 @@ def test_flow_rate_tier_maps_flows_to_run():
 @pytest.mark.asyncio
 async def test_flows_run_endpoint_allocates_non_default_browser_port(monkeypatch):
     """B2 — every /flows/run request gets a port from the RunManager pool."""
-    from src.api.manager import RunManager
+    from ready_ai._engine.api.manager import RunManager
 
     captured = {}
 
@@ -338,7 +338,7 @@ async def test_flows_run_endpoint_allocates_non_default_browser_port(monkeypatch
             )
 
     # Patch the whole class symbol so the route instantiates FakeLoop.
-    monkeypatch.setattr("src.agent.loop.AgenticLoop", FakeLoop)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.AgenticLoop", FakeLoop)
     launch_port = 9377
     acquire = AsyncMock(return_value=launch_port)
     release = AsyncMock(return_value=None)
@@ -361,8 +361,8 @@ async def test_flows_run_endpoint_times_out_returns_503(monkeypatch):
     """B2 — a run exceeding the timeout returns 503 instead of hanging."""
     import asyncio
 
-    from src.api.manager import RunManager
-    from src.api import server as server_module
+    from ready_ai._engine.api.manager import RunManager
+    from ready_ai._engine.api import server as server_module
 
     class HangingLoop:
         def __init__(self, **kwargs):
@@ -372,7 +372,7 @@ async def test_flows_run_endpoint_times_out_returns_503(monkeypatch):
             await asyncio.sleep(30)
             return {}
 
-    monkeypatch.setattr("src.agent.loop.AgenticLoop", HangingLoop)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.AgenticLoop", HangingLoop)
     monkeypatch.setattr(server_module, "FLOW_RUN_TIMEOUT_S", 0.05)
 
     launch_port = 9388

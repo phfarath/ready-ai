@@ -7,7 +7,7 @@ Strata/Cortex memory under project ready-ai):
     the pre-actuation gate compares the live pre-step fingerprint against
     the manifest's; a divergence fails the step with a ``drift`` block
     (``signal == DRIFT_SUSPECTED``) WITHOUT dispatching any action.
-  - ``src.agent.replay``: ``extract_fingerprints`` / ``drifted_step_report`` /
+  - ``ready_ai._engine.agent.replay``: ``extract_fingerprints`` / ``drifted_step_report`` /
     ``collect_drifts`` / ``run_replay(manifest, loop, allow_fallback,
     max_fallback_runs)`` — deterministic pass one, bounded agentic heal pass
     on drift OR failed step, always observable via the ``replay`` block.
@@ -27,9 +27,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ready_ai import replay as sdk_replay
-from src.agent import replay as engine_replay
-from src.agent.loop import AgenticLoop
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.agent import replay as engine_replay
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 
 def _flow():
@@ -82,7 +82,7 @@ async def _author(tmp_path, monkeypatch, run_id="drift-author"):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id=run_id)
     result = await loop.run_flow(_flow())
     assert result["status"] == "passed", result
@@ -198,12 +198,12 @@ async def test_replay_gate_never_constructs_llm_on_drift(tmp_path, monkeypatch):
         calls.append(payload)
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     def _boom(*args, **kwargs):
         raise AssertionError("LLM must never be constructed during replay")
 
-    monkeypatch.setattr("src.llm.client.LLMClient", _boom)
+    monkeypatch.setattr("ready_ai._engine.llm.client.LLMClient", _boom)
 
     loop = _make_loop(tmp_path, run_id="drift-zero-llm")
     # Live DOM diverges from the authoring fingerprint.
@@ -220,14 +220,14 @@ async def test_replay_gate_never_constructs_llm_on_drift(tmp_path, monkeypatch):
 
 
 async def test_drift_metric_counter_increments(tmp_path, monkeypatch):
-    from src.observability import get_metrics
+    from ready_ai._engine.observability import get_metrics
 
     manifest = await _author(tmp_path, monkeypatch)
 
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="drift-metric")
     loop._session._runtime.evaluate = AsyncMock(return_value="mutated-page-state")
 
@@ -247,7 +247,7 @@ async def test_run_replay_no_fallback_reports_drift(tmp_path, monkeypatch):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop = _make_loop(tmp_path, run_id="replay-nofallback")
     loop._session._runtime.evaluate = AsyncMock(return_value="mutated-page-state")
 
@@ -273,7 +273,7 @@ async def test_run_replay_respects_bounded_fallback_budget(tmp_path, monkeypatch
     async def failing_dispatch(payload, *args, **kwargs):
         return "[Failed] element not found"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", failing_dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", failing_dispatch)
     loop = _make_loop(tmp_path, run_id="replay-budget")
 
     result = await engine_replay.run_replay(

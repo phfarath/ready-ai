@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.sanitize import (
+from ready_ai._engine.cdp.sanitize import (
     DOM_VALUE_MAX_DEFAULT,
     ENV_DOM_VALUE_MAX,
     ENV_RAW_DOM,
@@ -423,8 +423,8 @@ class TestSanitizeInteractiveElement:
 
 class TestPublicExports:
     def test_expected_symbols_exported(self):
-        from src import cdp
-        from src.cdp import sanitize as _sanitize  # noqa: F401
+        from ready_ai._engine import cdp
+        from ready_ai._engine.cdp import sanitize as _sanitize  # noqa: F401
 
         for name in (
             "SanitizedHTML",

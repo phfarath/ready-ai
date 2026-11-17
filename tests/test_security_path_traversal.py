@@ -8,7 +8,7 @@ characters MUST return HTTP 422.
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from src.api.server import app, _rate_limiter
+from ready_ai._engine.api.server import app, _rate_limiter
 
 
 @pytest.fixture(autouse=True)

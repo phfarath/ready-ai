@@ -16,7 +16,7 @@ import urllib.request
 
 import pytest
 
-from src.cdp.browser import _find_chrome_binary
+from ready_ai._engine.cdp.browser import _find_chrome_binary
 from tests.fixtures.e2e_server import start_server, stop_server
 
 _SERVERS: dict[str, object] = {}

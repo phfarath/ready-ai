@@ -13,8 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import src.history as history_mod
-from src.history import RunMetrics, get_aggregates, get_history, record_run
+import ready_ai._engine.history as history_mod
+from ready_ai._engine.history import RunMetrics, get_aggregates, get_history, record_run
 
 
 def _isolate(monkeypatch, tmp_path: Path) -> Path:
@@ -92,7 +92,7 @@ def test_wal_mode(monkeypatch, tmp_path):
 
 
 def test_migration_imports_legacy_once(monkeypatch, tmp_path):
-    from src.history import get_version_history
+    from ready_ai._engine.history import get_version_history
 
     db = tmp_path / "history.db"
     legacy = tmp_path / ".history.jsonl"

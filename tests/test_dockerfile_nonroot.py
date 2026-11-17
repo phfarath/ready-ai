@@ -50,15 +50,27 @@ def test_dockerfile_creates_nonroot_user():
 # No dev extras
 # ---------------------------------------------------------------------------
 
-def test_dockerfile_does_not_install_dev_extras():
-    """No ``pip install`` line may include ``[dev]`` or any extras bracket."""
+def test_dockerfile_installs_runtime_extras_not_dev():
+    """The image installs ``[all]`` (LLM, API, MCP) and never ``[dev]``.
+
+    ``[all]`` is the runtime set the default ``ready-ai api`` command and
+    the LLM commands need. ``[dev]`` would pull pytest, ruff and mypy into
+    the production image.
+    """
     text = _read_dockerfile()
     pip_lines = [line for line in text.splitlines() if "pip install" in line]
     assert pip_lines, "Expected at least one pip install line."
+    project_installs = [
+        line for line in pip_lines if "-e " in line or "ready-ai" in line
+    ]
+    assert project_installs, "Expected a pip install of the project."
+    for line in project_installs:
+        assert "[all]" in line, (
+            f"project install must use the [all] extra: {line.strip()}"
+        )
     for line in pip_lines:
-        # Reject any extras specification like  .[dev]  or  [test]
-        assert not re.search(r"\[\w+\]", line), (
-            f"pip install line contains extras (dev deps): {line.strip()}"
+        assert "[dev]" not in line, (
+            f"pip install line installs dev extras: {line.strip()}"
         )
 
 

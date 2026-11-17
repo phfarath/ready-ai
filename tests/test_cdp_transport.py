@@ -16,7 +16,7 @@ def _hints_of(fn):
 
 
 def test_transport_protocol_exists_with_expected_members():
-    from src.cdp.transport import Transport
+    from ready_ai._engine.cdp.transport import Transport
 
     for member in (
         "send",
@@ -38,20 +38,20 @@ def test_transport_protocol_exists_with_expected_members():
 
 
 def test_connection_satisfies_transport():
-    from src.cdp.connection import CDPConnection
-    from src.cdp.transport import Transport
+    from ready_ai._engine.cdp.connection import CDPConnection
+    from ready_ai._engine.cdp.transport import Transport
 
     assert isinstance(CDPConnection(), Transport)
 
 
 def test_domains_receive_transport_not_concrete_connection():
-    from src.agent.cursor import CursorAnimator
-    from src.cdp.accessibility import AccessibilityDomain, get_ax_snapshot
-    from src.cdp.input import InputDomain
-    from src.cdp.locator import ActionValidator, Locator
-    from src.cdp.page import PageDomain
-    from src.cdp.runtime import RuntimeDomain
-    from src.cdp.transport import Transport
+    from ready_ai._engine.agent.cursor import CursorAnimator
+    from ready_ai._engine.cdp.accessibility import AccessibilityDomain, get_ax_snapshot
+    from ready_ai._engine.cdp.input import InputDomain
+    from ready_ai._engine.cdp.locator import ActionValidator, Locator
+    from ready_ai._engine.cdp.page import PageDomain
+    from ready_ai._engine.cdp.runtime import RuntimeDomain
+    from ready_ai._engine.cdp.transport import Transport
 
     for fn in (
         PageDomain.__init__,
@@ -68,7 +68,7 @@ def test_domains_receive_transport_not_concrete_connection():
 
 
 def test_stub_transport_is_accepted_where_connection_was():
-    from src.cdp.transport import Transport
+    from ready_ai._engine.cdp.transport import Transport
 
     class StubTransport:
         async def send(self, method, params=None, session_id=None, timeout=30.0):
@@ -117,5 +117,5 @@ def test_stub_transport_is_accepted_where_connection_was():
 
 
 def test_domains_never_reach_private_event_queue():
-    src = Path("src/cdp/page.py").read_text(encoding="utf-8")
+    src = Path("ready_ai/_engine/cdp/page.py").read_text(encoding="utf-8")
     assert "conn._events" not in src

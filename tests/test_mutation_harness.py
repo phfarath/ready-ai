@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from src.docs.report_html import render_healer_scorecard
+from ready_ai._engine.docs.report_html import render_healer_scorecard
 from tools.mutation_harness.mutations import load_config
 from tools.mutation_harness.runner import _evaluate_apply
 from tools.mutation_harness.scorecard import (

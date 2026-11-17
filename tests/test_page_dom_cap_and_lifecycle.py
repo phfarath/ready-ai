@@ -12,8 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
-from src.cdp.page import (
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.page import (
     DOM_MAX_CHARS_DEFAULT,
     ENV_DOM_MAX_CHARS,
     PageDomain,

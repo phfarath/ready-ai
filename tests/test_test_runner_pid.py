@@ -27,7 +27,7 @@ from PIL import Image
 
 Image.init()  # register format plugins on Windows
 
-from src.agent.test_runner import DocTestRunner
+from ready_ai._engine.agent.test_runner import DocTestRunner
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "sample_doc"
@@ -106,26 +106,26 @@ class TestRunnerRegistersChromePid:
         register_mock = MagicMock()
         unregister_mock = MagicMock()
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
              patch(
-                 "src.agent.test_runner.get_ws_url",
+                 "ready_ai._engine.agent.test_runner.get_ws_url",
                  new_callable=AsyncMock,
                  return_value="ws://localhost:9222",
              ), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor, \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor, \
              patch(
-                 "src.agent.test_runner._register_chrome_pid",
+                 "ready_ai._engine.agent.test_runner._register_chrome_pid",
                  register_mock,
                  create=True,
              ), \
              patch(
-                 "src.agent.test_runner._unregister_chrome_pid",
+                 "ready_ai._engine.agent.test_runner._unregister_chrome_pid",
                  unregister_mock,
                  create=True,
              ):
@@ -160,26 +160,26 @@ class TestRunnerRegistersChromePid:
         register_mock = MagicMock()
         unregister_mock = MagicMock()
 
-        with patch("src.agent.test_runner.launch_chrome", return_value=chrome_proc), \
+        with patch("ready_ai._engine.agent.test_runner.launch_chrome", return_value=chrome_proc), \
              patch(
-                 "src.agent.test_runner.get_ws_url",
+                 "ready_ai._engine.agent.test_runner.get_ws_url",
                  new_callable=AsyncMock,
                  return_value="ws://localhost:9222",
              ), \
-             patch("src.agent.test_runner.CDPConnection", return_value=conn), \
-             patch("src.agent.test_runner.PageDomain", return_value=page), \
-             patch("src.agent.test_runner.InputDomain", return_value=input_domain), \
-             patch("src.agent.test_runner.RuntimeDomain", return_value=runtime), \
-             patch("src.agent.test_runner.LLMClient", return_value=llm), \
-             patch("src.agent.test_runner._dom_fingerprint", dom_fp_mock), \
-             patch("src.agent.test_runner.executor") as mock_executor, \
+             patch("ready_ai._engine.agent.test_runner.CDPConnection", return_value=conn), \
+             patch("ready_ai._engine.agent.test_runner.PageDomain", return_value=page), \
+             patch("ready_ai._engine.agent.test_runner.InputDomain", return_value=input_domain), \
+             patch("ready_ai._engine.agent.test_runner.RuntimeDomain", return_value=runtime), \
+             patch("ready_ai._engine.agent.test_runner.LLMClient", return_value=llm), \
+             patch("ready_ai._engine.agent.test_runner._dom_fingerprint", dom_fp_mock), \
+             patch("ready_ai._engine.agent.test_runner.executor") as mock_executor, \
              patch(
-                 "src.agent.test_runner._register_chrome_pid",
+                 "ready_ai._engine.agent.test_runner._register_chrome_pid",
                  register_mock,
                  create=True,
              ), \
              patch(
-                 "src.agent.test_runner._unregister_chrome_pid",
+                 "ready_ai._engine.agent.test_runner._unregister_chrome_pid",
                  unregister_mock,
                  create=True,
              ):
@@ -204,16 +204,16 @@ class TestRunnerRegistersChromePid:
         unregister_mock = MagicMock()
 
         with patch(
-            "src.agent.test_runner.launch_chrome",
+            "ready_ai._engine.agent.test_runner.launch_chrome",
             return_value=MagicMock(pid=77777),
         ), \
              patch(
-                 "src.agent.test_runner._register_chrome_pid",
+                 "ready_ai._engine.agent.test_runner._register_chrome_pid",
                  register_mock,
                  create=True,
              ), \
              patch(
-                 "src.agent.test_runner._unregister_chrome_pid",
+                 "ready_ai._engine.agent.test_runner._unregister_chrome_pid",
                  unregister_mock,
                  create=True,
              ):

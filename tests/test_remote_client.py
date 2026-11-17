@@ -174,7 +174,7 @@ def test_live_health_against_real_server():
     import subprocess
     import uvicorn
 
-    from src.api.server import app
+    from ready_ai._engine.api.server import app
 
     port = _free_port()
     repo_root = str(Path(__file__).parent.parent)

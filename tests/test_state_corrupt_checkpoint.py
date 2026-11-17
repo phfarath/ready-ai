@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from src.agent.state import RunState
+from ready_ai._engine.agent.state import RunState
 
 
 class TestM9CorruptCheckpoint:
@@ -44,7 +44,7 @@ class TestM9CorruptCheckpoint:
         assert restored.run_id == "r"
 
     def test_resume_from_corrupt_fails_loud(self, tmp_path: Path):
-        from src.agent.loop import AgenticLoop
+        from ready_ai._engine.agent.loop import AgenticLoop
 
         bad = tmp_path / "bad_state.json"
         bad.write_text("{corrupted!!!")

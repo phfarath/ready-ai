@@ -41,13 +41,13 @@ WORKDIR /app
 
 # Install Python dependencies first (for layer caching)
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e "." && pip install --no-cache-dir pyyaml tomli
+RUN pip install --no-cache-dir -e '.[all]' && pip install --no-cache-dir pyyaml tomli
 
 # Copy source code
 COPY --chown=readyai:readyai . .
 
 # Install ready-ai from source
-RUN pip install --no-cache-dir -e "."
+RUN pip install --no-cache-dir -e '.[all]'
 
 # Create output directory with non-root ownership
 RUN mkdir -p /app/output && chown -R readyai:readyai /app

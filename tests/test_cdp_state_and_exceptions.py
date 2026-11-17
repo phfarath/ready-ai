@@ -1,13 +1,13 @@
 """
 Tests for the P0-1 prelude: ConnectionState enum, WebSocketDisconnected
-exception, and the env-driven tunables exported from `src.cdp`.
+exception, and the env-driven tunables exported from `ready_ai._engine.cdp`.
 
 This is a "preflight" suite: it locks the public contract of the
 state machine and the exception type so the heavier reconnect / CB
 tests in later commits can rely on them.
 
 It also re-asserts that nothing in the existing surface area was
-broken by the new exports (the `from src.cdp import ...` call-sites
+broken by the new exports (the `from ready_ai._engine.cdp import ...` call-sites
 in the project still work).
 """
 
@@ -19,13 +19,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 class TestConnectionState:
     def test_all_states_present(self):
-        from src.cdp.connection_state import ConnectionState
+        from ready_ai._engine.cdp.connection_state import ConnectionState
 
         values = {s.value for s in ConnectionState}
         assert values == {"healthy", "degraded", "down", "closed"}
 
     def test_is_terminal_helper(self):
-        from src.cdp.connection_state import ConnectionState, is_terminal
+        from ready_ai._engine.cdp.connection_state import ConnectionState, is_terminal
 
         assert is_terminal(ConnectionState.DOWN) is True
         assert is_terminal(ConnectionState.CLOSED) is True
@@ -36,7 +36,7 @@ class TestConnectionState:
         # str() on the enum must include the value so that structured
         # logs (json.dumps) get "healthy" / "down" / etc. — not the
         # qualified class name.
-        from src.cdp.connection_state import ConnectionState
+        from ready_ai._engine.cdp.connection_state import ConnectionState
 
         assert ConnectionState.HEALTHY.value == "healthy"
         assert ConnectionState.DEGRADED.value == "degraded"
@@ -58,7 +58,7 @@ class TestConnectionState:
         # Re-import the module so the env reads happen fresh.
         import importlib
 
-        from src.cdp import connection_state
+        from ready_ai._engine.cdp import connection_state
 
         importlib.reload(connection_state)
         assert connection_state.CB_THRESHOLD == 3
@@ -77,7 +77,7 @@ class TestConnectionState:
         monkeypatch.setenv("READY_AI_CDP_AUTORECONNECT", "true")
         import importlib
 
-        from src.cdp import connection_state
+        from ready_ai._engine.cdp import connection_state
 
         importlib.reload(connection_state)
         assert connection_state.CB_THRESHOLD == 7
@@ -92,13 +92,13 @@ class TestWebSocketDisconnected:
     def test_is_runtime_error_subclass(self):
         # Critical for backward compatibility: every existing
         # `except RuntimeError` in the codebase must still catch this.
-        from src.cdp.exceptions import WebSocketDisconnected
+        from ready_ai._engine.cdp.exceptions import WebSocketDisconnected
 
         assert issubclass(WebSocketDisconnected, RuntimeError)
         assert WebSocketDisconnected()  # constructible with no message
 
     def test_carries_message(self):
-        from src.cdp.exceptions import WebSocketDisconnected
+        from ready_ai._engine.cdp.exceptions import WebSocketDisconnected
 
         exc = WebSocketDisconnected("connection lost")
         assert str(exc) == "connection lost"
@@ -106,10 +106,10 @@ class TestWebSocketDisconnected:
 
 
 class TestPublicExports:
-    """Regression: nothing in `src.cdp.__init__` was broken."""
+    """Regression: nothing in `ready_ai._engine.cdp.__init__` was broken."""
 
     def test_expected_symbols_exported(self):
-        from src import cdp
+        from ready_ai._engine import cdp
 
         for name in (
             "CDPConnection",

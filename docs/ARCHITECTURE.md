@@ -6,20 +6,20 @@ Read with the code open: every section names the module that owns the behavior.
 ```
 Flow (ready_ai.models) ──► ReadyAI.run_flow ──► AgenticLoop.run_flow ──► executor ──► Transport ──► CDPConnection ──► Chrome
         ▲ validates                    │ translates to              │ asserts + extracts       ▲ Protocol        │ concrete
-        │ policy/url/timeouts          │ src.api.models.FlowSpec    ▼                          │ (REF-02)        ▼
+        │ policy/url/timeouts          │ ready_ai._engine.api.models.FlowSpec    ▼                          │ (REF-02)        ▼
         └────────────────────────── RunResult (sanitized) ◄── structured step outcomes        └── domains receive Transport, never the concrete class
 ```
 
-Layer rule (machine-checked, REF-02): `ready_ai` → `src.agent` → `src.cdp`;
-`src.cdp` and `src.llm` import nothing from the layers above (no
-`agent`/`llm`/`api`/`docs`, no `ready_ai`, no `main` — not even under
+Layer rule (machine-checked, REF-02): `ready_ai` → `ready_ai._engine.agent` → `ready_ai._engine.cdp`;
+`ready_ai._engine.cdp` and `ready_ai._engine.llm` import nothing from the layers above (no
+`agent`/`llm`/`api`/`docs`, and not the public facade or `ready_ai.cli` — not even under
 `TYPE_CHECKING`). Enforced by `.importlinter` (`lint-imports` in the CI
-`lint` job). Known exception: `src.agent.replay` imports `src.api.models`
+`lint` job). Known exception: `ready_ai._engine.agent.replay` imports `ready_ai._engine.api.models`
 at runtime (shared `FlowSpec` models).
 
 ## 1. Public boundary — `ready_ai/`
 
-The only import surface consumers need. `src.*` is an implementation detail.
+The only import surface consumers need. `ready_ai._engine.*` is an implementation detail.
 
 - `ready_ai/models.py` — serializable contract, `SCHEMA_VERSION = 1`, lenient parsing
   (`extra="ignore"`, newer `version` tolerated). `EffectPolicy`: `observe` (only
@@ -31,7 +31,7 @@ The only import surface consumers need. `src.*` is an implementation detail.
 - `ready_ai/client.py` — `ReadyAI` façade: profile allowlist registry (`None`, path
   string or `Profile`), `validate_config()` pre-flight, `run_flow()` (async) with a
   whole-run `timeout_s` budget raising `RunTimeoutError`. Translates public models onto
-  the engine's `FlowSpec` (`src/api/models.py`); credentials only ever travel as
+  the engine's `FlowSpec` (`ready_ai/_engine/api/models.py`); credentials only ever travel as
   resolved registry references. `replay_manifest()` replays a compiled
   `*_replay_manifest.json` with `allow_llm=False` (zero LLM; credential auto-login
   refused, cookies/persistent profile only).
@@ -40,7 +40,7 @@ The only import surface consumers need. `src.*` is an implementation detail.
   the observability `run_summary` shape (replay leg is zero, heal cost tracked
   separately).
 
-## 2. CDP layer — `src/cdp/`
+## 2. CDP layer — `ready_ai/_engine/cdp/`
 
 Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node relay.
 
@@ -74,7 +74,7 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
 - `accessibility.py`, `connection_state.py`, `exceptions.py` — AX tree, reconnect
   state machine, typed CDP errors (`WebSocketDisconnected` vs `RuntimeError`).
 
-## 3. Agent — `src/agent/`
+## 3. Agent — `ready_ai/_engine/agent/`
 
 - `loop.py` — `AgenticLoop`: setup → plan → execute → critique → render, with `RunState`
   checkpoints (`state.py`) resumable by `run_id`, crash recovery budget (`MAX_CRASHES`
@@ -110,21 +110,21 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
 - `test_runner.py` — `DocTestRunner`: the **docs consumer** — replays `docs.md` steps,
   diffs screenshots, heals behind the multi-causal gate. Engine stays usable without it.
 
-## 4. LLM — `src/llm/`
+## 4. LLM — `ready_ai/_engine/llm/`
 
 - `client.py` — `LLMClient` over LiteLLM (text + single/multi-image vision). Retry covers
   `RateLimitError` with backoff; broader transient retry + circuit breaker is Fase B
   work, slotted after the pivot harness proves the need.
 - `prompts.py` — planner/critic/vision prompts. `llm/` never sees raw secrets: it only
-  receives sanitized snapshots from `src/cdp/sanitize.py`.
+  receives sanitized snapshots from `ready_ai/_engine/cdp/sanitize.py`.
 
-## 5. Serving — `src/api/` + `main.py`
+## 5. Serving — `ready_ai/_engine/api/` + `ready_ai/cli.py`
 
 - `server.py` / `manager.py` — `POST /runs`, `GET /runs/{id}`, output ZIP,
   `POST /webhooks/deploy` (multi-flow on deploy), `POST /batches` + `GET /batches/{id}`;
   `RunManager` with a CDP port pool. Rate limit is in-memory (single worker);
   distributed limiting and API auth are post-pivot hardening, not pivot blockers.
-- `main.py` — CLI: `run` (agent), `test` (docs regression + `--auto-heal`), `batch`
+- `ready_ai/cli.py` — CLI: `run` (agent), `test` (docs regression + `--auto-heal`), `batch`
   (YAML/TOML multi-flow), `api`, `export` (markdown/html/llms.txt…).
 - `observability.py` — in-memory `Metrics` + `RunContext` spans (`run_summary()`)
   and the flight recorder (`capture_failure_bundle`): on terminal failure it
@@ -135,7 +135,7 @@ Raw Chrome DevTools Protocol over a single WebSocket. No WebDriver, no Node rela
 - `notify.py`, `history.py`, `versioning.py` (manifests, `manifest.json` per run),
   `mcp_server.py` — notifiers, run history, versioned doc sets, MCP exposure.
 
-## 6. Docs consumer — `src/docs/`
+## 6. Docs consumer — `ready_ai/_engine/docs/`
 
 `renderer`/`parser` (multilingual steps) → `visual_diff` + `semantic_diff` →
 `auto_healer` (**multi-causal gate**: heal only when visual drift AND DOM change agree,

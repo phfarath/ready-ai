@@ -9,7 +9,7 @@ falling back to ``"untitled"`` when the title contains no usable words.
 
 import pytest
 
-from src.docs.export import _slugify
+from ready_ai._engine.docs.export import _slugify
 
 
 class TestSlugifyFallback:
@@ -72,7 +72,7 @@ class TestSlugifyExportIntegration:
     def test_two_nonword_docusaurus_exports_have_nonempty_names(self, tmp_path):
         """Each non-word-title doc gets a real (non-empty) filename instead
         of a literal ``.md`` collision."""
-        from src.docs.export import _export_docusaurus
+        from ready_ai._engine.docs.export import _export_docusaurus
 
         doc_a = self._write_doc(tmp_path / "a", "🎉🎉🎉")
         doc_b = self._write_doc(tmp_path / "b", "🎊🎊🎊")

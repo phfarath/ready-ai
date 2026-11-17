@@ -102,7 +102,7 @@ def test_workflow_yaml_parses_without_error():
 def test_workflow_only_references_existing_doctest_report_fields(field):
     """Smoke-check that the JS metrics block only reads keys that
     DocTestReport.to_dict() actually produces."""
-    from src.agent.test_runner import DocTestReport
+    from ready_ai._engine.agent.test_runner import DocTestReport
 
     sample = DocTestReport(
         doc_path="x",

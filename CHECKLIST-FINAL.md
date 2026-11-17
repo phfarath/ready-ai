@@ -133,7 +133,7 @@ jobs:
 
       - name: Install ready-ai
         run: |
-          pip install ready-ai
+          pip install 'ready-ai[all]'
           sudo apt-get update && sudo apt-get install -y chromium-browser
 
       - name: Generate docs
@@ -180,7 +180,7 @@ jobs:
 
       - name: Install ready-ai
         run: |
-          pip install ready-ai
+          pip install 'ready-ai[all]'
           sudo apt-get update && sudo apt-get install -y chromium-browser
 
       - name: Download baseline

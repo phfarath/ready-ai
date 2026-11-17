@@ -24,7 +24,7 @@ import json
 import logging
 from pathlib import Path
 
-from src.api.models import BatchConfig, BatchConfigFlow, FlowSpec
+from ready_ai._engine.api.models import BatchConfig, BatchConfigFlow, FlowSpec
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 """Tests for the manifest module (src/docs/manifest.py)."""
 
 from pathlib import Path
-from src.docs.manifest import DocManifest, create_manifest
+from ready_ai._engine.docs.manifest import DocManifest, create_manifest
 
 
 class TestDocManifest:

@@ -13,8 +13,8 @@ import socket
 
 import pytest
 
-from src.agent.loop import AgenticLoop
-from src.agent.replay import (
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.agent.replay import (
     REPLAY_MANIFEST_KIND,
     REPLAY_MANIFEST_VERSION,
     compile_manifest,
@@ -22,7 +22,7 @@ from src.agent.replay import (
     read_manifest,
     write_manifest,
 )
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 pytestmark = pytest.mark.e2e
 
@@ -78,7 +78,7 @@ async def test_compile_and_replay_zero_llm(e2e_server, tmp_path, cdp_port):
     def _boom(*args, **kwargs):
         raise AssertionError("LLM must never be constructed during replay")
 
-    import src.llm.client as llm_client_module
+    import ready_ai._engine.llm.client as llm_client_module
 
     _original = llm_client_module.LLMClient
     llm_client_module.LLMClient = _boom

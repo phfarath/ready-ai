@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.agent.loop import AgenticLoop
+from ready_ai._engine.agent.loop import AgenticLoop
 
 pytestmark = pytest.mark.e2e
 

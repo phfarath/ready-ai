@@ -11,8 +11,43 @@ releases are fixes only. Within the public SDK surface
 the exception taxonomy), a breaking change — removal, signature change
 or semantic change of a documented name — first appears as a
 deprecation: the old name keeps working for at least one minor release
-and is announced in this changelog. Internal modules (`src.*`) are not
+and is announced in this changelog. Internal modules (`ready_ai._engine.*`) are not
 covered by this policy; consumers must not import them.
+
+## v0.9.0 — 2026-11-16 — Package layout (breaking)
+
+The wheel no longer installs top-level `src` or `main`. Those names
+collided with the repositories this tool runs inside. Runtime behavior
+of the public SDK and of the `ready-ai` command is unchanged when the
+matching extras are installed. Nothing in this release is published
+and no git tag is cut here.
+
+### Breaking changes
+
+| Before | After |
+| --- | --- |
+| `import src...` / `from src.agent.loop import AgenticLoop` | `ready_ai._engine` is internal. Use `from ready_ai import ReadyAI`. Engine modules, if you must, live at `ready_ai._engine.*` (not a stable API). |
+| `import main` / `python main.py` / `python -m main` | `ready-ai` or `python -m ready_ai` (`ready_ai.cli:cli`) |
+| Entry point `ready-ai = main:cli` | `ready-ai = ready_ai.cli:cli` |
+| `litellm` always installed | `pip install 'ready-ai[llm]'` (`litellm>=1.84.0,<2`, `openai>=2.20.0,<3`) |
+| FastAPI only via `[api]` (unchanged) | `[api]` still FastAPI + uvicorn |
+| MCP server had no extra | `pip install 'ready-ai[mcp]'` (stdlib server, no third-party deps) then `python -m ready_ai._engine.mcp_server` |
+| one requirement set | `[all]` = `[llm]` + `[api]` + `[mcp]` |
+
+Commands that call the model (`run`, `test`, `batch`, and `run-flow`
+credential auto-login) exit with
+`pip install 'ready-ai[llm]'` when that extra is missing. `ready-ai
+--help`, declarative `run-flow`, and `--replay-manifest` work from a
+base install.
+
+Development Status classifier is **3 - Alpha**.
+
+The Docker image installs `.[all]`, and the published install lines
+(composite action, docs-generation workflow, and the CI snippets in
+the docs) use `ready-ai[all]`. That keeps the LLM commands and the
+`ready-ai api` entrypoint working after LiteLLM and FastAPI moved to
+extras. A bare `pip install` of the wheel is still the supported path
+for replay without those extras.
 
 ## v0.8.0 — 2026-10-21 — Remote run + SQLite history + CLI hardening (minor)
 
@@ -91,7 +126,7 @@ covered by this policy; consumers must not import them.
   `start()` + `RunHandle` (ordered `RunEvent` stream, cooperative
   `cancel()`, `done`), and `resume(run_id)` for human checkpoints —
   all behind typed public exceptions (`ReadyAIError` family); no
-  `src.*` import is ever needed on the consumer side.
+  `ready_ai._engine.*` import is ever needed on the consumer side.
 - Distribution contract: wheel ships `ready_ai` + PEP 561 `py.typed`
   and full metadata (readme, MIT license, classifiers, project URLs);
   strict `mypy` gates `ready_ai` + `examples/` on Python 3.10/3.11/3.12;

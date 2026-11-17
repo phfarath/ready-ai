@@ -12,7 +12,7 @@ These tests perform:
    required by the validation contract) using AST parsing to distinguish
    top-level imports from nested (in-method) imports.
 2. **Namespace check** confirming the ``random`` module is bound as a
-   module-level attribute of ``src.cdp.connection``.
+   module-level attribute of ``ready_ai._engine.cdp.connection``.
 3. **Behavioural check** that ``_reconnect`` still computes a jittered
    backoff delay (the consumer of ``random.uniform``) so the reconnect
    loop remains functional.
@@ -27,7 +27,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-CONN_FILE = Path(__file__).parent.parent / "src" / "cdp" / "connection.py"
+CONN_FILE = Path(__file__).parent.parent / "ready_ai" / "_engine" / "cdp" / "connection.py"
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +87,10 @@ def test_no_random_import_inside_methods():
 
 def test_random_is_module_attribute():
     """The ``random`` module must be bound as a top-level attribute."""
-    import src.cdp.connection as conn_mod
+    import ready_ai._engine.cdp.connection as conn_mod
 
     assert hasattr(conn_mod, "random"), (
-        "src.cdp.connection must expose 'random' as a module-level attribute"
+        "ready_ai._engine.cdp.connection must expose 'random' as a module-level attribute"
     )
 
 
@@ -115,18 +115,18 @@ async def test_reconnect_still_uses_random_for_jitter():
     the jitter mechanics themselves are verified in
     ``test_cdp_reconnect_loop.py``.
     """
-    from src.observability import init_run_context
+    from ready_ai._engine.observability import init_run_context
 
     init_run_context("test-random-top-level-jitter")
 
-    from src.cdp.connection import CDPConnection
-    from src.cdp.connection_state import ConnectionState
+    from ready_ai._engine.cdp.connection import CDPConnection
+    from ready_ai._engine.cdp.connection_state import ConnectionState
 
     async def always_fail(*args, **kwargs):
         raise RuntimeError("network down")
 
-    with patch("src.cdp.connection.websockets.connect", new=always_fail), \
-         patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+    with patch("ready_ai._engine.cdp.connection.websockets.connect", new=always_fail), \
+         patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()) as sleep_mock:
         conn = CDPConnection()
         conn._ws_url = "ws://test"
         conn._state = ConnectionState.DEGRADED

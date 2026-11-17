@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agent.executor import _parse_expectations, _verify_expectations, execute_step
+from ready_ai._engine.agent.executor import _parse_expectations, _verify_expectations, execute_step
 
 
 def test_parse_typed_expectations():
@@ -42,8 +42,8 @@ async def test_executor_rejects_http_500_even_when_ui_changed():
     runtime.get_interactive_elements = AsyncMock(return_value="[]")
     input_domain = MagicMock()
     llm = MagicMock()
-    with patch("src.agent.executor._get_action", AsyncMock(return_value={"action": "observe"})), patch(
-        "src.agent.executor._dispatch_action", AsyncMock(return_value="Observed UI changed")
+    with patch("ready_ai._engine.agent.executor._get_action", AsyncMock(return_value={"action": "observe"})), patch(
+        "ready_ai._engine.agent.executor._dispatch_action", AsyncMock(return_value="Observed UI changed")
     ):
         result = await execute_step("save", "<html></html>", "[]", llm, page, input_domain, runtime)
     assert result.success is False

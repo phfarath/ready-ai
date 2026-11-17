@@ -6,8 +6,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from src.agent.test_runner import DocTestReport, StepTestResult
-from src.docs.report_html import render_html_report
+from ready_ai._engine.agent.test_runner import DocTestReport, StepTestResult
+from ready_ai._engine.docs.report_html import render_html_report
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="

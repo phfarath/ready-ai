@@ -51,7 +51,7 @@ async def test_describe_visual_change_returns_str_with_e2e_mock():
     llm must yield a ``str`` (not a stray coroutine object)."""
     from pathlib import Path
 
-    from src.docs.semantic_diff import describe_visual_change
+    from ready_ai._engine.docs.semantic_diff import describe_visual_change
 
     fixture = Path(__file__).parent / "fixtures" / "sample_doc" / "screenshots" / "step_01.png"
 
