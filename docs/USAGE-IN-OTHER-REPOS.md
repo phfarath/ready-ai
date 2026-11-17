@@ -20,7 +20,7 @@ Este guia explica como usar o `ready-ai` para documentar automaticamente a sua a
 │  │ docs-generation   │    │  flows)          │                   │
 │  └──────────────────┘    └──────────────────┘                   │
 │         │                                                     │
-│         │ pip install ready-ai  (do PyPI)                     │
+│         │ pip install 'ready-ai[all]'  (do PyPI)              │
 │         ▼                                                     │
 │  ┌─────────────────────────────────────────┐                  │
 │  │  ready-ai test|run|batch|export          │                  │
@@ -100,7 +100,7 @@ jobs:
 
       - name: Install ready-ai
         run: |
-          pip install ready-ai
+          pip install 'ready-ai[all]'
           sudo apt-get update && sudo apt-get install -y chromium-browser
 
       - name: Download baseline
@@ -157,7 +157,7 @@ jobs:
 
       - name: Install ready-ai
         run: |
-          pip install ready-ai
+          pip install 'ready-ai[all]'
           sudo apt-get update && sudo apt-get install -y chromium-browser
 
       - name: Run batch
@@ -228,10 +228,10 @@ No seu repositório de aplicação, vá em **Settings → Secrets and variables 
 
 ## 💡 Dica: Usar sem PyPI (instalar do GitHub)
 
-Se não quiser publicar no PyPI, substitua `pip install ready-ai` por:
+Se não quiser publicar no PyPI, substitua `pip install 'ready-ai[all]'` por:
 
 ```bash
-pip install git+https://github.com/pedro/ready-ai.git
+pip install 'ready-ai[all] @ git+https://github.com/pedro/ready-ai.git'
 ```
 
 Ou use a **composite action** (copie `.github/actions/ready-ai/action.yml` do repo do ready-ai).

@@ -42,6 +42,13 @@ base install.
 
 Development Status classifier is **3 - Alpha**.
 
+The Docker image installs `.[all]`, and the published install lines
+(composite action, docs-generation workflow, and the CI snippets in
+the docs) use `ready-ai[all]`. That keeps the LLM commands and the
+`ready-ai api` entrypoint working after LiteLLM and FastAPI moved to
+extras. A bare `pip install` of the wheel is still the supported path
+for replay without those extras.
+
 ## v0.8.0 — 2026-10-21 — Remote run + SQLite history + CLI hardening (minor)
 
 - API expansion B parte 2 (PR #68): modelos remotos tipados

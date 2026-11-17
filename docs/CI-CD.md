@@ -122,7 +122,7 @@ ENV CHROME_PATH=/usr/bin/chromium
 # Install ready-ai
 WORKDIR /app
 COPY pyproject.toml ./
-RUN pip install ready-ai
+RUN pip install 'ready-ai[all]'
 
 # Copy batch config
 COPY .ready-ai.yaml ./
