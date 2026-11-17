@@ -19,14 +19,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
-from src.cdp.connection_state import (
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection_state import (
     RECONNECT_BASE_S,
     RECONNECT_CAP_S,
     RECONNECT_MAX_ATTEMPTS,
     ConnectionState,
 )
-from src.cdp.exceptions import CircuitOpenError, WebSocketDisconnected
+from ready_ai._engine.cdp.exceptions import CircuitOpenError, WebSocketDisconnected
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ class TestReconnectHappyPath:
         #   - one success metric
         #   - state back to HEALTHY
         #   - abort_wait cleared
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-c3-happy")
 
@@ -90,8 +90,8 @@ class TestReconnectHappyPath:
         # Mock out the post-reconnect re-attach so the test focuses
         # on the loop's backoff/state machine, not on re-attach
         # details (those have their own test class).
-        with patch("src.cdp.connection.websockets.connect", new=fake_connect), \
-             patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()) as sleep_mock, \
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=fake_connect), \
+             patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()) as sleep_mock, \
              patch.object(CDPConnection, "_post_reconnect_reattach", new=AsyncMock()):
             conn = CDPConnection()
             conn._ws_url = "ws://test"
@@ -141,15 +141,15 @@ class TestReconnectHappyPath:
 class TestReconnectExhaustion:
     @pytest.mark.asyncio
     async def test_exhaustion_opens_circuit(self):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-c3-exhaust")
 
         async def always_fail(*args, **kwargs):
             raise RuntimeError("network down")
 
-        with patch("src.cdp.connection.websockets.connect", new=always_fail):
-            with patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()):
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=always_fail):
+            with patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()):
                 conn = CDPConnection()
                 conn._ws_url = "ws://test"
                 conn._state = ConnectionState.DEGRADED
@@ -172,7 +172,7 @@ class TestReconnectAborted:
         # If the orchestrator closes the connection mid-backoff, the
         # reconnect should stop trying on the next iteration rather
         # than dial Chrome after the orchestrator gave up.
-        with patch("src.cdp.connection.asyncio.sleep") as sleep_mock:
+        with patch("ready_ai._engine.cdp.connection.asyncio.sleep") as sleep_mock:
             # Make sleep also flip the state to CLOSED so the loop
             # sees the cancellation in its next iteration.
             async def close_during_sleep(_):
@@ -207,7 +207,7 @@ class TestReconnectReattach:
                 return {}
             return {}
 
-        with patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()):
+        with patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()):
             conn = CDPConnection()
             conn._ws = ws
             conn._ws_url = "ws://test"
@@ -215,7 +215,7 @@ class TestReconnectReattach:
             conn._state = ConnectionState.DEGRADED
             conn.send = fake_send  # type: ignore[assignment]
             with patch(
-                "src.cdp.page.register_cursor_script", new=AsyncMock()
+                "ready_ai._engine.cdp.page.register_cursor_script", new=AsyncMock()
             ):
                 # The auto-attach event itself doesn't need to be in
                 # the queue; the recv loop would deliver it. For
@@ -239,7 +239,7 @@ class TestReconnectReattach:
                 return {"sessionId": "manual-session"}
             return {}
 
-        with patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()):
+        with patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()):
             conn = CDPConnection()
             conn._ws = _ws_mock()
             conn._ws_url = "ws://test"
@@ -248,7 +248,7 @@ class TestReconnectReattach:
             conn.send = fake_send  # type: ignore[assignment]
 
             with patch(
-                "src.cdp.page.register_cursor_script", new=AsyncMock()
+                "ready_ai._engine.cdp.page.register_cursor_script", new=AsyncMock()
             ):
                 await conn._post_reconnect_reattach()
 
@@ -262,7 +262,7 @@ class TestReconnectReattach:
         # No auto-attach, no cached target_id → no session_id →
         # RuntimeError so the reconnect loop counts the attempt as
         # a failure.
-        with patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()):
+        with patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()):
             conn = CDPConnection()
             conn._ws = _ws_mock()
             conn._ws_url = "ws://test"
@@ -277,15 +277,15 @@ class TestBackoffGrowsAndCaps:
         # Patch websockets.connect to always fail, capture sleep
         # delays, and assert they form a doubling sequence that
         # saturates at RECONNECT_CAP_S.
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-c3-backoff")
 
         async def always_fail(*args, **kwargs):
             raise RuntimeError("nope")
 
-        with patch("src.cdp.connection.websockets.connect", new=always_fail):
-            with patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=always_fail):
+            with patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()) as sleep_mock:
                 conn = CDPConnection()
                 conn._ws_url = "ws://test"
                 conn._state = ConnectionState.DEGRADED
@@ -352,9 +352,9 @@ class TestReconnectTaskLifecycle:
         # The reconnect scheduler in `_handle_disconnect` is gated by
         # the module-level AUTORECONNECT_ENABLED flag; patch it
         # directly to keep the test hermetic (no env/reload dance).
-        with patch("src.cdp.connection.AUTORECONNECT_ENABLED", True), \
-             patch("src.cdp.connection.websockets.connect", new=fake_connect), \
-             patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()), \
+        with patch("ready_ai._engine.cdp.connection.AUTORECONNECT_ENABLED", True), \
+             patch("ready_ai._engine.cdp.connection.websockets.connect", new=fake_connect), \
+             patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()), \
              patch.object(
                  CDPConnection, "_post_reconnect_reattach", new=AsyncMock()
              ):

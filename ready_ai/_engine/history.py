@@ -8,7 +8,7 @@ get_version_history. First connection migrates a legacy
 ./output/.history.jsonl once (then renames it to .migrated).
 
 Usage:
-    from src.history import record_run, get_history
+    from ready_ai._engine.history import record_run, get_history
     record_run(RunMetrics(run_id="abc", goal="g", url="u", status="passed"))
     recent = get_history(limit=10)
 """

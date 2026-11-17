@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.browser_session import (  # noqa: E402
+from ready_ai._engine.agent.browser_session import (  # noqa: E402
     BrowserSession,
     _CHROME_PIDS,
     _kill_all_orphan_chrome,
@@ -56,9 +56,9 @@ class TestTeardownWindowsSafe:
         mocker.patch("sys.platform", "linux")
         # signal.SIGKILL does not exist on Windows; create it for the test
         mocker.patch.object(signal, "SIGKILL", 9, create=True)
-        mock_kill = mocker.patch("src.agent.browser_session.os.kill")
+        mock_kill = mocker.patch("ready_ai._engine.agent.browser_session.os.kill")
         mocker.patch(
-            "src.agent.browser_session.kill_process_tree", return_value=False
+            "ready_ai._engine.agent.browser_session.kill_process_tree", return_value=False
         )
 
         bs = BrowserSession()
@@ -84,7 +84,7 @@ class TestAtexitHandlerWindowsSafe:
     def test_windows_atexit_no_crash(self, mocker):
         """The atexit handler completes without crash on Windows."""
         mocker.patch("sys.platform", "win32")
-        mock_kill = mocker.patch("src.agent.browser_session.os.kill")
+        mock_kill = mocker.patch("ready_ai._engine.agent.browser_session.os.kill")
 
         _CHROME_PIDS.add(999999)
         try:
@@ -102,9 +102,9 @@ class TestAtexitHandlerWindowsSafe:
         """On POSIX, the atexit handler uses signal.SIGKILL."""
         mocker.patch("sys.platform", "linux")
         mocker.patch.object(signal, "SIGKILL", 9, create=True)
-        mock_kill = mocker.patch("src.agent.browser_session.os.kill")
+        mock_kill = mocker.patch("ready_ai._engine.agent.browser_session.os.kill")
         mocker.patch(
-            "src.agent.browser_session.kill_process_tree", return_value=False
+            "ready_ai._engine.agent.browser_session.kill_process_tree", return_value=False
         )
 
         _CHROME_PIDS.add(777777)
@@ -119,7 +119,7 @@ class TestAtexitHandlerWindowsSafe:
     def test_atexit_resilient_to_oserror(self, mocker):
         """The atexit handler does not propagate OSError/AttributeError."""
         mocker.patch(
-            "src.agent.browser_session.os.kill",
+            "ready_ai._engine.agent.browser_session.os.kill",
             side_effect=ProcessLookupError("no such process"),
         )
 

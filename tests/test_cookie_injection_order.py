@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.loop import AgenticLoop
+from ready_ai._engine.agent.loop import AgenticLoop
 
 
 def _new_loop(tmp_path, cookies_file=None, username=None, password=None) -> AgenticLoop:
@@ -66,7 +66,7 @@ def _short_circuit_pipeline(loop: AgenticLoop, monkeypatch):
     monkeypatch.setattr(loop, "_resolve_steps", AsyncMock(return_value=["Step 1"]))
     monkeypatch.setattr(loop, "_execute_steps", AsyncMock(return_value=[]))
     monkeypatch.setattr(loop, "_critic_loop", AsyncMock())
-    monkeypatch.setattr("src.agent.loop.save_docs", lambda *a, **k: "out.md")
+    monkeypatch.setattr("ready_ai._engine.agent.loop.save_docs", lambda *a, **k: "out.md")
     monkeypatch.setattr(loop, "_cursor", _make_stub_cursor())
 
 
@@ -83,7 +83,7 @@ class TestCookieInjectionOrder:
     async def test_navigate_before_inject_cookies(self, tmp_path, monkeypatch):
         """With a cookies file, Page.navigate MUST be called before
         Network.setCookie (inject_cookies)."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-cookie-order-navigate-first")
 
@@ -107,7 +107,7 @@ class TestCookieInjectionOrder:
     async def test_at_least_one_inject_after_navigate(self, tmp_path, monkeypatch):
         """With a cookies file, at least one inject_cookies call is issued
         after the first navigate."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-cookie-order-at-least-one")
 
@@ -132,7 +132,7 @@ class TestCookieInjectionOrder:
     async def test_no_inject_cookies_without_file(self, tmp_path, monkeypatch):
         """Without a cookies file, no Network.setCookie (inject_cookies)
         is issued."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-cookie-order-no-file")
 
@@ -153,7 +153,7 @@ class TestCookieInjectionOrder:
     async def test_navigate_before_inject_with_credentials(self, tmp_path, monkeypatch):
         """When both cookies and credentials are present, navigate still
         happens before inject_cookies."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-cookie-order-with-creds")
 

@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent.browser_session import BrowserSession
+from ready_ai._engine.agent.browser_session import BrowserSession
 
 
 def _stubbed_launch(monkeypatch, tmp_path):
@@ -31,10 +31,10 @@ def _stubbed_launch(monkeypatch, tmp_path):
         return proc
 
     monkeypatch.setattr(
-        "src.agent.browser_session.launch_chrome", fake_launch_chrome
+        "ready_ai._engine.agent.browser_session.launch_chrome", fake_launch_chrome
     )
     monkeypatch.setattr(
-        "src.agent.browser_session.get_ws_url",
+        "ready_ai._engine.agent.browser_session.get_ws_url",
         AsyncMock(return_value="ws://127.0.0.1:9222/devtools/browser/x"),
     )
     conn = MagicMock()
@@ -45,7 +45,7 @@ def _stubbed_launch(monkeypatch, tmp_path):
     conn.reconnecting = False
     conn.state = MagicMock(value="UP")
     monkeypatch.setattr(
-        "src.agent.browser_session.CDPConnection", MagicMock(return_value=conn)
+        "ready_ai._engine.agent.browser_session.CDPConnection", MagicMock(return_value=conn)
     )
     return seen
 

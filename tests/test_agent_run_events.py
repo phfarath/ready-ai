@@ -12,11 +12,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent import executor as executor_module  # noqa: F401  (patch target)
-from src.agent.loop import AgenticLoop
-from src.agent.state import RunState
-from src.api.models import FlowAction, FlowSpec, FlowStepSpec
-from src.cdp.exceptions import RunPolicyError
+from ready_ai._engine.agent import executor as executor_module  # noqa: F401  (patch target)
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.agent.state import RunState
+from ready_ai._engine.api.models import FlowAction, FlowSpec, FlowStepSpec
+from ready_ai._engine.cdp.exceptions import RunPolicyError
 
 
 def _flow(steps, *, retries=0, run_id="evt-1"):
@@ -76,7 +76,7 @@ def _make_loop(tmp_path, run_id="evt-1"):
 
 async def test_events_emit_in_order_with_monotonic_seq(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
     loop, _page, _runtime = _make_loop(tmp_path)
@@ -102,7 +102,7 @@ async def test_retry_event_between_step_started_and_finished(tmp_path, monkeypat
             "Navigated to: https://app.example.com/done",
         ]
     )
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _page, _runtime = _make_loop(tmp_path)
     events: list[dict] = []
     loop.set_event_sink(events.append)
@@ -124,7 +124,7 @@ async def test_retry_event_between_step_started_and_finished(tmp_path, monkeypat
 
 async def test_sink_errors_never_break_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
     loop, _page, _runtime = _make_loop(tmp_path)
@@ -139,7 +139,7 @@ async def test_sink_errors_never_break_the_run(tmp_path, monkeypatch):
 
 async def test_cancel_before_any_step_skips_everything(tmp_path, monkeypatch):
     dispatch = AsyncMock(return_value="Navigated to: https://app.example.com/done")
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _page, _runtime = _make_loop(tmp_path)
     events: list[dict] = []
     loop.set_event_sink(events.append)
@@ -168,7 +168,7 @@ async def test_cancel_mid_run_stops_at_step_boundary(tmp_path, monkeypatch):
         loop.request_cancel()
         return "Navigated to: https://app.example.com/done"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     result = await loop.run_flow(
         _flow([_navigate_step("A"), _navigate_step("B"), _navigate_step("C")])
     )
@@ -189,7 +189,7 @@ async def test_cancel_between_retry_attempts_aborts_action(tmp_path, monkeypatch
         loop.request_cancel()
         return "[Failed] Element not found: #x"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     flow = _flow(
         [
             FlowStepSpec(
@@ -228,7 +228,7 @@ async def test_checkpoint_events_on_pause_and_resume(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
     loop, _page, _runtime = _make_loop(tmp_path, run_id="sso-run")
@@ -258,7 +258,7 @@ async def test_checkpoint_events_on_pause_and_resume(tmp_path, monkeypatch):
     loop2.set_event_sink(events2.append)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
     result2 = await loop2.run_flow(flow)
@@ -293,7 +293,7 @@ async def test_paused_checkpoint_out_of_range_index_is_policy_error(tmp_path):
 async def test_cancel_writes_no_failure_bundle(tmp_path, monkeypatch):
     """Cancel is operator intent — no flight-recorder bundle on disk."""
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
     loop, _page, _runtime = _make_loop(tmp_path)
@@ -329,7 +329,7 @@ async def test_resume_blocked_reports_honest_skip_reason(
     events: list[dict] = []
     loop.set_event_sink(events.append)
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
 

@@ -17,9 +17,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
-from src.cdp.connection_state import ConnectionState
-from src.cdp.exceptions import WebSocketDisconnected
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection_state import ConnectionState
+from ready_ai._engine.cdp.exceptions import WebSocketDisconnected
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class TestNativePingHeartbeat:
         # The heartbeat is delegated to the websockets library via
         # ping_interval/ping_timeout. We don't have a real Chrome,
         # so patch `websockets.connect` and assert the kwargs.
-        with patch("src.cdp.connection.websockets.connect", new=AsyncMock(return_value=_make_ws())) as mocked:
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=AsyncMock(return_value=_make_ws())) as mocked:
             conn = CDPConnection()
             await conn.connect("ws://localhost:9222/devtools/browser/abc")
             kwargs = mocked.await_args.kwargs
@@ -62,7 +62,7 @@ class TestNativePingHeartbeat:
 
     @pytest.mark.asyncio
     async def test_connect_caches_ws_url(self):
-        with patch("src.cdp.connection.websockets.connect", new=AsyncMock(return_value=_make_ws())):
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=AsyncMock(return_value=_make_ws())):
             conn = CDPConnection()
             await conn.connect("ws://localhost:9222/devtools/browser/xyz")
             assert conn._ws_url == "ws://localhost:9222/devtools/browser/xyz"
@@ -231,7 +231,7 @@ class TestCloseAbortsInFlight:
 class TestMetricIncrement:
     @pytest.mark.asyncio
     async def test_disconnect_increments_counter(self):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-c2")
         conn = CDPConnection()

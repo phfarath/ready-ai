@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent.loop import AgenticLoop
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
-from src.cdp.connection import CDPEventContext, _history_safe_event
-from src.cdp.page import PassiveEvidence
-from src.observability import (
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.cdp.connection import CDPEventContext, _history_safe_event
+from ready_ai._engine.cdp.page import PassiveEvidence
+from ready_ai._engine.observability import (
     FlightRecorderConfig,
     capture_failure_bundle,
 )
@@ -125,7 +125,7 @@ async def test_flow_failure_writes_bundle_correlated_to_run_and_step(
     """DoD1 — terminal step failure produces a bundle keyed by run+step."""
     loop, page, runtime, _ = _make_loop(tmp_path)
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/confirm"),
     )
     runtime.evaluate.side_effect = lambda expression, **_: (
@@ -157,7 +157,7 @@ async def test_bundle_is_diagnosable_without_rerun(tmp_path, monkeypatch):
     """DoD5 — the bundle alone explains the failure (no re-execution)."""
     loop, page, runtime, _ = _make_loop(tmp_path)
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/confirm"),
     )
     runtime.evaluate.side_effect = lambda expression, **_: (
@@ -215,7 +215,7 @@ async def test_no_bundle_on_success(tmp_path, monkeypatch):
     """A passing run must not produce a failure bundle."""
     loop, _, runtime, _ = _make_loop(tmp_path)
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/done"),
     )
     runtime.evaluate.side_effect = lambda expression, **_: (
@@ -517,7 +517,7 @@ async def test_screenshot_cap_omits_oversized_capture(tmp_path):
 async def test_enable_sends_diagnostic_domains_on_primary_session():
     """Regression — Runtime/Log must be enabled on the primary session or
     ``bundle['console']`` stays empty forever in production."""
-    from src.cdp.page import PageDomain
+    from ready_ai._engine.cdp.page import PageDomain
 
     conn = MagicMock()
     conn.send = AsyncMock(return_value={})
@@ -538,7 +538,7 @@ async def test_pending_confirmation_is_not_labeled_failed(
     """A run parked on a confirmation gate is not a FAILED run."""
     loop, page, runtime, _ = _make_loop(tmp_path)
     dispatch = AsyncMock(return_value="should not run")
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     flow = FlowSpec(
         name="guarded",
         url="https://app.example.com/start",
@@ -623,7 +623,7 @@ async def test_recorder_failure_does_not_mask_original_exception(
         side_effect=RuntimeError("original-boom")
     )
     monkeypatch.setattr(
-        "src.agent.loop.capture_failure_bundle",
+        "ready_ai._engine.agent.loop.capture_failure_bundle",
         AsyncMock(side_effect=RuntimeError("recorder-boom")),
     )
 

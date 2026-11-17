@@ -12,14 +12,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agent.cursor import extract_selector
-from src.cdp.connection import CDPConnection
+from ready_ai._engine.agent.cursor import extract_selector
+from ready_ai._engine.cdp.connection import CDPConnection
 
 
 class TestM15CleanupUsesWait:
     @pytest.mark.asyncio
     async def test_cleanup_waits_gracefully_without_poll_sleep(self):
-        from src.agent.test_runner import DocTestRunner
+        from ready_ai._engine.agent.test_runner import DocTestRunner
 
         proc = MagicMock()
         proc.pid = 12345
@@ -34,7 +34,7 @@ class TestM15CleanupUsesWait:
         runner._chrome_proc = proc
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock, patch(
-            "src.agent.test_runner._unregister_chrome_pid"
+            "ready_ai._engine.agent.test_runner._unregister_chrome_pid"
         ):
             await runner._cleanup()
 
@@ -46,7 +46,7 @@ class TestM15CleanupUsesWait:
     async def test_cleanup_kills_when_graceful_wait_fails(self):
         import subprocess
 
-        from src.agent.test_runner import DocTestRunner
+        from ready_ai._engine.agent.test_runner import DocTestRunner
 
         proc = MagicMock()
         proc.pid = 12345
@@ -60,7 +60,7 @@ class TestM15CleanupUsesWait:
         runner._conn = None
         runner._chrome_proc = proc
 
-        with patch("src.agent.test_runner._unregister_chrome_pid"):
+        with patch("ready_ai._engine.agent.test_runner._unregister_chrome_pid"):
             await runner._cleanup()
 
         proc.kill.assert_called_once()
@@ -77,7 +77,7 @@ class TestM10CloseSeparatesCancelledVsError:
 
         conn._reconnect_task = asyncio.ensure_future(_raise())
         await asyncio.sleep(0)
-        with patch("src.cdp.connection.logger") as log_mock:
+        with patch("ready_ai._engine.cdp.connection.logger") as log_mock:
             await conn.close()
         assert log_mock.warning.called or log_mock.error.called or log_mock.exception.called
 
@@ -90,7 +90,7 @@ class TestM10CloseSeparatesCancelledVsError:
 
         conn._reconnect_task = asyncio.ensure_future(_cancelled())
         await asyncio.sleep(0)
-        with patch("src.cdp.connection.logger") as log_mock:
+        with patch("ready_ai._engine.cdp.connection.logger") as log_mock:
             await conn.close()
         for call_name in ("error", "exception"):
             assert not getattr(log_mock, call_name).called
@@ -107,7 +107,7 @@ class TestH8PublicIsAlive:
         assert conn.is_alive is True
 
     def test_is_alive_false_when_terminal(self):
-        from src.cdp.connection_state import ConnectionState
+        from ready_ai._engine.cdp.connection_state import ConnectionState
 
         conn = CDPConnection()
         conn._ws = MagicMock()
@@ -119,7 +119,7 @@ class TestH8PublicIsAlive:
     def test_cursor_loop_does_not_touch_private_ws(self):
         import inspect
 
-        from src.agent import cursor as cursor_mod
+        from ready_ai._engine.agent import cursor as cursor_mod
 
         src = inspect.getsource(cursor_mod.CursorAnimator._loop)
         assert "._ws" not in src
@@ -151,7 +151,7 @@ class TestM5ExtractSelectorClickText:
 class TestR6PressKeyAllowlist:
     @pytest.mark.asyncio
     async def test_valid_key_dispatched(self):
-        from src.agent import executor
+        from ready_ai._engine.agent import executor
 
         page = MagicMock()
         runtime = MagicMock()
@@ -165,7 +165,7 @@ class TestR6PressKeyAllowlist:
 
     @pytest.mark.asyncio
     async def test_invalid_key_rejected_without_cdp_call(self):
-        from src.agent import executor
+        from ready_ai._engine.agent import executor
 
         page = MagicMock()
         runtime = MagicMock()
@@ -182,7 +182,7 @@ class TestR6PressKeyAllowlist:
 
     @pytest.mark.asyncio
     async def test_missing_key_rejected(self):
-        from src.agent import executor
+        from ready_ai._engine.agent import executor
 
         page = MagicMock()
         runtime = MagicMock()

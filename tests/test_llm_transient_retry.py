@@ -18,14 +18,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.llm.client import MAX_LLM_RETRIES, LLMClient  # noqa: E402
-from src.llm import client as _client_mod  # noqa: E402
+from ready_ai._engine.llm.client import MAX_LLM_RETRIES, LLMClient  # noqa: E402
+from ready_ai._engine.llm import client as _client_mod  # noqa: E402
 
 # IMPORTANT: reference exception classes through the litellm module that
 # client.py captured at its own import time. Another test module
 # (test_api_batch) replaces sys.modules["litellm"] with a MagicMock at
 # collection time, so a bare `import litellm.exceptions` would yield mock
-# objects. client.py is imported early (via src.agent.planner in
+# objects. client.py is imported early (via ready_ai._engine.agent.planner in
 # test_agent_core, collected before test_api_batch), so its `litellm`
 # binding is the real module.
 _exc = _client_mod.litellm.exceptions
@@ -48,13 +48,13 @@ def _success_response(content: str = "ok") -> MagicMock:
 @pytest.fixture(autouse=True)
 def _no_sleep(mocker):
     """Avoid real asyncio.sleep delays during retry backoff."""
-    mocker.patch("src.llm.client.asyncio.sleep", new_callable=AsyncMock)
+    mocker.patch("ready_ai._engine.llm.client.asyncio.sleep", new_callable=AsyncMock)
 
 
 @pytest.fixture(autouse=True)
 def _no_metrics(mocker):
     """get_metrics() returns None in test (no RunContext active)."""
-    mocker.patch("src.llm.client.get_metrics", return_value=None)
+    mocker.patch("ready_ai._engine.llm.client.get_metrics", return_value=None)
 
 
 class TestTransientRetriedThenSuccess:
@@ -70,7 +70,7 @@ class TestTransientRetriedThenSuccess:
     async def test_transient_retried_then_success(self, mocker, exc_cls):
         client = LLMClient()
         mock_acompletion = mocker.patch(
-            "src.llm.client.litellm.acompletion",
+            "ready_ai._engine.llm.client.litellm.acompletion",
             new_callable=AsyncMock,
             side_effect=[_make_exc(exc_cls), _make_exc(exc_cls), _success_response("done")],
         )
@@ -87,7 +87,7 @@ class TestTransientRetriedThenSuccess:
         client = LLMClient()
         err = _make_exc(_exc.RateLimitError)
         mock_acompletion = mocker.patch(
-            "src.llm.client.litellm.acompletion",
+            "ready_ai._engine.llm.client.litellm.acompletion",
             new_callable=AsyncMock,
             side_effect=[err, err, _success_response("recovered")],
         )
@@ -110,7 +110,7 @@ class TestNonTransientNotRetried:
     async def test_non_transient_not_retried(self, mocker, exc_cls):
         client = LLMClient()
         mock_acompletion = mocker.patch(
-            "src.llm.client.litellm.acompletion",
+            "ready_ai._engine.llm.client.litellm.acompletion",
             new_callable=AsyncMock,
             side_effect=_make_exc(exc_cls),
         )
@@ -137,7 +137,7 @@ class TestRetriesExhausted:
         client = LLMClient()
         err = _make_exc(exc_cls)
         mock_acompletion = mocker.patch(
-            "src.llm.client.litellm.acompletion",
+            "ready_ai._engine.llm.client.litellm.acompletion",
             new_callable=AsyncMock,
             side_effect=err,
         )

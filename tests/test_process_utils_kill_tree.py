@@ -10,7 +10,7 @@ import sys as _sys
 import types as _types
 from unittest.mock import MagicMock
 
-from src.agent import process_utils
+from ready_ai._engine.agent import process_utils
 
 
 def _fake_psutil(children_pids=(11, 12), parent_pid=10):
@@ -77,14 +77,14 @@ class TestKillProcessTree:
         assert process_utils.kill_process_tree(12345) in (True, False)
 
     def test_teardown_uses_kill_process_tree_as_last_resort(self, monkeypatch):
-        from src.agent.browser_session import BrowserSession
+        from ready_ai._engine.agent.browser_session import BrowserSession
 
         calls = []
         monkeypatch.setattr(
             process_utils, "kill_process_tree", lambda pid, **kw: calls.append(pid) or True
         )
         monkeypatch.setattr(
-            "src.agent.browser_session.kill_process_tree",
+            "ready_ai._engine.agent.browser_session.kill_process_tree",
             lambda pid, **kw: calls.append(pid) or True,
         )
         import asyncio
@@ -104,11 +104,11 @@ class TestKillProcessTree:
         assert calls == [4242]
 
     def test_kill_all_orphans_uses_kill_process_tree(self, monkeypatch):
-        from src.agent.browser_session import _CHROME_PIDS, _kill_all_orphan_chrome
+        from ready_ai._engine.agent.browser_session import _CHROME_PIDS, _kill_all_orphan_chrome
 
         calls = []
         monkeypatch.setattr(
-            "src.agent.browser_session.kill_process_tree",
+            "ready_ai._engine.agent.browser_session.kill_process_tree",
             lambda pid, **kw: calls.append(pid) or True,
         )
         _CHROME_PIDS.add(777001)

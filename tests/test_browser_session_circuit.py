@@ -20,15 +20,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent import recovery
-from src.agent.browser_session import BrowserSession
-from src.agent.executor import StepResult
-from src.agent.loop import MAX_CRASHES, AgenticLoop
-from src.agent.state import RunState
-from src.cdp.connection import CDPConnection
-from src.cdp.connection_state import ConnectionState
-from src.cdp.exceptions import CircuitOpenError, WebSocketDisconnected
-from src.docs.renderer import DocRenderer
+from ready_ai._engine.agent import recovery
+from ready_ai._engine.agent.browser_session import BrowserSession
+from ready_ai._engine.agent.executor import StepResult
+from ready_ai._engine.agent.loop import MAX_CRASHES, AgenticLoop
+from ready_ai._engine.agent.state import RunState
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection_state import ConnectionState
+from ready_ai._engine.cdp.exceptions import CircuitOpenError, WebSocketDisconnected
+from ready_ai._engine.docs.renderer import DocRenderer
 
 
 class TestIsDisconnected:
@@ -91,7 +91,7 @@ class TestTeardownMarksIntentionalClose:
 
     @pytest.mark.asyncio
     async def test_teardown_emits_structured_log(self):
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-bs-teardown")
         bs = BrowserSession()
@@ -107,7 +107,7 @@ class TestTeardownMarksIntentionalClose:
 class TestRecoverLogsCircuitState:
     @pytest.mark.asyncio
     async def test_recover_logs_prior_cdp_state(self):
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-bs-recover")
         bs = BrowserSession()
@@ -126,7 +126,7 @@ class TestRecoverLogsCircuitState:
             bs._page.navigate = AsyncMock()
         bs.setup.side_effect = fake_setup
 
-        with patch("src.agent.browser_session.log_event") as mock_log:
+        with patch("ready_ai._engine.agent.browser_session.log_event") as mock_log:
             await bs.recover("https://example.com/where-we-crashed")
             # log_event was called with browser_recover_start and
             # browser_recover_complete, both with the prior cdp_state.
@@ -311,15 +311,15 @@ def _success_result() -> StepResult:
 def _patch_loop_helpers(monkeypatch, exec_mock: AsyncMock) -> MagicMock:
     """Wire the loop's execution helpers to fakes (same pattern as
     test_agent_loop_spa_drift.py)."""
-    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", exec_mock)
     monkeypatch.setattr(
-        "src.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
+        "ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
     )
     monkeypatch.setattr(
-        "src.agent.loop.CursorAnimator.highlight_element", AsyncMock()
+        "ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock()
     )
     monkeypatch.setattr(
-        "src.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
+        "ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
     )
     annotation = MagicMock()
     annotation.complete_with_vision = AsyncMock(return_value="Annotation")
@@ -341,7 +341,7 @@ class TestRecoveryCoordinator:
     async def test_both_disconnect_types_share_one_recovery_path(
         self, tmp_path, monkeypatch, disconnect_exc
     ):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-t3-same-path")
         loop, bs, conn = _make_recovery_loop(tmp_path)
@@ -426,7 +426,7 @@ class TestRecoveryCoordinator:
     async def test_successful_reattach_resumes_on_same_session(
         self, tmp_path, monkeypatch
     ):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-t3-reattach")
         loop, bs, conn = _make_recovery_loop(tmp_path)
@@ -534,7 +534,7 @@ class TestRecoveryCoordinator:
     async def test_open_circuit_terminates_with_structured_error(
         self, tmp_path, monkeypatch
     ):
-        from src.observability import init_run_context, get_metrics
+        from ready_ai._engine.observability import init_run_context, get_metrics
 
         init_run_context("test-t3-structured")
         loop, bs, conn = _make_recovery_loop(tmp_path)

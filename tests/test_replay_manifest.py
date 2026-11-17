@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent.loop import AgenticLoop
-from src.agent.replay import (
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.agent.replay import (
     REPLAY_MANIFEST_KIND,
     REPLAY_MANIFEST_VERSION,
     compile_manifest,
@@ -21,7 +21,7 @@ from src.agent.replay import (
     read_manifest,
     write_manifest,
 )
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 
 def _flow(steps, *, retries=1):
@@ -91,7 +91,7 @@ async def _passing_result(tmp_path, monkeypatch, run_id="replay-test"):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _runtime = _make_loop(tmp_path, run_id=run_id)
     # url_contains assert reads location.href via runtime.evaluate.
     loop._session._runtime.evaluate = AsyncMock(
@@ -131,7 +131,7 @@ async def test_compile_refuses_failed_run(tmp_path, monkeypatch):
     async def dispatch(payload, *args, **kwargs):
         return "[Failed] nothing here"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _runtime = _make_loop(tmp_path)
     result = await loop.run_flow(_observe_flow())
     assert result["status"] == "failed"
@@ -161,7 +161,7 @@ async def test_replay_round_trip_passes_with_zero_llm(tmp_path, monkeypatch):
     def _boom(*args, **kwargs):
         raise AssertionError("LLM must never be constructed during replay")
 
-    monkeypatch.setattr("src.llm.client.LLMClient", _boom)
+    monkeypatch.setattr("ready_ai._engine.llm.client.LLMClient", _boom)
     replayed = manifest_to_flow_spec(loaded)
     loop, _runtime = _make_loop(tmp_path, run_id="replay-2")
     loop._session._runtime.evaluate = AsyncMock(
@@ -171,7 +171,7 @@ async def test_replay_round_trip_passes_with_zero_llm(tmp_path, monkeypatch):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     replay_result = await loop.run_flow(replayed, allow_llm=False)
     assert replay_result["status"] == "passed", replay_result
 
@@ -265,7 +265,7 @@ async def _typed_result(tmp_path, monkeypatch, run_id="typed-1"):
     async def dispatch(payload, *args, **kwargs):
         return "Typed into %s" % payload.get("selector")
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _runtime = _make_loop(tmp_path, run_id=run_id)
     loop._session._runtime.evaluate = AsyncMock(
         return_value="https://app.example.com/start"
@@ -395,7 +395,7 @@ async def test_replay_never_mutates_manifest_source(tmp_path, monkeypatch):
     def _boom(*args, **kwargs):
         raise AssertionError("LLM must never be constructed during replay")
 
-    monkeypatch.setattr("src.llm.client.LLMClient", _boom)
+    monkeypatch.setattr("ready_ai._engine.llm.client.LLMClient", _boom)
     loop, _runtime = _make_loop(tmp_path, run_id="replay-nomut")
     loop._session._runtime.evaluate = AsyncMock(
         return_value="https://app.example.com/start"
@@ -404,7 +404,7 @@ async def test_replay_never_mutates_manifest_source(tmp_path, monkeypatch):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     replayed = await loop.run_flow(
         manifest_to_flow_spec(read_manifest(path)), allow_llm=False
     )

@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.cursor import CursorAnimator
-from src.cdp.connection import CDPConnection
+from ready_ai._engine.agent.cursor import CursorAnimator
+from ready_ai._engine.cdp.connection import CDPConnection
 
 
 def _make_dead_conn() -> CDPConnection:

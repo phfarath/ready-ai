@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.cdp.connection import CDPConnection, TargetRegistry
+from ready_ai._engine.cdp.connection import CDPConnection, TargetRegistry
 
 
 def _registry() -> TargetRegistry:

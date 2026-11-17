@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-SRC = Path(__file__).parent.parent / "src"
+SRC = Path(__file__).parent.parent / "ready_ai" / "_engine"
 
 FILES = [
     SRC / "cdp" / "connection.py",
@@ -38,7 +38,7 @@ def test_no_get_event_loop_in_connection_or_page():
     """Neither connection.py nor page.py may reference get_event_loop.
 
     This mirrors the validation contract evidence requirement:
-    ``rg "get_event_loop" src/cdp/connection.py src/cdp/page.py`` must
+    ``rg "get_event_loop" ready_ai/_engine/cdp/connection.py ready_ai/_engine/cdp/page.py`` must
     return zero matches.
     """
     for f in FILES:
@@ -66,8 +66,8 @@ def test_get_running_loop_used_in_connection_and_page():
 @pytest.mark.asyncio
 async def test_send_uses_running_loop_future():
     """CDPConnection.send creates a future via the running loop and resolves it."""
-    from src.cdp.connection import CDPConnection
-    from src.cdp.connection_state import ConnectionState
+    from ready_ai._engine.cdp.connection import CDPConnection
+    from ready_ai._engine.cdp.connection_state import ConnectionState
 
     conn = CDPConnection()
     conn._ws = AsyncMock()
@@ -89,8 +89,8 @@ async def test_send_uses_running_loop_future():
 @pytest.mark.asyncio
 async def test_wait_for_event_uses_running_loop_time():
     """wait_for_event relies on get_running_loop().time() for its deadline."""
-    from src.cdp.connection import CDPConnection
-    from src.cdp.connection_state import ConnectionState
+    from ready_ai._engine.cdp.connection import CDPConnection
+    from ready_ai._engine.cdp.connection_state import ConnectionState
 
     conn = CDPConnection()
     conn._state = ConnectionState.HEALTHY
@@ -104,8 +104,8 @@ async def test_wait_for_event_uses_running_loop_time():
 @pytest.mark.asyncio
 async def test_wait_for_selector_uses_running_loop_time():
     """PageDomain.wait_for_selector uses get_running_loop().time() for deadline."""
-    from src.cdp.connection import CDPConnection
-    from src.cdp.page import PageDomain
+    from ready_ai._engine.cdp.connection import CDPConnection
+    from ready_ai._engine.cdp.page import PageDomain
 
     conn = CDPConnection()
     conn._ws = AsyncMock()

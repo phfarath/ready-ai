@@ -1,6 +1,8 @@
 # ready-ai
 
-Open-source browser automation engine that drives Chrome over **raw CDP** (no WebDriver, no Playwright relay) and returns **verifiable workflows**: every step declares actions, expectations and extractions, and every result is a structured, sanitized object — not a screenshot dump.
+Open-source CI tool that turns verified browser flows into user docs and agent skills, and catches UI drift.
+
+The engine drives Chrome over **raw CDP** (no WebDriver, no Playwright relay) and returns **verifiable workflows**: every step declares actions, expectations and extractions, and every result is a structured, sanitized object — not a screenshot dump.
 
 ```python
 import asyncio
@@ -94,7 +96,7 @@ support cooperative cancellation; `run_sync()` is the synchronous
 entrypoint; `resume(run_id)` continues a paused human checkpoint. The
 full surface — `ReadyAI`, `Flow*`/`Run*` models, `RunEvent`, and the
 typed exception taxonomy — ships `py.typed` and is strict-mypy clean;
-`src.*` internals are not public (see the versioning policy in
+`ready_ai._engine.*` internals are not public (see the versioning policy in
 `CHANGELOG.md`).
 
 CLI (flows and docs consumers):
@@ -125,7 +127,7 @@ Authenticated runs: prefer a cookies JSON array file (`--cookies-file`, `profile
 
 ```bash
 python3 -m pytest -q
-ruff check src/ tests/ main.py ready_ai/ examples/
+ruff check ready_ai/ tests/ examples/
 python -m mypy
 ```
 

@@ -1,53 +1,70 @@
 # Camadas da arquitetura (REF-02) — Flow -> run_flow -> AgenticLoop ->
 # executor -> CDP. O CI falha em violacao (`lint-imports` no job lint).
 #
-# - `src.cdp` e o protocolo Transport nao conhecem as camadas de cima:
-#   nenhum import de agent/llm/api/docs, do pacote publico `ready_ai`
-#   nem do `main` (CLI) — nem mesmo sob TYPE_CHECKING.
-# - `src.agent` esta acima de `src.cdp` (pode importar para baixo).
+# - `ready_ai._engine.cdp` e o protocolo Transport nao conhecem as camadas de cima:
+#   nenhum import de agent/llm/api/docs, da fachada publica (`ready_ai.client`
+#   e irmaos) nem do CLI (`ready_ai.cli`) — nem mesmo sob TYPE_CHECKING.
+# - `ready_ai._engine.agent` esta acima de `ready_ai._engine.cdp` (pode importar para baixo).
 #   Modulos fora do contrato (llm, api.models, observability, history)
 #   sao ignorados aqui; o isolamento do cdp e do llm e travado pelos
 #   contratos `forbidden` acima. Excecao conhecida e documentada:
-#   `src.agent.replay` importa `src.api.models` em runtime (modelos
-#   compartilhados do FlowSpec) — por isso `src.api` fica fora do
+#   `ready_ai._engine.agent.replay` importa `ready_ai._engine.api.models` em runtime (modelos
+#   compartilhados do FlowSpec) — por isso `ready_ai._engine.api` fica fora do
 #   contrato `layers`.
+#
+# O engine mora dentro de `ready_ai._engine`, entao o contrato NAO proibe o
+# pacote `ready_ai` inteiro (isso pegaria os imports internos do proprio
+# engine). A fachada publica e listada modulo a modulo.
 
 [importlinter]
-root_package = src
+root_package = ready_ai
 include_external_packages = True
+# import-linter 2.x moved this off individual contracts. Same meaning as the
+# old per-contract ``ignore_type_checking_imports``: TYPE_CHECKING imports
+# are not architecture violations.
+exclude_type_checking_imports = True
 
 [importlinter:contract:1]
 name = Camada CDP independente (REF-02)
 type = forbidden
 source_modules =
-    src.cdp
+    ready_ai._engine.cdp
 forbidden_modules =
-    src.agent
-    src.llm
-    src.api
-    src.docs
-    ready_ai
-    main
-ignore_type_checking_imports = true
+    ready_ai._engine.agent
+    ready_ai._engine.llm
+    ready_ai._engine.api
+    ready_ai._engine.docs
+    ready_ai.cli
+    ready_ai.client
+    ready_ai.events
+    ready_ai.exceptions
+    ready_ai.models
+    ready_ai.remote
+    ready_ai.remote_models
+    ready_ai.replay
 
 [importlinter:contract:2]
 name = Camada LLM independente (REF-02)
 type = forbidden
 source_modules =
-    src.llm
+    ready_ai._engine.llm
 forbidden_modules =
-    src.agent
-    src.api
-    src.cdp
-    src.docs
-    ready_ai
-    main
-ignore_type_checking_imports = true
+    ready_ai._engine.agent
+    ready_ai._engine.api
+    ready_ai._engine.cdp
+    ready_ai._engine.docs
+    ready_ai.cli
+    ready_ai.client
+    ready_ai.events
+    ready_ai.exceptions
+    ready_ai.models
+    ready_ai.remote
+    ready_ai.remote_models
+    ready_ai.replay
 
 [importlinter:contract:3]
 name = Camadas: agent -> cdp (REF-02)
 type = layers
 layers =
-    src.agent
-    src.cdp
-ignore_type_checking_imports = true
+    ready_ai._engine.agent
+    ready_ai._engine.cdp

@@ -5,7 +5,7 @@ Converts ready-ai generated docs (docs.md + screenshots) into
 static-site friendly formats: Docusaurus, Nextra, Mintlify, Starlight.
 
 Usage:
-    from src.docs.export import export_docs
+    from ready_ai._engine.docs.export import export_docs
     export_docs(
         doc_path="./output/run/docs.md",
         format="docusaurus",
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from src.docs.parser import extract_goal, parse_doc
+from ready_ai._engine.docs.parser import extract_goal, parse_doc
 
 logger = logging.getLogger(__name__)
 

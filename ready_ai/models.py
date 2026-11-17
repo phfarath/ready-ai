@@ -1,7 +1,7 @@
 """Public, stable configuration and result models for the ``ready_ai`` SDK.
 
 This module IS the serializable contract of the public SDK. It has no
-dependency on ``src.*``: consumers construct and validate against these
+dependency on ``ready_ai._engine.*``: consumers construct and validate against these
 models, and the ``ReadyAI`` façade (``ready_ai.client``) is the only
 place where they are translated onto the internal engine.
 

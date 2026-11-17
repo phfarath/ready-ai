@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent.loop import AgenticLoop
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 
 def _flow(steps):
@@ -92,14 +92,14 @@ async def _run_flow(loop, flow, allow_llm):
 async def test_replay_flow_metrics_report_zero_llm_cost(tmp_path, monkeypatch):
     """Replay of a compiled manifest writes a metrics artifact proving zero
     LLM calls, zero tokens and zero cost."""
-    from src.agent.replay import (
+    from ready_ai._engine.agent.replay import (
         compile_manifest,
         manifest_to_flow_spec,
         read_manifest,
         write_manifest,
     )
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", _observe_dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", _observe_dispatch)
     author_loop, _runtime = _make_loop(tmp_path, run_id="cost-author")
     author_loop._session._runtime.evaluate = AsyncMock(
         return_value="https://app.example.com/start"
@@ -128,7 +128,7 @@ async def test_replay_flow_metrics_report_zero_llm_cost(tmp_path, monkeypatch):
 async def test_author_metrics_artifact_enables_before_after_delta(tmp_path, monkeypatch):
     """The authoring run also writes ``*_flow_metrics.json`` with the same cost
     keys, so the before/after delta is computable from disk alone."""
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", _observe_dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", _observe_dispatch)
     author_loop, _runtime = _make_loop(tmp_path, run_id="cost-author")
     author_loop._session._runtime.evaluate = AsyncMock(
         return_value="https://app.example.com/start"
@@ -154,7 +154,7 @@ def _sdk_manifest(**overrides):
     The SDK now pre-validates Mapping manifests (T-SDK-FOLLOWUPS/2),
     so plumbing tests must pass a well-formed manifest, not a stub.
     """
-    from src.agent.replay import REPLAY_MANIFEST_KIND, REPLAY_MANIFEST_VERSION
+    from ready_ai._engine.agent.replay import REPLAY_MANIFEST_KIND, REPLAY_MANIFEST_VERSION
 
     manifest = {
         "version": REPLAY_MANIFEST_VERSION,
@@ -205,7 +205,7 @@ async def test_sdk_replay_manifest_forwards_fallback_and_exposes_replay_block(
     from ready_ai import ReadyAI
 
     fake_run_replay = AsyncMock(return_value=_replay_data())
-    monkeypatch.setattr("src.agent.replay.run_replay", fake_run_replay)
+    monkeypatch.setattr("ready_ai._engine.agent.replay.run_replay", fake_run_replay)
     monkeypatch.setattr("ready_ai.client.AgenticLoop", lambda **kw: object())
 
     ai = ReadyAI(output_dir=str(tmp_path))
@@ -235,7 +235,7 @@ async def test_sdk_replay_manifest_defaults_are_fail_closed(tmp_path, monkeypatc
     from ready_ai import ReadyAI
 
     fake_run_replay = AsyncMock(return_value=_replay_data())
-    monkeypatch.setattr("src.agent.replay.run_replay", fake_run_replay)
+    monkeypatch.setattr("ready_ai._engine.agent.replay.run_replay", fake_run_replay)
     monkeypatch.setattr("ready_ai.client.AgenticLoop", lambda **kw: object())
 
     ai = ReadyAI(output_dir=str(tmp_path))

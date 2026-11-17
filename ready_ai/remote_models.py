@@ -1,7 +1,7 @@
 """Typed wire models for the ready-ai remote client (API B parte 2).
 
 Mirrors the server's response shapes (``src/api/models.py`` + history
-endpoints) without importing ``src.*`` — the SDK never depends on
+endpoints) without importing ``ready_ai._engine.*`` — the SDK never depends on
 server internals. ``extra="ignore"`` everywhere: the server may add
 fields without breaking released SDKs. Invalid shapes surface as
 ``FlowValidationError`` at the call site (see ``remote._validate``).

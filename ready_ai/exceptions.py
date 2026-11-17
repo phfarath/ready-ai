@@ -18,7 +18,7 @@ consumer distinguishes *why* a run stopped without parsing strings:
 - ``RunCancelledError`` — the caller cancelled the in-flight run task.
 
 All inherit from ``ReadyAIError``; SDK methods never leak internal
-``src.*`` exception types to callers.
+``ready_ai._engine.*`` exception types to callers.
 """
 
 from __future__ import annotations

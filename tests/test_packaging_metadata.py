@@ -58,6 +58,12 @@ def test_distribution_metadata_declared():
     assert "license" in project
     classifiers = project.get("classifiers") or []
     assert "Typing :: Typed" in classifiers
+    assert "Development Status :: 3 - Alpha" in classifiers
+    assert project["description"] == (
+        "Open-source CI tool that turns verified browser flows into user docs "
+        "and agent skills, and catches UI drift"
+    )
+    assert project["scripts"]["ready-ai"] == "ready_ai.cli:cli"
     for version in ("3.10", "3.11", "3.12"):
         assert f"Programming Language :: Python :: {version}" in classifiers
     urls = project.get("urls") or {}
@@ -86,7 +92,6 @@ def test_runtime_deps_stay_minimal():
     }
     assert names == {
         "websockets",
-        "litellm",
         "pydantic",
         "aiohttp",
         "Pillow",
@@ -96,9 +101,30 @@ def test_runtime_deps_stay_minimal():
     }
 
 
+def test_optional_extras_pin_llm_and_keep_api_mcp_all():
+    """LLM deps are an extra with a compatible openai/litellm range.
+    ``[api]``, ``[mcp]`` and ``[all]`` stay installable groups."""
+    optional = _read_pyproject().get("project", {}).get(
+        "optional-dependencies", {}
+    )
+    llm = optional["llm"]
+    joined = " ".join(llm)
+    assert "litellm>=1.84.0,<2" in llm
+    assert "openai>=2.20.0,<3" in llm
+    assert "openai" in joined and "litellm" in joined
+    api = {dep.split(">=")[0].split("<")[0].strip() for dep in optional["api"]}
+    assert {"fastapi", "uvicorn"} <= api
+    assert "mcp" in optional
+    all_extra = " ".join(optional["all"])
+    assert "litellm" in all_extra and "fastapi" in all_extra
+    dev = " ".join(optional["dev"])
+    assert "litellm>=1.84.0,<2" in dev
+    assert "openai>=2.20.0,<3" in dev
+
+
 def test_mypy_gate_on_public_surface():
     """Strict mypy over ``ready_ai`` + ``examples`` — the public typing
-    contract; legacy ``src`` internals are followed silently."""
+    contract; ``ready_ai._engine`` internals are followed silently."""
     if importlib.util.find_spec("mypy") is None or shutil.which("mypy") is None:
         pytest.skip("mypy not installed (dev extra)")
     proc = subprocess.run(

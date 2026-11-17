@@ -1,10 +1,10 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.agent.executor import StepResult
-from src.agent.loop import AgenticLoop
-from src.agent import recovery
-from src.docs.renderer import DocRenderer
+from ready_ai._engine.agent.executor import StepResult
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.agent import recovery
+from ready_ai._engine.docs.renderer import DocRenderer
 
 
 class _StubPage:
@@ -116,10 +116,10 @@ async def test_execute_steps_replans_current_step_on_spa_drift(tmp_path, monkeyp
             ),
         ]
     )
-    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", exec_mock)
 
-    monkeypatch.setattr("src.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2"]))
-    monkeypatch.setattr("src.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2"]))
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
         StepResult(
             action_desc="Clicked element: #modal-confirm",
             success=True,
@@ -129,8 +129,8 @@ async def test_execute_steps_replans_current_step_on_spa_drift(tmp_path, monkeyp
         "Click the modal confirm button",
         1,
     )))
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.highlight_element", AsyncMock())
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
 
     # Set up session stubs
     monkeypatch.setattr(loop._session, "_page", _StubPage())
@@ -174,10 +174,10 @@ async def test_execute_steps_uses_local_adapted_step_when_recovery_succeeds(tmp_
             ),
         ]
     )
-    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", exec_mock)
 
-    monkeypatch.setattr("src.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp1"]))
-    monkeypatch.setattr("src.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp1"]))
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
         StepResult(
             action_desc="Clicked element: [data-testid='submit']",
             success=True,
@@ -187,8 +187,8 @@ async def test_execute_steps_uses_local_adapted_step_when_recovery_succeeds(tmp_
         "Click the primary submit button",
         1,
     )))
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.highlight_element", AsyncMock())
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
 
     monkeypatch.setattr(loop._session, "_page", _StubPage())
     monkeypatch.setattr(loop._session, "_input", _StubInput())
@@ -221,10 +221,10 @@ async def test_execute_steps_marks_manual_required_when_recovery_fails(tmp_path,
         attempts=3,
         failure_reason="MFA modal blocks the next action",
     ))
-    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", exec_mock)
 
-    monkeypatch.setattr("src.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp1"]))
-    monkeypatch.setattr("src.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp1"]))
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
         StepResult(
             action_desc="Clicked element: #confirm",
             success=False,
@@ -236,8 +236,8 @@ async def test_execute_steps_marks_manual_required_when_recovery_fails(tmp_path,
         "Open modal and confirm",
         0,
     )))
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.highlight_element", AsyncMock())
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
 
     monkeypatch.setattr(loop._session, "_page", _StubPage())
     monkeypatch.setattr(loop._session, "_input", _StubInput())
@@ -271,12 +271,12 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
         attempts=3,
         failure_reason="Navigation changed context",
     ))
-    monkeypatch.setattr("src.agent.loop.executor.execute_step", exec_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", exec_mock)
 
-    monkeypatch.setattr("src.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2"]))
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(side_effect=["fp1", "fp2"]))
     replan_spa_mock = AsyncMock(return_value="Click submit in redirected page")
-    monkeypatch.setattr("src.agent.loop.recovery.replan_spa_step", replan_spa_mock)
-    monkeypatch.setattr("src.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.replan_spa_step", replan_spa_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.recovery.recover_failed_step", AsyncMock(return_value=(
         StepResult(
             action_desc="Clicked element: #submit",
             success=False,
@@ -288,8 +288,8 @@ async def test_execute_steps_url_change_uses_no_spa_replan(tmp_path, monkeypatch
         "Submit form",
         0,
     )))
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.highlight_element", AsyncMock())
-    monkeypatch.setattr("src.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock())
+    monkeypatch.setattr("ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock())
 
     # URL changes between pre and post => not SPA drift
     monkeypatch.setattr(loop._session, "_page", _StubPage())

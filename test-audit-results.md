@@ -136,7 +136,7 @@ All 365 tests passed during the coverage run as well.
 
 **Command structure:** `main.py` uses argparse with 5 subcommands: `run`, `test`, `api`, `batch`, `export`.
 
-### `python main.py --help` ✅
+### `python -m ready_ai --help` ✅
 ```
 usage: main.py [-h] {run,test,api,batch,export} ...
 
@@ -153,19 +153,19 @@ positional arguments:
 ```
 All 5 subcommands listed correctly. Exit code 0.
 
-### `python main.py run --help` ✅
+### `python -m ready_ai run --help` ✅
 Lists all options: `--goal/-g`, `--url/-u`, `--title/-t`, `--language/-l`, `--model/-m`, `--output/-o`, `--port/-p`, `--headless`, `--max-critic-rounds`, `--annotation-model`, `--cookies-file`, `--username`, `--password`, `--verbose/-v`, `--config`, `--run-id`, `--resume`, `--plan-only`, `--app-version`, `--git-commit`, `--deployed-at`. Exit code 0.
 
-### `python main.py test --help` ✅
+### `python -m ready_ai test --help` ✅
 Lists all options: `--doc/-d` (required), `--url/-u` (required), `--model/-m`, `--threshold`, `--output/-o`, `--port/-p`, `--headless`, `--cookies-file`, `--username`, `--password`, `--verbose/-v`, `--watch`, `--watch-interval`, `--auto-heal`, `--open-pr`, `--pr-base-branch`, `--pr-remote`, `--pr-dry-run`. Exit code 0.
 
-### `python main.py api --help` ✅
+### `python -m ready_ai api --help` ✅
 Lists options: `--port/-p`, `--host`, `--verbose/-v`. Exit code 0.
 
-### `python main.py batch --help` ✅
+### `python -m ready_ai batch --help` ✅
 Lists options: `--config/-c` (required), `--verbose/-v`. Exit code 0.
 
-### `python main.py export --help` ✅
+### `python -m ready_ai export --help` ✅
 Lists options: `--run-id/-r` (required), `--format/-f` (required, choices: markdown/docusaurus/nextra/mintlify/starlight), `--output-dir/-o`, `--verbose/-v`. Exit code 0.
 
 **All 6 CLI help commands work correctly. All subcommands are accessible.**
@@ -174,7 +174,7 @@ Lists options: `--run-id/-r` (required), `--format/-f` (required, choices: markd
 
 ## 6. API Server Test Results
 
-**Startup:** Server starts successfully on port 8001 via `python main.py api --port 8001` (uses uvicorn with `reload=True` by default).
+**Startup:** Server starts successfully on port 8001 via `python -m ready_ai api --port 8001` (uses uvicorn with `reload=True` by default).
 
 **Note on authentication:** The API uses `X-API-Key` header authentication controlled by env vars `READY_AI_API_KEY` / `READY_AI_API_KEYS`. When no keys are configured and `AUTH_DISABLED` is not set, all non-public endpoints return 401. Public endpoints (`/health`, `/ready`, `/docs`, `/openapi.json`, `/`) do not require auth. For full endpoint testing, the server was started with `AUTH_DISABLED=true` and `reload=False` (the WatchFiles reloader spawned a subprocess that did not inherit env vars, so `reload=False` was required for env-based config to take effect).
 
@@ -246,9 +246,9 @@ Chrome is installed at the standard 64-bit Windows path and can be launched for 
 - **Suggested fix:** Ensure the mock at `test_runner.py:206` is configured as `AsyncMock` and properly awaited, or use `MagicMock` if synchronous behavior is intended.
 
 ### Issue 2: WatchFiles reloader does not inherit env vars (runtime/deployment)
-- **Location:** `main.py:476` — `uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)`
+- **Location:** `main.py:476` — `uvicorn.run("ready_ai._engine.api.server:app", host=args.host, port=args.port, reload=True)`
 - **Symptom:** When starting the API server with `reload=True`, the WatchFiles reloader spawns a child subprocess that does not inherit environment variables set in the parent shell (on Windows). This means `AUTH_DISABLED`, `READY_AI_API_KEY`, and other env-based configuration is lost in the worker process.
-- **Severity:** Medium (affects development/local testing and any deployment that relies on env vars with the default `reload=True`). Production deployments typically set env vars at the OS/process level which the child does inherit, but shell-scoped env vars passed to `python main.py api` may not propagate.
+- **Severity:** Medium (affects development/local testing and any deployment that relies on env vars with the default `reload=True`). Production deployments typically set env vars at the OS/process level which the child does inherit, but shell-scoped env vars passed to `python -m ready_ai api` may not propagate.
 - **Workaround:** Run uvicorn with `reload=False` for env-var-dependent configuration, or set env vars via `.env` file (loaded by `python-dotenv` in `main.py:28`).
 
 ### Issue 3: Zero coverage on `src/docs/text_diff.py`

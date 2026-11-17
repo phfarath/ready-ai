@@ -25,12 +25,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.connection import CDPConnection
-from src.cdp.connection_state import (
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection_state import (
     CB_THRESHOLD,
     ConnectionState,
 )
-from src.cdp.exceptions import WebSocketDisconnected
+from ready_ai._engine.cdp.exceptions import WebSocketDisconnected
 
 
 def _ws_mock() -> AsyncMock:
@@ -48,7 +48,7 @@ def _ws_mock() -> AsyncMock:
 
 @pytest.fixture(autouse=True)
 def _run_context():
-    from src.observability import init_run_context
+    from ready_ai._engine.observability import init_run_context
 
     init_run_context("test-cdp-integration")
 
@@ -59,11 +59,11 @@ class TestFullLifeCycle:
         monkeypatch.setenv("READY_AI_CDP_AUTORECONNECT", "true")
         # Reload the state module so the env change is picked up.
         import importlib
-        from src.cdp import connection_state
+        from ready_ai._engine.cdp import connection_state
 
         importlib.reload(connection_state)
         # And make connection.py see the new flag.
-        import src.cdp.connection as cdp_conn_mod
+        import ready_ai._engine.cdp.connection as cdp_conn_mod
 
         importlib.reload(cdp_conn_mod)
 
@@ -78,8 +78,8 @@ class TestFullLifeCycle:
             res = connect_results.pop(0)
             return res
 
-        with patch("src.cdp.connection.websockets.connect", new=fake_connect), \
-             patch("src.cdp.connection.asyncio.sleep", new=AsyncMock()), \
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=fake_connect), \
+             patch("ready_ai._engine.cdp.connection.asyncio.sleep", new=AsyncMock()), \
              patch.object(cdp_conn_mod.CDPConnection, "_post_reconnect_reattach", new=AsyncMock()):
             conn = cdp_conn_mod.CDPConnection()
             await conn.connect("ws://test")
@@ -121,14 +121,14 @@ class TestShutdownVsDrop:
     async def test_intentional_close_does_not_schedule_reconnect(self, monkeypatch):
         monkeypatch.setenv("READY_AI_CDP_AUTORECONNECT", "true")
         import importlib
-        from src.cdp import connection_state
-        import src.cdp.connection as cdp_conn_mod
+        from ready_ai._engine.cdp import connection_state
+        import ready_ai._engine.cdp.connection as cdp_conn_mod
 
         importlib.reload(connection_state)
         importlib.reload(cdp_conn_mod)
 
         ws = _ws_mock()
-        with patch("src.cdp.connection.websockets.connect", new=AsyncMock(return_value=ws)):
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=AsyncMock(return_value=ws)):
             conn = cdp_conn_mod.CDPConnection()
             await conn.connect("ws://test")
             # close() should set _intentional_close BEFORE the recv
@@ -148,8 +148,8 @@ class TestFeatureFlagOff:
         # No READY_AI_CDP_AUTORECONNECT env var.
         monkeypatch.delenv("READY_AI_CDP_AUTORECONNECT", raising=False)
         import importlib
-        from src.cdp import connection_state
-        import src.cdp.connection as cdp_conn_mod
+        from ready_ai._engine.cdp import connection_state
+        import ready_ai._engine.cdp.connection as cdp_conn_mod
 
         importlib.reload(connection_state)
         importlib.reload(cdp_conn_mod)
@@ -157,7 +157,7 @@ class TestFeatureFlagOff:
         assert connection_state.AUTORECONNECT_ENABLED is False
 
         ws = _ws_mock()
-        with patch("src.cdp.connection.websockets.connect", new=AsyncMock(return_value=ws)):
+        with patch("ready_ai._engine.cdp.connection.websockets.connect", new=AsyncMock(return_value=ws)):
             conn = cdp_conn_mod.CDPConnection()
             await conn.connect("ws://test")
             await conn._handle_disconnect(intentional=False)
@@ -172,7 +172,7 @@ class TestFeatureFlagOff:
 class TestCountersAndMetrics:
     @pytest.mark.asyncio
     async def test_circuit_opens_metric_fires_once(self):
-        from src.observability import get_metrics
+        from ready_ai._engine.observability import get_metrics
 
         conn = CDPConnection()
         conn._ws = _ws_mock()

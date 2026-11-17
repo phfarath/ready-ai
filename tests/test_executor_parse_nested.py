@@ -5,7 +5,7 @@ não casam chaves aninhadas: a ação `dialog` com `then` interno vira
 None → "[FAILED]" + retries desperdiçando chamadas LLM.
 """
 
-from src.agent.executor import _parse_action
+from ready_ai._engine.agent.executor import _parse_action
 
 
 class TestM4NestedJson:

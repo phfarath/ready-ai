@@ -1,7 +1,7 @@
 """
 Public exceptions raised by the CDP layer.
 
-These are exported from `src.cdp` so that callers (notably the
+These are exported from `ready_ai._engine.cdp` so that callers (notably the
 agent loop) can do targeted recovery based on the exception type
 instead of pattern-matching on error strings.
 """

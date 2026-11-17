@@ -29,7 +29,7 @@ body:
       label: Reproduction steps
       description: Provide the smallest sequence that reproduces the issue.
       placeholder: |
-        1. Run `python main.py run ...`
+        1. Run `python -m ready_ai run ...`
         2. Use a login flow with ...
         3. Observe ...
     validations:

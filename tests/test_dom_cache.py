@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.agent.dom_cache import DOMCache
+from ready_ai._engine.agent.dom_cache import DOMCache
 
 
 def _page_runtime(dom="HTML-1", elements="ELS-1", url="https://a/", fp="fp-1", title="T"):
@@ -127,8 +127,8 @@ class TestDOMCache:
 class TestExecutorUsesCache:
     @pytest.mark.asyncio
     async def test_retry_refresh_hits_cache_when_page_unchanged(self):
-        from src.agent import executor
-        from src.agent.dom_cache import DOMCache
+        from ready_ai._engine.agent import executor
+        from ready_ai._engine.agent.dom_cache import DOMCache
 
         page = AsyncMock()
         page.get_dom_html = AsyncMock(return_value="HTML")

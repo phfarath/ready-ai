@@ -52,9 +52,9 @@ If you fix a bug, add a regression test when practical.
 
 ## Code Guidelines
 
-- Keep browser control inside `src/cdp/`.
+- Keep browser control inside `ready_ai/_engine/cdp/`.
 - Do not introduce Playwright, Selenium, or similar frameworks into product code.
-- Route model calls through `src/llm/client.py`.
+- Route model calls through `ready_ai/_engine/llm/client.py`.
 - Keep `DocRenderer.render()` free of side effects.
 - Escape user-controlled strings passed into JS with `json.dumps()`.
 

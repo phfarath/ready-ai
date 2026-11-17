@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from main import RunConfigError, parse_args, resolve_run_args
-from src.agent.loop import AgenticLoop
-from src.agent.state import RunState
+from ready_ai.cli import RunConfigError, parse_args, resolve_run_args
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.agent.state import RunState
 
 
 FLOW_YAML = """\
@@ -140,7 +140,7 @@ async def test_plan_only_creates_checkpoint_without_docs(tmp_path, monkeypatch):
     monkeypatch.setattr(loop._session, "_runtime", _PlanRuntime())
 
     plan_mock = AsyncMock(return_value=["Click Sign In", "Verify dashboard loads"])
-    monkeypatch.setattr("src.agent.loop.planner.plan", plan_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.planner.plan", plan_mock)
 
     result_path = await loop.run()
 
@@ -200,7 +200,7 @@ def test_cli_help_encodes_on_windows_console():
     --help under cp1252 with UnicodeEncodeError. The full help text
     must encode cleanly in the Windows console codec.
     """
-    from main import _build_parser
+    from ready_ai.cli import _build_parser
 
     text = _build_parser().format_help()
     text.encode("cp1252")
@@ -209,8 +209,8 @@ def test_cli_help_encodes_on_windows_console():
 @pytest.mark.asyncio
 async def test_run_flow_cli_prints_json_result(tmp_path, monkeypatch, capsys):
     """DoD1 — `run-flow` accepts a flow YAML and produces a JSON result."""
-    from main import async_main_run_flow
-    from src.api.models import FlowAction, FlowSpec, FlowStepSpec
+    from ready_ai.cli import async_main_run_flow
+    from ready_ai._engine.api.models import FlowAction, FlowSpec, FlowStepSpec
 
     config_path = tmp_path / "flow.yaml"
     config_path.write_text(FLOW_YAML, encoding="utf-8")
@@ -269,7 +269,7 @@ async def test_run_flow_cli_prints_json_result(tmp_path, monkeypatch, capsys):
         return fake_loop
 
     monkeypatch.setattr(
-        "src.api.batch_loader.load_flow_config",
+        "ready_ai._engine.api.batch_loader.load_flow_config",
         lambda path: FlowSpec(
             name="cli-flow",
             url="https://app.example.com/start",
@@ -277,7 +277,7 @@ async def test_run_flow_cli_prints_json_result(tmp_path, monkeypatch, capsys):
             steps=[FlowStepSpec(actions=[FlowAction(action="observe")])],
         ),
     )
-    monkeypatch.setattr("src.agent.loop.AgenticLoop", _fake_loop_cls)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.AgenticLoop", _fake_loop_cls)
 
     args = SimpleNamespace(
         config=str(config_path),
@@ -328,7 +328,7 @@ async def test_plan_only_resume_reuses_saved_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(loop._session, "_runtime", _PlanRuntime())
 
     plan_mock = AsyncMock(side_effect=AssertionError("planner.plan should not be called"))
-    monkeypatch.setattr("src.agent.loop.planner.plan", plan_mock)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.planner.plan", plan_mock)
 
     result_path = await loop.run()
 

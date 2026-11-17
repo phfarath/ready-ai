@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp.accessibility import (
+from ready_ai._engine.cdp.accessibility import (
     AccessibilityDomain,
     _format_node,
     get_ax_snapshot,
@@ -227,7 +227,7 @@ class TestAccessibilityDomain:
 class TestLocatorResolution:
     @pytest.mark.asyncio
     async def test_locator_resolves_by_role_and_name(self):
-        from src.cdp.accessibility import Locator
+        from ready_ai._engine.cdp.accessibility import Locator
         conn = AsyncMock()
         conn.send = AsyncMock(side_effect=[
             {"root": {"nodeId": 1}},
@@ -240,7 +240,7 @@ class TestLocatorResolution:
 
     @pytest.mark.asyncio
     async def test_locator_resolves_by_data_testid(self):
-        from src.cdp.accessibility import Locator
+        from ready_ai._engine.cdp.accessibility import Locator
         conn = AsyncMock()
         conn.send = AsyncMock(side_effect=[
             {"root": {"nodeId": 1}},
@@ -253,7 +253,7 @@ class TestLocatorResolution:
 
     @pytest.mark.asyncio
     async def test_locator_fallback_text_then_css(self):
-        from src.cdp.accessibility import Locator
+        from ready_ai._engine.cdp.accessibility import Locator
         conn = AsyncMock()
         # First role+name fails (nodeId 0), text fails, CSS succeeds
         conn.send = AsyncMock(side_effect=[
@@ -266,7 +266,7 @@ class TestLocatorResolution:
         assert ref is not None or True  # mock behavior; focus is path reporting
 
     def test_locator_path_str_report(self):
-        from src.cdp.locator import LocatorPath
+        from ready_ai._engine.cdp.locator import LocatorPath
         path = LocatorPath("data-testid", selector="[data-testid=\"x\"]", detail="submit")
         assert "data-testid" in str(path)
         assert "data-testid" in str(path)  # detail included in repr, not str
@@ -307,7 +307,7 @@ class TestLocatorFixtures:
 class TestActionValidation:
     @pytest.mark.asyncio
     async def test_action_validator_check_visible(self):
-        from src.cdp.accessibility import ActionValidator  # used in tests
+        from ready_ai._engine.cdp.accessibility import ActionValidator  # used in tests
         conn = AsyncMock()
         conn.send = AsyncMock(return_value={"result": {"value": True}})
         validator = ActionValidator(conn)
@@ -316,7 +316,7 @@ class TestActionValidation:
 
     @pytest.mark.asyncio
     async def test_action_validator_check_not_visible(self):
-        from src.cdp.accessibility import ActionValidator  # used in tests
+        from ready_ai._engine.cdp.accessibility import ActionValidator  # used in tests
         conn = AsyncMock()
         conn.send = AsyncMock(return_value={"result": {"value": False}})
         validator = ActionValidator(conn)
@@ -325,7 +325,7 @@ class TestActionValidation:
 
     @pytest.mark.asyncio
     async def test_action_validator_check_enabled(self):
-        from src.cdp.accessibility import ActionValidator  # used in tests
+        from ready_ai._engine.cdp.accessibility import ActionValidator  # used in tests
         conn = AsyncMock()
         conn.send = AsyncMock(return_value={"result": {"value": True}})
         validator = ActionValidator(conn)
@@ -334,7 +334,7 @@ class TestActionValidation:
 
     @pytest.mark.asyncio
     async def test_action_validator_check_hit_target_false(self):
-        from src.cdp.accessibility import ActionValidator  # used in tests
+        from ready_ai._engine.cdp.accessibility import ActionValidator  # used in tests
         conn = AsyncMock()
         conn.send = AsyncMock(return_value={"result": {"value": False}})
         validator = ActionValidator(conn)

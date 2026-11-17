@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.loop import AgenticLoop
+from ready_ai._engine.agent.loop import AgenticLoop
 
 
 def _new_loop(tmp_path) -> AgenticLoop:
@@ -46,7 +46,7 @@ def _fake_ctx() -> MagicMock:
 
 def test_save_flow_metrics_records_history(tmp_path, monkeypatch):
     """Completing a flow run appends a RunMetrics entry to the history store."""
-    import src.history as history_mod
+    import ready_ai._engine.history as history_mod
 
     monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
     monkeypatch.chdir(tmp_path)
@@ -70,8 +70,8 @@ def test_aggregates_count_lowercase_flow_statuses(tmp_path, monkeypatch):
     matched "PASSED"/"completed"/"success", so pass_rate was always 0
     for flow runs.
     """
-    import src.history as history_mod
-    from src.history import RunMetrics, record_run
+    import ready_ai._engine.history as history_mod
+    from ready_ai._engine.history import RunMetrics, record_run
 
     monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
     for rid, status in (("r1", "passed"), ("r2", "failed")):

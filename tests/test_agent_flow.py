@@ -17,9 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from src.agent import executor as executor_module
-from src.agent.loop import AgenticLoop
-from src.api.models import (
+from ready_ai._engine.agent import executor as executor_module
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.api.models import (
     FlowSpec,
     FlowStepSpec,
     FlowAction,
@@ -105,7 +105,7 @@ async def test_run_flow_success_reports_actions_asserts_and_extractions(tmp_path
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     dispatch = AsyncMock(return_value="Navigated to: https://app.example.com/checkout")
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     async def fake_evaluate(expression, session_id=None):
         if "window.location.href" in expression:
@@ -182,7 +182,7 @@ async def test_run_flow_reports_failed_assert_with_expected_and_actual(tmp_path,
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/confirm"),
     )
 
@@ -231,7 +231,7 @@ async def test_run_flow_reports_exhausted_retries_per_action(tmp_path, monkeypat
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="[Failed] Element not found: #missing"),
     )
 
@@ -279,13 +279,13 @@ async def test_run_flow_never_instantiates_doc_renderer(tmp_path, monkeypatch):
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/start"),
     )
     runtime.query_selector.return_value = "object-id-1"  # #app exists
 
-    with patch("src.agent.loop.DocRenderer") as doc_renderer_cls, patch(
-        "src.llm.client.LLMClient"
+    with patch("ready_ai._engine.agent.loop.DocRenderer") as doc_renderer_cls, patch(
+        "ready_ai._engine.llm.client.LLMClient"
     ) as llm_cls:
         doc_renderer_cls.side_effect = AssertionError(
             "DocRenderer must never be instantiated in run-flow mode"
@@ -313,7 +313,7 @@ async def test_run_flow_reports_cdp_disconnect_as_action_failure(tmp_path, monke
     async def boom(*args, **kwargs):
         raise websockets.exceptions.ConnectionClosed(None, None)
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", boom)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", boom)
 
     result = await loop.run_flow(flow)
 
@@ -349,7 +349,7 @@ async def test_run_flow_masks_type_action_text_in_params_and_description(tmp_pat
         # Mimic the executor on a non-sensitive-looking field: raw text echo.
         return f"Typed '{payload['text']}' into {payload['selector']}"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", fake_dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", fake_dispatch)
     runtime.query_selector.return_value = "object-id-1"
 
     result = await loop.run_flow(flow)
@@ -380,7 +380,7 @@ async def test_run_flow_masks_click_text_action_text_in_params_and_description(t
     async def fake_dispatch(payload, *args, **kwargs):
         return f"Clicked element by text: '{payload['text']}'"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", fake_dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", fake_dispatch)
 
     result = await loop.run_flow(flow)
 
@@ -486,7 +486,7 @@ async def test_run_flow_aborts_on_cdp_disconnect_with_run_level_reason(tmp_path,
         raise websockets.exceptions.ConnectionClosed(None, None)
 
     dispatch = AsyncMock(side_effect=boom)
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     result = await loop.run_flow(flow)
 
@@ -536,7 +536,7 @@ async def test_run_flow_extraction_multiple_zero_matches_returns_empty_list(tmp_
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/a"),
     )
     runtime.evaluate.return_value = []  # zero matches
@@ -562,7 +562,7 @@ async def test_run_flow_url_contains_empty_expected_fails_closed(tmp_path, monke
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/a"),
     )
     runtime.evaluate.return_value = "https://app.example.com/a"
@@ -590,7 +590,7 @@ async def test_run_flow_text_equals_empty_expected_missing_actual_fails_closed(t
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/a"),
     )
     runtime.get_element_text.return_value = ""  # element missing / empty text
@@ -625,7 +625,7 @@ async def test_run_flow_attribute_equals_empty_expected_missing_actual_fails_clo
     loop, page, runtime, input_domain = _make_loop(tmp_path)
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action",
+        "ready_ai._engine.agent.loop.executor._dispatch_action",
         AsyncMock(return_value="Navigated to: https://app.example.com/a"),
     )
     runtime.get_element_attributes.return_value = {}
@@ -730,7 +730,7 @@ async def test_step_policy_ceiling_denies_without_dispatch(tmp_path, monkeypatch
     )
     loop, _page, _runtime, _input = _make_loop(tmp_path)
     dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     result = await loop.run_flow(flow)
 
@@ -749,7 +749,7 @@ async def test_flow_effect_policy_enforced(tmp_path, monkeypatch):
     flow.effect_policy = "navigate"
     loop, _page, _runtime, _input = _make_loop(tmp_path)
     dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     result = await loop.run_flow(flow)
 
@@ -770,7 +770,7 @@ async def test_confirm_step_reports_pending_without_dispatch(tmp_path, monkeypat
     )
     loop, _page, _runtime, _input = _make_loop(tmp_path)
     dispatch = AsyncMock(side_effect=AssertionError("must not execute"))
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     result = await loop.run_flow(flow)
 
@@ -794,7 +794,7 @@ async def test_confirm_resume_executes_and_records_key(tmp_path, monkeypatch):
     )
     loop, _page, _runtime, _input = _make_loop(tmp_path)
     dispatch = AsyncMock(return_value="Clicked element: #x")
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     result = await loop.run_flow(flow, confirm={"flow-test:step-1"})
 
@@ -817,7 +817,7 @@ async def test_idempotent_replay_skips_execution(tmp_path, monkeypatch):
     loop, _page, _runtime, _input = _make_loop(tmp_path)
     loop._state.confirmed_effects.append("flow-test:step-1")
     dispatch = AsyncMock(side_effect=AssertionError("must not re-execute"))
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
 
     result = await loop.run_flow(flow, confirm={"flow-test:step-1"})
 
@@ -1229,7 +1229,7 @@ async def test_await_human_pauses_with_observable_condition(tmp_path, monkeypatc
         raise AssertionError(f"must not dispatch: {payload!r}")
 
     monkeypatch.setattr(
-        "src.agent.loop.executor._dispatch_action", dispatch
+        "ready_ai._engine.agent.loop.executor._dispatch_action", dispatch
     )
     loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-1")
     result = await loop.run_flow(_human_flow())
@@ -1297,7 +1297,7 @@ async def test_resume_continues_at_paused_step_without_reexecution(
         calls.append(payload.get("action"))
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-2")
     paused_result = await loop.run_flow(_human_flow())
     assert paused_result["status"] == "paused"
@@ -1309,7 +1309,7 @@ async def test_resume_continues_at_paused_step_without_reexecution(
     _runtime.evaluate = AsyncMock(return_value=True)
     _runtime.query_selector = AsyncMock(return_value={"nodeId": 1})
     loop2, _p2, runtime2, _i2 = _make_loop(tmp_path, run_id="sso-2")
-    from src.agent.state import RunState
+    from ready_ai._engine.agent.state import RunState
 
     loop2._state = RunState.from_file(checkpoint)
     loop2.resume_from = str(checkpoint)
@@ -1331,7 +1331,7 @@ async def test_resume_blocked_when_condition_unmet(tmp_path, monkeypatch):
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-3")
     paused_result = await loop.run_flow(_human_flow())
     assert paused_result["status"] == "paused"
@@ -1340,7 +1340,7 @@ async def test_resume_blocked_when_condition_unmet(tmp_path, monkeypatch):
 
     # Nothing changed in the browser: #authed still absent.
     loop2, _p2, runtime2, _i2 = _make_loop(tmp_path, run_id="sso-3")
-    from src.agent.state import RunState
+    from ready_ai._engine.agent.state import RunState
 
     loop2._state = RunState.from_file(checkpoint)
     runtime2.evaluate = AsyncMock(return_value=False)
@@ -1351,7 +1351,7 @@ async def test_resume_blocked_when_condition_unmet(tmp_path, monkeypatch):
 
 
 async def test_resume_rejects_foreign_run_id(tmp_path):
-    from src.agent.state import RunState
+    from ready_ai._engine.agent.state import RunState
 
     state = RunState(run_id="other-run", goal="g", url="https://x.example/")
     state.status = "PAUSED"
@@ -1371,7 +1371,7 @@ async def test_resume_rejects_foreign_run_id(tmp_path):
 
 
 async def test_resume_rejects_incompatible_index(tmp_path):
-    from src.agent.state import RunState
+    from ready_ai._engine.agent.state import RunState
 
     state = RunState(run_id="my-run", goal="g", url="https://x.example/")
     state.status = "PAUSED"
@@ -1391,12 +1391,12 @@ async def test_resume_rejects_foreign_flow_fingerprint(tmp_path, monkeypatch):
     Foreign flow has the same step count — without the fingerprint the
     index check alone would accept it.
     """
-    from src.agent.state import RunState, compute_flow_fingerprint
+    from ready_ai._engine.agent.state import RunState, compute_flow_fingerprint
 
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     loop, _page, _runtime, _input = _make_loop(tmp_path, run_id="sso-4")
     paused_result = await loop.run_flow(_human_flow())
     assert paused_result["status"] == "paused"
@@ -1434,12 +1434,12 @@ async def test_resume_accepts_legacy_checkpoint_without_fingerprint(
     tmp_path, monkeypatch
 ):
     """Checkpoints written before the binding field skip the check (compat)."""
-    from src.agent.state import RunState
+    from ready_ai._engine.agent.state import RunState
 
     async def dispatch(payload, *args, **kwargs):
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     state = RunState(
         run_id="sso-5",
         goal="g",
@@ -1464,7 +1464,7 @@ async def test_resume_accepts_legacy_checkpoint_without_fingerprint(
 
 async def test_flow_fingerprint_ignores_runtime_knobs(tmp_path):
     """headless/model/run_id toggles don't change the fingerprint."""
-    from src.agent.state import compute_flow_fingerprint
+    from ready_ai._engine.agent.state import compute_flow_fingerprint
 
     base = _human_flow()
     toggled = _human_flow()
@@ -1518,7 +1518,7 @@ async def test_checkpoint_and_result_carry_no_secrets(tmp_path, monkeypatch):
             return f"Typed text into: {payload.get('selector')}"
         return "Observing current page state"
 
-    monkeypatch.setattr("src.agent.loop.executor._dispatch_action", dispatch)
+    monkeypatch.setattr("ready_ai._engine.agent.loop.executor._dispatch_action", dispatch)
     flow = _flow(
         [
             FlowStepSpec(

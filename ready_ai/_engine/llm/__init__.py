@@ -1,8 +1,9 @@
 """Prompt exports plus a lazily-resolved LLM client.
 
 ``LLMClient`` is resolved on first attribute access to keep
-``import src.llm`` cheap — but it requires ``litellm``, which is a
-mandatory runtime dependency, not an optional one.
+``import ready_ai._engine.llm`` cheap. Constructing a client needs the
+optional ``llm`` extra (``pip install 'ready-ai[llm]'``); importing this
+package does not.
 """
 
 from typing import TYPE_CHECKING

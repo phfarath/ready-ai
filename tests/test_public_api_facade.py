@@ -1,7 +1,7 @@
 """ReadyAI façade wiring (READY-AI-T-13, DoD 2/3 integration).
 
 The façade maps the public models onto the internal engine
-(``src.agent.loop.AgenticLoop``) without leaking ``src.*`` to consumers.
+(``ready_ai._engine.agent.loop.AgenticLoop``) without leaking ``ready_ai._engine.*`` to consumers.
 Profiles are resolved from a registry of *references*; an unknown profile
 reference is a validation error.
 """

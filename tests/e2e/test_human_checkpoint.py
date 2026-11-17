@@ -17,8 +17,8 @@ import urllib.request
 
 import pytest
 
-from src.agent.loop import AgenticLoop
-from src.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
+from ready_ai._engine.agent.loop import AgenticLoop
+from ready_ai._engine.api.models import FlowAction, FlowAssertion, FlowSpec, FlowStepSpec
 
 pytestmark = pytest.mark.e2e
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ready-ai"
-version = "0.8.0"
-description = "ready-ai: agentic browser automation for SaaS documentation generation using CDP + LLM"
+version = "0.9.0"
+description = "Open-source CI tool that turns verified browser flows into user docs and agent skills, and catches UI drift"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -15,7 +15,7 @@ authors = [
 keywords = ["browser-automation", "cdp", "llm", "sdk", "testing"]
 requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -28,7 +28,6 @@ classifiers = [
 
 dependencies = [
     "websockets>=12.0",
-    "litellm>=1.40.0",
     "pydantic>=2",
     "aiohttp>=3.9.0",
     "Pillow>=10.0.0",
@@ -44,7 +43,24 @@ Issues = "https://github.com/phfarath/ready-ai/issues"
 Changelog = "https://github.com/phfarath/ready-ai/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# LiteLLM 1.84+ accepts the OpenAI SDK 2.x line. openai>=3 dropped the
+# ``_base_client.model_dump`` re-export the compatibility patch relies on,
+# so the extra stays on the 2.x series that LiteLLM still supports.
+llm = [
+    "litellm>=1.84.0,<2",
+    "openai>=2.20.0,<3",
+]
 api = [
+    "fastapi>=0.104,<1.0",
+    "uvicorn>=0.24,<1.0",
+]
+# The stdio MCP server (``python -m ready_ai._engine.mcp_server``) is
+# implemented in-tree and has no third-party dependency. The extra exists
+# so ``pip install ready-ai[mcp]`` is the supported install line.
+mcp = []
+all = [
+    "litellm>=1.84.0,<2",
+    "openai>=2.20.0,<3",
     "fastapi>=0.104,<1.0",
     "uvicorn>=0.24,<1.0",
 ]
@@ -53,7 +69,9 @@ dev = [
     "fastapi>=0.104,<1.0",
     "uvicorn>=0.24,<1.0",
     "httpx>=0.28,<1.0",
+    "litellm>=1.84.0,<2",
     "mypy>=1.10,<3",
+    "openai>=2.20.0,<3",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
@@ -64,23 +82,20 @@ dev = [
 ]
 
 [project.scripts]
-ready-ai = "main:cli"
-
-[tool.setuptools]
-py-modules = ["main"]
+ready-ai = "ready_ai.cli:cli"
 
 [tool.setuptools.packages.find]
-include = ["src*", "ready_ai*"]
+include = ["ready_ai*"]
 
 [tool.setuptools.package-data]
 ready_ai = ["py.typed"]
 
 # Public SDK surface is typed (PEP 561 `py.typed` marker ships in the
-# wheel). ``ready_ai`` is checked strict; the legacy engine under ``src``
-# is followed silently — its internals are not part of the public typing
-# contract. ``python_version`` is intentionally unset: CI runs mypy on
-# the real 3.10/3.11/3.12 interpreters so each supported version is
-# checked natively.
+# wheel). ``ready_ai`` is checked strict; the engine under
+# ``ready_ai._engine`` and the CLI are followed silently — they are not
+# part of the public typing contract. ``python_version`` is intentionally
+# unset: CI runs mypy on the real 3.10/3.11/3.12 interpreters so each
+# supported version is checked natively.
 [tool.mypy]
 files = ["ready_ai", "examples"]
 plugins = ["pydantic.mypy"]
@@ -89,7 +104,7 @@ follow_imports = "silent"
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = "src.*"
+module = ["ready_ai._engine.*", "ready_ai.cli"]
 follow_imports = "silent"
 ignore_errors = true
 

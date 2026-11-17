@@ -29,9 +29,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 load_dotenv()  # Load .env file (API keys etc.)
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
-
 RUN_DEFAULTS = {
     "goal": None,
     "url": None,
@@ -102,7 +99,7 @@ def _configure_stdio() -> None:
 
 def setup_logging(verbose: bool = False) -> None:
     """Configure logging with structured output and observability."""
-    from src.observability import setup_observability
+    from ready_ai._engine.observability import setup_observability
     setup_observability(verbose=verbose, json_output=not verbose)
 
 
@@ -295,7 +292,7 @@ def resolve_run_args(raw_args: argparse.Namespace) -> argparse.Namespace:
 
 
 async def async_main_run(args: argparse.Namespace) -> None:
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     logger = logging.getLogger("main")
     logger.info("🚀 ready-ai — Local CLI Run")
@@ -338,7 +335,7 @@ async def async_main_run(args: argparse.Namespace) -> None:
 
 
 async def async_main_test(args: argparse.Namespace) -> None:
-    from src.agent.test_runner import DocTestRunner
+    from ready_ai._engine.agent.test_runner import DocTestRunner
 
     logger = logging.getLogger("main")
     logger.info("🧪 ready-ai — Documentation Test Runner")
@@ -419,7 +416,7 @@ def _handle_report_exit(report, logger) -> None:
 
 def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
     """If auto-heal produced changes, commit and open a PR."""
-    from src.docs.healing_publisher import publish_healing, PublishConfig
+    from ready_ai._engine.docs.healing_publisher import publish_healing, PublishConfig
 
     healing_report = getattr(report, "healing_report", None)
     if healing_report is None:
@@ -463,8 +460,8 @@ def _maybe_publish_healing(report, args: argparse.Namespace, logger) -> None:
 async def async_main_batch(args: argparse.Namespace) -> None:
     """Run multiple documentation flows from a batch config file."""
     import uuid
-    from src.api.batch_loader import load_batch_config
-    from src.api.manager import RunManager
+    from ready_ai._engine.api.batch_loader import load_batch_config
+    from ready_ai._engine.api.manager import RunManager
 
     logger = logging.getLogger("main")
     logger.info("📦 ready-ai — Batch Runner")
@@ -521,8 +518,8 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
     JSON is printed to stdout; exit code 0 means the whole flow passed.
     """
     import uuid
-    from src.api.batch_loader import load_flow_config
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.api.batch_loader import load_flow_config
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     logger = logging.getLogger("main")
     logger.info("🏃 ready-ai — Declarative Run-Flow")
@@ -534,7 +531,7 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
         logger.error("❌ --replay-manifest and --emit-manifest are mutually exclusive")
         sys.exit(1)
     if replay_path:
-        from src.agent.replay import manifest_to_flow_spec, read_manifest
+        from ready_ai._engine.agent.replay import manifest_to_flow_spec, read_manifest
 
         try:
             flow = manifest_to_flow_spec(read_manifest(replay_path))
@@ -549,6 +546,10 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
         flow = load_flow_config(args.config)
         run_id = args.run_id or flow.run_id or f"flow-{uuid.uuid4().hex[:8]}"
         allow_llm = True
+        # Declarative actions do not call the LLM. Credential auto-login does,
+        # and that is the only run-flow path that needs the extra.
+        if args.username or args.password or flow.username or flow.password:
+            _require_llm_extra()
 
     loop = AgenticLoop(
         goal=flow.name or "run-flow",
@@ -580,7 +581,7 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2, default=str))
 
     if emit_manifest:
-        from src.agent.replay import compile_manifest, write_manifest
+        from ready_ai._engine.agent.replay import compile_manifest, write_manifest
 
         if result["status"] != "passed":
             logger.error(
@@ -628,7 +629,7 @@ async def async_main_run_flow(args: argparse.Namespace) -> None:
 async def async_main_export(args: argparse.Namespace) -> None:
     """Export a completed run to a documentation format."""
     from pathlib import Path
-    from src.docs.export import export_docs, SUPPORTED_FORMATS
+    from ready_ai._engine.docs.export import export_docs, SUPPORTED_FORMATS
 
     logger = logging.getLogger("main")
     run_output_dir = Path("./output") / args.run_id
@@ -650,7 +651,7 @@ async def async_main_export(args: argparse.Namespace) -> None:
 
     if format_name == "skill":
         from datetime import datetime, timezone
-        from src.docs.export import export_skill
+        from ready_ai._engine.docs.export import export_skill
 
         try:
             created = export_skill(
@@ -687,6 +688,17 @@ async def async_main_export(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _require_llm_extra() -> None:
+    """Exit with a clear hint when a command needs the ``[llm]`` extra."""
+    from ready_ai._engine.llm.client import require_llm
+
+    try:
+        require_llm()
+    except ImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
 def cli() -> None:
     """Entry point for pyproject.toml scripts."""
     _configure_stdio()
@@ -704,8 +716,10 @@ def cli() -> None:
     setup_logging(args.verbose)
 
     if args.command == "run":
+        _require_llm_extra()
         asyncio.run(async_main_run(args))
     elif args.command == "test":
+        _require_llm_extra()
         asyncio.run(async_main_test(args))
     elif args.command == "api":
         try:
@@ -720,8 +734,9 @@ def cli() -> None:
             sys.exit(2)
 
         logging.getLogger("main").info("🚀 Starting FastAPI Server on port %s", args.port)
-        uvicorn.run("src.api.server:app", host=args.host, port=args.port, reload=True)
+        uvicorn.run("ready_ai._engine.api.server:app", host=args.host, port=args.port, reload=True)
     elif args.command == "batch":
+        _require_llm_extra()
         asyncio.run(async_main_batch(args))
     elif args.command == "run-flow":
         asyncio.run(async_main_run_flow(args))

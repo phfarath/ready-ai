@@ -2,7 +2,7 @@
 
 The distributed package is ``ready-ai`` but the engine ships under
 ``src``. This card adds a public, importable SDK named ``ready_ai`` so
-consumers never touch ``src.*``. These tests pin the documented public
+consumers never touch ``ready_ai._engine.*``. These tests pin the documented public
 surface and its package-level documentation.
 """
 

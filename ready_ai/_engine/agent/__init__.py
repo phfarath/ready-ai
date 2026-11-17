@@ -1,9 +1,9 @@
 """Public agent conveniences, imported lazily on attribute access.
 
 ``AgenticLoop`` is resolved on first use (not at package import) to
-keep ``import src.agent`` cheap — but the loop itself pulls in
-``litellm`` via ``planner``/``llm.client``, which is a required
-runtime dependency, not an optional one.
+keep ``import ready_ai._engine.agent`` cheap. The loop imports the LLM
+client, but LiteLLM itself is optional until a command actually calls
+the model (``pip install 'ready-ai[llm]'``).
 """
 
 from typing import TYPE_CHECKING

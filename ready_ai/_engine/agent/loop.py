@@ -326,6 +326,9 @@ class AgenticLoop:
             Path to the generated markdown file
         """
         run_ctx = init_run_context(run_id=self.run_id)
+        from ..llm.client import require_llm
+
+        require_llm()
 
         async with Span(name="pipeline", attributes={"goal": self.goal, "url": self.url}):
             try:

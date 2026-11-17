@@ -67,7 +67,7 @@ output/
 Compare two documentation sets:
 
 ```python
-from src.docs.text_diff import compare_docs
+from ready_ai._engine.docs.text_diff import compare_docs
 
 diff = compare_docs("output/v2.3.0/login/docs.md", "output/v2.3.1/login/docs.md")
 diff.save_changelog("output/v2.3.1/login/changelog.md")

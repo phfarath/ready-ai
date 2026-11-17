@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.cdp.page import PageDomain
+from ready_ai._engine.cdp.page import PageDomain
 
 
 def _page_with_hanging_load():

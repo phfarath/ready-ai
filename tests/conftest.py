@@ -33,7 +33,7 @@ def _isolate_history_store(tmp_path, monkeypatch):
     backend resolves this path at call time, so patching the module
     constant is enough (env override takes precedence when set).
     """
-    import src.history as history_mod
+    import ready_ai._engine.history as history_mod
 
     monkeypatch.setattr(history_mod, "_HISTORY_DB", tmp_path / ".history.db")
 

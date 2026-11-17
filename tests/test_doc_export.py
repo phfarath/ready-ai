@@ -4,7 +4,7 @@ Tests for documentation export formats.
 
 import pytest
 
-from src.docs.export import export_docs, SUPPORTED_FORMATS, ExportResult
+from ready_ai._engine.docs.export import export_docs, SUPPORTED_FORMATS, ExportResult
 
 
 @pytest.fixture

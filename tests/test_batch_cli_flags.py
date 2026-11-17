@@ -5,7 +5,7 @@ but the batch subparser historically only accepted ``--config`` and ``--verbose`
 These tests assert the subparser accepts both new flags with sensible defaults.
 """
 
-from main import _build_parser, parse_args
+from ready_ai.cli import _build_parser, parse_args
 
 
 def _batch_help_text() -> str:

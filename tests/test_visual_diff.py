@@ -16,7 +16,7 @@ from PIL import Image
 # Ensure format plugins (PNG, JPEG, …) are registered on Windows
 Image.init()
 
-from src.docs.visual_diff import compare_screenshots
+from ready_ai._engine.docs.visual_diff import compare_screenshots
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ def test_warning_logged_on_different_sizes(tmp_path: Path, caplog):
 
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="src.docs.visual_diff"):
+    with caplog.at_level(logging.WARNING, logger="ready_ai._engine.docs.visual_diff"):
         result = compare_screenshots(str(baseline), str(current))
 
     resize_warnings = [
@@ -183,7 +183,7 @@ def test_no_warning_on_same_sizes(tmp_path: Path, caplog):
 
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="src.docs.visual_diff"):
+    with caplog.at_level(logging.WARNING, logger="ready_ai._engine.docs.visual_diff"):
         result = compare_screenshots(str(baseline), str(current))
 
     resize_warnings = [

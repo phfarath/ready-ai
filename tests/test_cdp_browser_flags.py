@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cdp import browser
-from src.cdp.browser import (
+from ready_ai._engine.cdp import browser
+from ready_ai._engine.cdp.browser import (
     ENV_CHROME_ARGS,
     ENV_NO_SANDBOX,
     ENV_WINDOW_SIZE,

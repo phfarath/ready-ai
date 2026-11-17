@@ -14,14 +14,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.agent.test_runner import DocTestReport, StepTestResult
-from src.docs.auto_healer import (
+from ready_ai._engine.agent.test_runner import DocTestReport, StepTestResult
+from ready_ai._engine.docs.auto_healer import (
     HEAL_GATE_MIN_CHANNELS_ENV,
     DocAutoHealer,
     DriftGateDecision,
     evaluate_drift_gate,
 )
-from src.docs.healing_publisher import _render_pr_body
+from ready_ai._engine.docs.healing_publisher import _render_pr_body
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "sample_doc"
@@ -117,7 +117,7 @@ class TestEvaluateDriftGate:
 
         monkeypatch.setenv(HEAL_GATE_MIN_CHANNELS_ENV, "3")
 
-        with caplog.at_level(logging.WARNING, logger="src.docs.auto_healer"):
+        with caplog.at_level(logging.WARNING, logger="ready_ai._engine.docs.auto_healer"):
             decision = evaluate_drift_gate(0.50, 0.85, True)
 
         assert decision.eligible is True
@@ -176,7 +176,7 @@ async def test_heal_without_dom_baselines_warns(doc_dir, caplog):
     report = _make_report(doc_dir, [result])
     healer = DocAutoHealer(str(doc_dir / "docs.md"), _make_llm())
 
-    with caplog.at_level(logging.WARNING, logger="src.docs.auto_healer"):
+    with caplog.at_level(logging.WARNING, logger="ready_ai._engine.docs.auto_healer"):
         healing = await healer.heal_report(report, baseline_dom_hashes={})
 
     assert healing.total_healed == 1  # visual-only decision still heals
@@ -415,7 +415,7 @@ def test_summary_counts_drift_suspected():
 
 
 def test_pr_body_lists_suspected_steps_for_human_review():
-    from src.docs.auto_healer import DriftGateLogEntry, HealResult, HealingReport
+    from ready_ai._engine.docs.auto_healer import DriftGateLogEntry, HealResult, HealingReport
 
     healing = HealingReport(doc_rewritten=True)
     healing.steps_healed = [

@@ -14,9 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent.browser_session import BrowserSession
-from src.cdp.connection import CDPConnection
-from src.cdp.connection_state import ConnectionState
+from ready_ai._engine.agent.browser_session import BrowserSession
+from ready_ai._engine.cdp.connection import CDPConnection
+from ready_ai._engine.cdp.connection_state import ConnectionState
 
 
 def _make_session(**kwargs):
@@ -38,7 +38,7 @@ class TestRecoverLogin:
     @pytest.mark.asyncio
     async def test_recover_calls_handle_login_with_credentials(self):
         """With credentials set, recover() calls handle_login exactly once."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-recover-login-creds")
         bs = _make_session(username="user@example.com", password="secret123")
@@ -51,7 +51,7 @@ class TestRecoverLogin:
     @pytest.mark.asyncio
     async def test_recover_no_handle_login_without_credentials(self):
         """Without credentials, handle_login is NOT called."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-recover-login-nocreds")
         bs = _make_session()  # no username/password
@@ -64,7 +64,7 @@ class TestRecoverLogin:
     @pytest.mark.asyncio
     async def test_recover_still_navigates_with_credentials(self):
         """recover() still navigates to the target URL when credentials are set."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-recover-login-navigate")
         bs = _make_session(username="user@example.com", password="secret123")
@@ -80,7 +80,7 @@ class TestRecoverLogin:
     async def test_recover_no_llm_no_handle_login_with_credentials(self):
         """With credentials but no llm passed, handle_login is not called
         (backwards-compatible default behaviour for callers without an llm)."""
-        from src.observability import init_run_context
+        from ready_ai._engine.observability import init_run_context
 
         init_run_context("test-recover-login-no-llm")
         bs = _make_session(username="user@example.com", password="secret123")

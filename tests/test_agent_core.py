@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent.planner import plan as planner_plan
-from src.agent.state import DocStepState, RunState
+from ready_ai._engine.agent.planner import plan as planner_plan
+from ready_ai._engine.agent.state import DocStepState, RunState
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────
@@ -165,11 +165,11 @@ class TestExecutor:
     async def test_observe_succeeds_first_attempt(self):
         from unittest.mock import patch
 
-        from src.agent.executor import execute_step
+        from ready_ai._engine.agent.executor import execute_step
 
         d = _executor_doubles()
         with patch(
-            "src.agent.executor._dispatch_action",
+            "ready_ai._engine.agent.executor._dispatch_action",
             AsyncMock(return_value="Observing current page state"),
         ):
             result = await execute_step(
@@ -182,17 +182,17 @@ class TestExecutor:
     async def test_click_with_dom_change_succeeds(self):
         from unittest.mock import patch
 
-        from src.agent.executor import execute_step
+        from ready_ai._engine.agent.executor import execute_step
 
         d = _executor_doubles()
         d["runtime"].get_state_fingerprint = AsyncMock(
             side_effect=["before", "after"]
         )
         with patch(
-            "src.agent.executor._get_action",
+            "ready_ai._engine.agent.executor._get_action",
             AsyncMock(return_value={"action": "click", "selector": "#go"}),
         ), patch(
-            "src.agent.executor._dispatch_action",
+            "ready_ai._engine.agent.executor._dispatch_action",
             AsyncMock(return_value="Clicked element: #go"),
         ):
             result = await execute_step(
@@ -205,15 +205,15 @@ class TestExecutor:
     async def test_unchanged_dom_retries_then_fails(self):
         from unittest.mock import patch
 
-        from src.agent.executor import MAX_RETRIES, execute_step
+        from ready_ai._engine.agent.executor import MAX_RETRIES, execute_step
 
         d = _executor_doubles()
         d["runtime"].get_state_fingerprint = AsyncMock(return_value="same")
         with patch(
-            "src.agent.executor._get_action",
+            "ready_ai._engine.agent.executor._get_action",
             AsyncMock(return_value={"action": "click", "selector": "#stale"}),
         ), patch(
-            "src.agent.executor._dispatch_action",
+            "ready_ai._engine.agent.executor._dispatch_action",
             AsyncMock(return_value="Clicked element: #stale"),
         ):
             result = await execute_step(
@@ -227,11 +227,11 @@ class TestExecutor:
     async def test_unparseable_action_exhausts_retries(self):
         from unittest.mock import patch
 
-        from src.agent.executor import MAX_RETRIES, execute_step
+        from ready_ai._engine.agent.executor import MAX_RETRIES, execute_step
 
         d = _executor_doubles()
         with patch(
-            "src.agent.executor._get_action", AsyncMock(return_value=None)
+            "ready_ai._engine.agent.executor._get_action", AsyncMock(return_value=None)
         ):
             result = await execute_step(
                 "mystery", "<html></html>", "[]", d["llm"],
@@ -244,20 +244,20 @@ class TestExecutor:
     async def test_previous_failures_feed_retry_prompt(self):
         from unittest.mock import patch
 
-        from src.agent.executor import execute_step
+        from ready_ai._engine.agent.executor import execute_step
 
         d = _executor_doubles()
         seen: list = []
         orig_get_action = __import__(
-            "src.agent.executor", fromlist=["_get_action"]
+            "ready_ai._engine.agent.executor", fromlist=["_get_action"]
         )._get_action
 
         async def _spy(step, dom, els, llm, failures, url=None):
             seen.append(list(failures))
             return await orig_get_action(step, dom, els, llm, failures, url)
 
-        with patch("src.agent.executor._get_action", _spy), patch(
-            "src.agent.executor._dispatch_action",
+        with patch("ready_ai._engine.agent.executor._get_action", _spy), patch(
+            "ready_ai._engine.agent.executor._dispatch_action",
             AsyncMock(return_value="Observing current page state"),
         ):
             result = await execute_step(
@@ -273,7 +273,7 @@ class TestExecutor:
 
 def _loop_with_session(tmp_path: Path, monkeypatch):
     """AgenticLoop with stub session domains (no Chrome, no LLM calls)."""
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     loop = AgenticLoop(
         goal="T1T2 core",
@@ -305,8 +305,8 @@ class TestLoop:
     ):
         from unittest.mock import patch
 
-        from src.agent.executor import StepResult
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.agent.executor import StepResult
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         loop, _, _ = _loop_with_session(tmp_path, monkeypatch)
         calls: list[str] = []
@@ -320,17 +320,17 @@ class TestLoop:
                 attempts=1,
             )
 
-        monkeypatch.setattr("src.agent.loop.executor.execute_step", _fake_execute)
+        monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", _fake_execute)
         monkeypatch.setattr(
-            "src.agent.loop.CursorAnimator.highlight_element", AsyncMock()
+            "ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock()
         )
         monkeypatch.setattr(
-            "src.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
+            "ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
         )
         annotation = MagicMock()
         annotation.complete_with_vision = AsyncMock(return_value="note")
         with patch(
-            "src.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
+            "ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
         ):
             results = await loop._execute_steps(
                 ["one", "two"], MagicMock(), annotation, DocRenderer("G")
@@ -344,8 +344,8 @@ class TestLoop:
     ):
         from unittest.mock import patch
 
-        from src.agent.executor import StepResult
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.agent.executor import StepResult
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         loop, _, _ = _loop_with_session(tmp_path, monkeypatch)
 
@@ -359,17 +359,17 @@ class TestLoop:
                 failure_reason="" if ok else "boom",
             )
 
-        monkeypatch.setattr("src.agent.loop.executor.execute_step", _fake_execute)
+        monkeypatch.setattr("ready_ai._engine.agent.loop.executor.execute_step", _fake_execute)
         monkeypatch.setattr(
-            "src.agent.loop.CursorAnimator.highlight_element", AsyncMock()
+            "ready_ai._engine.agent.loop.CursorAnimator.highlight_element", AsyncMock()
         )
         monkeypatch.setattr(
-            "src.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
+            "ready_ai._engine.agent.loop.CursorAnimator.clear_highlight", AsyncMock()
         )
         annotation = MagicMock()
         annotation.complete_with_vision = AsyncMock(return_value="note")
         with patch(
-            "src.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
+            "ready_ai._engine.agent.loop.recovery.dom_fingerprint", AsyncMock(return_value="fp")
         ):
             results = await loop._execute_steps(
                 ["good", "bad"], MagicMock(), annotation, DocRenderer("G")
@@ -380,7 +380,7 @@ class TestLoop:
     async def test_execute_steps_empty_plan_returns_empty(
         self, tmp_path: Path, monkeypatch
     ):
-        from src.docs.renderer import DocRenderer
+        from ready_ai._engine.docs.renderer import DocRenderer
 
         loop, _, _ = _loop_with_session(tmp_path, monkeypatch)
         results = await loop._execute_steps(

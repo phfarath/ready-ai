@@ -5,7 +5,7 @@ Tests for MCP Server.
 import pytest
 from unittest.mock import MagicMock
 
-from src.mcp_server import (
+from ready_ai._engine.mcp_server import (
     TOOLS,
     _handle_check_health,
     _handle_generate_docs,
@@ -54,7 +54,7 @@ class TestHandleGenerateDocs:
         async def fake_run(self):
             return "./output/test-run/docs.md"
 
-        monkeypatch.setattr("src.agent.loop.AgenticLoop.run", fake_run)
+        monkeypatch.setattr("ready_ai._engine.agent.loop.AgenticLoop.run", fake_run)
 
         result = await _handle_generate_docs({
             "goal": "Test flow",
@@ -72,7 +72,7 @@ class TestHandleGenerateDocs:
         async def fake_run(self):
             raise RuntimeError("Browser not available")
 
-        monkeypatch.setattr("src.agent.loop.AgenticLoop.run", fake_run)
+        monkeypatch.setattr("ready_ai._engine.agent.loop.AgenticLoop.run", fake_run)
 
         result = await _handle_generate_docs({
             "goal": "Test flow",
@@ -95,7 +95,7 @@ class TestHandleTestDocs:
         async def fake_run(self):
             return mock_report
 
-        monkeypatch.setattr("src.agent.test_runner.DocTestRunner.run", fake_run)
+        monkeypatch.setattr("ready_ai._engine.agent.test_runner.DocTestRunner.run", fake_run)
 
         result = await _handle_test_docs({
             "doc_path": "./docs.md",
@@ -117,7 +117,7 @@ class TestHandleTestDocs:
         async def fake_run(self):
             return mock_report
 
-        monkeypatch.setattr("src.agent.test_runner.DocTestRunner.run", fake_run)
+        monkeypatch.setattr("ready_ai._engine.agent.test_runner.DocTestRunner.run", fake_run)
 
         result = await _handle_test_docs({
             "doc_path": "./docs.md",

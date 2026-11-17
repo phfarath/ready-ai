@@ -9,16 +9,16 @@ import logging
 
 import pytest
 
-from src.api import server
+from ready_ai._engine.api import server
 
-logger = logging.getLogger("src.api.server")
+logger = logging.getLogger("ready_ai._engine.api.server")
 
 
 def test_warning_emitted_when_auth_disabled(caplog, monkeypatch):
     """A WARNING mentioning auth being disabled is logged when _AUTH_DISABLED is True."""
     monkeypatch.setattr(server, "_AUTH_DISABLED", True)
 
-    with caplog.at_level(logging.WARNING, logger="src.api.server"):
+    with caplog.at_level(logging.WARNING, logger="ready_ai._engine.api.server"):
         server._warn_if_auth_disabled()
 
     warnings = [
@@ -36,7 +36,7 @@ def test_no_warning_when_auth_enabled(caplog, monkeypatch):
     """No WARNING about auth disabled is logged when _AUTH_DISABLED is False."""
     monkeypatch.setattr(server, "_AUTH_DISABLED", False)
 
-    with caplog.at_level(logging.WARNING, logger="src.api.server"):
+    with caplog.at_level(logging.WARNING, logger="ready_ai._engine.api.server"):
         server._warn_if_auth_disabled()
 
     auth_warnings = [

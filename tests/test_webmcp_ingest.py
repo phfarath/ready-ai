@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.agent import planner
-from src.cdp.runtime import RuntimeDomain
+from ready_ai._engine.agent import planner
+from ready_ai._engine.cdp.runtime import RuntimeDomain
 
 
 def _runtime_with(evaluate_result) -> RuntimeDomain:
@@ -50,7 +50,7 @@ async def test_detect_malformed_returns_empty():
 
 
 def test_format_context_mentions_tools():
-    from src.agent.planner import format_webmcp_context
+    from ready_ai._engine.agent.planner import format_webmcp_context
 
     tools = [
         {"name": "shop.search", "description": "Search the catalog"},
@@ -93,7 +93,7 @@ async def test_plan_omits_section_when_no_context():
 
 
 def test_flag_defaults_off(monkeypatch):
-    import main as main_mod
+    import ready_ai.cli as main_mod
 
     monkeypatch.delenv("READY_AI_WEBMCP_INGEST", raising=False)
     args = main_mod.resolve_run_args(
@@ -103,7 +103,7 @@ def test_flag_defaults_off(monkeypatch):
 
 
 def test_flag_on_via_cli():
-    import main as main_mod
+    import ready_ai.cli as main_mod
 
     args = main_mod.resolve_run_args(
         main_mod.parse_args(
@@ -114,7 +114,7 @@ def test_flag_on_via_cli():
 
 
 def test_flag_on_via_env(monkeypatch):
-    import main as main_mod
+    import ready_ai.cli as main_mod
 
     monkeypatch.setenv("READY_AI_WEBMCP_INGEST", "1")
     args = main_mod.resolve_run_args(
@@ -124,7 +124,7 @@ def test_flag_on_via_env(monkeypatch):
 
 
 async def test_loop_skips_detection_when_flag_off():
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     loop = AgenticLoop(
         goal="g", url="https://x.test", output_dir="/tmp", run_id="t",
@@ -136,7 +136,7 @@ async def test_loop_skips_detection_when_flag_off():
 
 
 async def test_loop_detects_when_flag_on():
-    from src.agent.loop import AgenticLoop
+    from ready_ai._engine.agent.loop import AgenticLoop
 
     loop = AgenticLoop(
         goal="g", url="https://x.test", output_dir="/tmp", run_id="t",
